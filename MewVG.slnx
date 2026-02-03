@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/samples/">
+    <Project Path="samples/MewVG.GL.Demo/MewVG.GL.Demo.csproj" />
+    <Project Path="samples/MewVG.Metal.Demo/MewVG.Metal.Demo.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/MewVG.Core/MewVG.Core.csproj" />
+    <Project Path="src/MewVG.GL/MewVG.GL.csproj" />
+    <Project Path="src/MewVG.Metal/MewVG.Metal.csproj" />
+  </Folder>
+</Solution>
