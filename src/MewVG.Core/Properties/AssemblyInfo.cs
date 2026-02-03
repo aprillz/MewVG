@@ -1,4 +1,4 @@
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("MewVG.Metal")]
-[assembly: InternalsVisibleTo("MewVG.GL")]
+[assembly: InternalsVisibleTo("Aprillz.MewVG.Metal")]
+[assembly: InternalsVisibleTo("Aprillz.MewVG.GL")]
