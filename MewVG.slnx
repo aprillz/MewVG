@@ -1,4 +1,7 @@
 <Solution>
+  <Folder Name="/build/">
+    <File Path="build/MewVG.Common.props" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/MewVG.GL.Demo/MewVG.GL.Demo.csproj" />
     <Project Path="samples/MewVG.Metal.Demo/MewVG.Metal.Demo.csproj" />

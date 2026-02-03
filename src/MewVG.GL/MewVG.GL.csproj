@@ -1,7 +1,12 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\build\MewVG.Common.props" />
+
   <PropertyGroup>
-    <AssemblyName>MewVG.GL</AssemblyName>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>$(MewVGTitle).GL</AssemblyName>
+    <PackageId>$(MewVGTitle).GL</PackageId>
+    <Description>OpenGL rendering backend for $(MewVGTitle)</Description>
+    <IsPackable>true</IsPackable>
+    <PackageTags>nanovg;vector-graphics;opengl</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

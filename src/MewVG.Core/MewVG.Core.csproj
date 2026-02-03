@@ -1,5 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\build\MewVG.Common.props" />
+
   <PropertyGroup>
-    <AssemblyName>MewVG.Core</AssemblyName>
+    <AssemblyName>$(MewVGTitle).Core</AssemblyName>
+    <PackageId>$(MewVGTitle).Core</PackageId>
+    <Description>Core types and utilities for $(MewVGTitle)</Description>
+    <IsPackable>true</IsPackable>
+    <PackageTags>nanovg;vector-graphics;core</PackageTags>
   </PropertyGroup>
 </Project>

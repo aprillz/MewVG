@@ -1,6 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
+  <Import Project="..\..\build\MewVG.Common.props" />
+
   <PropertyGroup>
-    <AssemblyName>MewVG.Metal</AssemblyName>
+    <AssemblyName>$(MewVGTitle).Metal</AssemblyName>
+    <PackageId>$(MewVGTitle).Metal</PackageId>
+    <Description>Metal rendering backend for $(MewVGTitle)</Description>
+    <IsPackable>true</IsPackable>
+    <PackageTags>nanovg;vector-graphics;metal</PackageTags>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,0 +1,25 @@
+<Project>
+  <PropertyGroup>
+    <MewVGTitle>Aprillz.MewVG</MewVGTitle>
+    <MewVGVersion>0.1.0</MewVGVersion>
+    <MewVGAuthor>Aprillz</MewVGAuthor>
+    <MewVGDescription>A cross-platform, fully managed .NET vector graphics library based on NanoVG.</MewVGDescription>
+
+    <MewVGRootNamespace>Aprillz.MewVG</MewVGRootNamespace>
+    <MewVGTargetFrameworks>net8.0;net10.0</MewVGTargetFrameworks>
+    <MewVGPackageLicenseExpression>MIT</MewVGPackageLicenseExpression>
+
+    <TargetFrameworks>$(MewVGTargetFrameworks)</TargetFrameworks>
+    <Version>$(MewVGVersion)</Version>
+    <RootNamespace>$(MewVGRootNamespace)</RootNamespace>
+    <PackageLicenseExpression>$(MewVGPackageLicenseExpression)</PackageLicenseExpression>
+
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+
+    <PublishRepositoryUrl>false</PublishRepositoryUrl>
+    <IncludeSymbols>true</IncludeSymbols>
+  </PropertyGroup>
+</Project>
