@@ -32,6 +32,10 @@ jobs:
       - name: Publish NuGet
         run: |
           dotnet nuget push "artifacts/*.nupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
-          dotnet nuget push "artifacts/*.snupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          if ls artifacts/*.snupkg >/dev/null 2>&1; then
+            dotnet nuget push "artifacts/*.snupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
+          else
+            echo "No .snupkg files found; skipping symbol package push."
+          fi
         env:
           NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
