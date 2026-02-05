@@ -659,7 +659,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             false
         );
 
-        ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage, (ulong)MTLTextureUsage.ShaderRead);
+        ObjCRuntime.SendMessage(
+            textureDescriptor,
+            MetalSelectors.setUsage,
+            (ulong)(MTLTextureUsage.ShaderRead | MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderWrite));
 
         _pseudoTexture = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
 
@@ -1270,7 +1273,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0
         );
 
-        ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage, (ulong)MTLTextureUsage.ShaderRead);
+        ObjCRuntime.SendMessage(
+            textureDescriptor,
+            MetalSelectors.setUsage,
+            (ulong)(MTLTextureUsage.ShaderRead | MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderWrite));
 
         tex.tex = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
 
@@ -1296,6 +1302,11 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                     (IntPtr)ptr,
                     (nuint)bytesPerRow
                 );
+            }
+
+            if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
+            {
+                GenerateMipmaps(tex.tex);
             }
         }
 
@@ -1405,6 +1416,31 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         return true;
+    }
+
+    private void GenerateMipmaps(IntPtr texture)
+    {
+        if (_commandQueue == IntPtr.Zero || texture == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var commandBuffer = ObjCRuntime.SendMessage(_commandQueue, MetalSelectors.commandBuffer);
+        if (commandBuffer == IntPtr.Zero)
+        {
+            return;
+        }
+
+        var blitEncoder = ObjCRuntime.SendMessage(commandBuffer, MetalSelectors.blitCommandEncoder);
+        if (blitEncoder == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ObjCRuntime.SendMessage(blitEncoder, MetalSelectors.generateMipmapsForTexture, texture);
+        ObjCRuntime.SendMessage(blitEncoder, MetalSelectors.endEncoding);
+        ObjCRuntime.SendMessage(commandBuffer, MetalSelectors.commit);
+        ObjCRuntime.SendMessage(commandBuffer, MetalSelectors.waitUntilCompleted);
     }
 
     /// <summary>

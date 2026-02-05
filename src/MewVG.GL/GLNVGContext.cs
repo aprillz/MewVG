@@ -452,6 +452,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         if (type == NVGtextureType.RGBA)
         {
+            if (!data.IsEmpty && (flags & NVGimageFlags.Premultiplied) == 0)
+            {
+                var premul = PremultiplyRgba(data, width, height);
+                data = premul;
+            }
+
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0,
                 PixelFormat.Rgba, PixelType.UnsignedByte, data);
         }
@@ -539,6 +545,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             return false;
         }
 
+        if (!data.IsEmpty && tex.Type == NVGtextureType.RGBA && (tex.Flags & NVGimageFlags.Premultiplied) == 0)
+        {
+            data = PremultiplyRgba(data, tex.Width, tex.Height);
+        }
+
         BindTexture(tex.Tex);
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
         GL.PixelStore(PixelStoreParameter.UnpackRowLength, tex.Width);
@@ -563,6 +574,46 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         BindTexture(0);
         return true;
+    }
+
+    private static byte[] PremultiplyRgba(ReadOnlySpan<byte> src, int width, int height)
+    {
+        var expected = width * height * 4;
+        if (src.Length < expected)
+        {
+            return src.ToArray();
+        }
+
+        var dst = new byte[expected];
+        for (var i = 0; i < expected; i += 4)
+        {
+            var a = src[i + 3];
+            if (a == 0)
+            {
+                dst[i] = 0;
+                dst[i + 1] = 0;
+                dst[i + 2] = 0;
+                dst[i + 3] = 0;
+                continue;
+            }
+
+            if (a == 255)
+            {
+                dst[i] = src[i];
+                dst[i + 1] = src[i + 1];
+                dst[i + 2] = src[i + 2];
+                dst[i + 3] = 255;
+                continue;
+            }
+
+            var ai = a + 1;
+            dst[i] = (byte)((src[i] * ai) >> 8);
+            dst[i + 1] = (byte)((src[i + 1] * ai) >> 8);
+            dst[i + 2] = (byte)((src[i + 2] * ai) >> 8);
+            dst[i + 3] = a;
+        }
+
+        return dst;
     }
 
     public bool GetTextureSize(int image, out int width, out int height)

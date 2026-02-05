@@ -10,6 +10,7 @@ public static class MetalSelectors
 {
     // Device
     public static readonly nint newCommandQueue = Metal.Sel.NewCommandQueue;
+        public static readonly nint commandBuffer = Metal.Sel.CommandBuffer;
     public static readonly nint newBufferWithLength_options = Metal.Sel.NewBufferWithLength;
     public static readonly nint newTextureWithDescriptor = Metal.Sel.NewTextureWithDescriptor;
     public static readonly nint newSamplerStateWithDescriptor = Metal.Sel.NewSamplerStateWithDescriptor;
@@ -46,6 +47,7 @@ public static class MetalSelectors
     public static readonly nint setStepRate = ObjCRuntime.RegisterSelector("setStepRate:");
 
     // Depth/stencil
+    public static readonly nint setDepthCompareFunction = Metal.Sel.SetDepthCompareFunction;
     public static readonly nint setStencilCompareFunction = Metal.Sel.SetStencilCompareFunction;
     public static readonly nint setStencilFailureOperation = Metal.Sel.SetStencilFailureOperation;
     public static readonly nint setDepthFailureOperation = Metal.Sel.SetDepthFailureOperation;
@@ -59,6 +61,12 @@ public static class MetalSelectors
 
     // Texture
     public static readonly nint replaceRegion_mipmapLevel_withBytes_bytesPerRow = Metal.Sel.ReplaceRegion;
+    // Blit command encoder
+    public static readonly nint blitCommandEncoder = Metal.Sel.BlitCommandEncoder;
+    public static readonly nint generateMipmapsForTexture = Metal.Sel.GenerateMipmapsForTexture;
+    public static readonly nint endEncoding = Metal.Sel.EndEncoding;
+    public static readonly nint commit = Metal.Sel.Commit;
+    public static readonly nint waitUntilCompleted = Metal.Sel.WaitUntilCompleted;
 
     // Sampler descriptor
     public static readonly nint setMinFilter = Metal.Sel.SetMinFilter;
