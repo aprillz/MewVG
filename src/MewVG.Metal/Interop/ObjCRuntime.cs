@@ -114,7 +114,7 @@ public static unsafe partial class ObjCRuntime
     public static partial nint SendMessage(nint receiver, nint selector, MTLRegion region, nuint arg2, IntPtr arg3, nuint arg4);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
-    public static partial nint SendMessage(nint receiver, nint selector, global::Aprillz.MewVG.NSRange range);
+    public static partial nint SendMessage(nint receiver, nint selector, NSRange range);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     public static partial void* SendMessagePtr(nint receiver, nint selector);
@@ -149,28 +149,19 @@ public static unsafe partial class ObjCRuntime
     /// Allocates a new Objective-C object.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static nint Alloc(nint cls)
-    {
-        return SendMessage(cls, Selectors.alloc);
-    }
+    public static nint Alloc(nint cls) => SendMessage(cls, Selectors.alloc);
 
     /// <summary>
     /// Initializes an Objective-C object.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static nint Init(nint obj)
-    {
-        return SendMessage(obj, Selectors.init);
-    }
+    public static nint Init(nint obj) => SendMessage(obj, Selectors.init);
 
     /// <summary>
     /// Creates and initializes a new Objective-C object.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static nint New(nint cls)
-    {
-        return SendMessage(cls, Selectors.@new);
-    }
+    public static nint New(nint cls) => SendMessage(cls, Selectors.@new);
 
     /// <summary>
     /// Compatibility selectors used by older ports.

@@ -3,10 +3,11 @@
     <OutputType>Exe</OutputType>
     <AssemblyName>MewVG.GL.Demo</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
     <PublishAot>true</PublishAot>
     <IsAotCompatible>true</IsAotCompatible>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
 
   <ItemGroup>

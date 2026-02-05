@@ -20,8 +20,8 @@ public sealed class NanoVGMetal : NanoVG
     /// </summary>
     /// <param name="device">Metal device (id&lt;MTLDevice&gt;)</param>
     /// <param name="flags">Creation flags</param>
-    public NanoVGMetal(IntPtr device, NVGcreateFlags flags = NVGcreateFlags.NVG_ANTIALIAS | NVGcreateFlags.NVG_STENCIL_STROKES)
-        : base(CreateRenderer(device, flags, out var context), (flags & NVGcreateFlags.NVG_ANTIALIAS) != 0)
+    public NanoVGMetal(IntPtr device, NVGcreateFlags flags = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes)
+        : base(CreateRenderer(device, flags, out var context), (flags & NVGcreateFlags.Antialias) != 0)
     {
         _context = context;
     }
@@ -56,19 +56,13 @@ public sealed class NanoVGMetal : NanoVG
     /// </summary>
     /// <param name="renderEncoder">Metal render command encoder</param>
     /// <param name="commandBuffer">Metal command buffer</param>
-    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer)
-    {
-        _context.SetRenderEncoder(renderEncoder, commandBuffer);
-    }
+    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer) => _context.SetRenderEncoder(renderEncoder, commandBuffer);
 
     /// <summary>
     /// Signals that the GPU has completed rendering the frame
     /// Call this in your command buffer completion handler
     /// </summary>
-    public void FrameCompleted()
-    {
-        _context.FrameCompleted();
-    }
+    public void FrameCompleted() => _context.FrameCompleted();
 
     #endregion
 
@@ -82,10 +76,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="imageFlags">Image flags</param>
     /// <param name="data">RGBA pixel data</param>
     /// <returns>Image handle, or 0 on failure</returns>
-    public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
-    {
-        return _context.CreateTexture((int)NVGtexture.NVG_TEXTURE_RGBA, width, height, (int)imageFlags, data);
-    }
+    public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.RGBA, width, height, (int)imageFlags, data);
 
     /// <summary>
     /// Creates an image from alpha data
@@ -95,10 +86,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="imageFlags">Image flags</param>
     /// <param name="data">Alpha pixel data</param>
     /// <returns>Image handle, or 0 on failure</returns>
-    public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
-    {
-        return _context.CreateTexture((int)NVGtexture.NVG_TEXTURE_ALPHA, width, height, (int)imageFlags, data);
-    }
+    public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.Alpha, width, height, (int)imageFlags, data);
 
     /// <summary>
     /// Updates image data
@@ -116,18 +104,12 @@ public sealed class NanoVGMetal : NanoVG
     /// <summary>
     /// Gets image size
     /// </summary>
-    public override bool ImageSize(int image, out int width, out int height)
-    {
-        return _context.GetTextureSize(image, out width, out height);
-    }
+    public override bool ImageSize(int image, out int width, out int height) => _context.GetTextureSize(image, out width, out height);
 
     /// <summary>
     /// Deletes an image
     /// </summary>
-    public override void DeleteImage(int image)
-    {
-        _context.DeleteTexture(image);
-    }
+    public override void DeleteImage(int image) => _context.DeleteTexture(image);
 
     public override int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags)
         => throw new NotSupportedException("Metal backend does not support creating images from external texture handles.");
@@ -197,10 +179,7 @@ public sealed class NanoVGMetal : NanoVG
 
     #endregion
 
-    protected override void DisposeBackend()
-    {
-        _context.Dispose();
-    }
+    protected override void DisposeBackend() => _context.Dispose();
 
     private static MNVGcontext CreateRenderer(IntPtr device, NVGcreateFlags flags, out MNVGcontext context)
     {
@@ -220,8 +199,5 @@ public static partial class MetalDevice
     /// <summary>
     /// Creates the system default Metal device
     /// </summary>
-    public static IntPtr CreateSystemDefaultDevice()
-    {
-        return MTLCreateSystemDefaultDevice();
-    }
+    public static IntPtr CreateSystemDefaultDevice() => MTLCreateSystemDefaultDevice();
 }

@@ -1,4 +1,3 @@
-using System;
 using System.Runtime.InteropServices;
 
 using Aprillz.MewVG;
@@ -13,7 +12,7 @@ internal static unsafe class Program
     [STAThread]
     private static void Main()
     {
-        GlfwNative.ErrorCallback? errorCallback = OnGlfwError;
+        GlfwNative.ErrorCallback errorCallback = OnGlfwError;
         try
         {
             GlfwNative.SetErrorCallback(errorCallback);

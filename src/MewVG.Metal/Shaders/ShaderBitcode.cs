@@ -18,22 +18,19 @@ internal static partial class ShaderBitcode
     // Contains: vertexShader, fragmentShader, fragmentShaderAA
     private static readonly byte[] MacOSBitcode = LoadBitcodeFromResource();
 
-    private static byte[] LoadBitcodeFromResource()
-    {
+    private static byte[] LoadBitcodeFromResource() =>
         // The bitcode is embedded as a resource or generated at build time
         // For now, we'll include it inline
-        return GetMacOSBitcode();
-    }
+        GetMacOSBitcode();
 
     /// <summary>
     /// Returns the pre-compiled Metal shader bitcode
     /// This is generated from the macos.h file in the original Aprillz.MewVG project
     /// </summary>
-    private static byte[] GetMacOSBitcode()
-    {
+    private static byte[] GetMacOSBitcode() =>
         // Note: This is the full bitcode array from mnvg_bitcode/macos.h
         // Total size: 12835 bytes
-        return [
+        [
   0x4d, 0x54, 0x4c, 0x42, 0x01, 0x80, 0x02, 0x00, 0x03, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x23, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x58, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x62, 0x01, 0x00, 0x00,
@@ -1105,5 +1102,4 @@ internal static partial class ShaderBitcode
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
   0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
         ];
-    }
 }

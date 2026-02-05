@@ -52,15 +52,9 @@ public sealed class DispatchSemaphore : IDisposable
 
     public nint Handle => _handle;
 
-    public bool Wait(ulong timeout = Dispatch.TimeForever)
-    {
-        return Dispatch.SemaphoreWait(_handle, timeout) == 0;
-    }
+    public bool Wait(ulong timeout = Dispatch.TimeForever) => Dispatch.SemaphoreWait(_handle, timeout) == 0;
 
-    public void Signal()
-    {
-        Dispatch.SemaphoreSignal(_handle);
-    }
+    public void Signal() => Dispatch.SemaphoreSignal(_handle);
 
     public void Dispose()
     {

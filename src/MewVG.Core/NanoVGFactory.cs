@@ -2,7 +2,7 @@ namespace Aprillz.MewVG;
 
 public sealed class NanoVGBackendOptions
 {
-    public NVGcreateFlags Flags { get; set; } = NVGcreateFlags.NVG_ANTIALIAS | NVGcreateFlags.NVG_STENCIL_STROKES;
+    public NVGcreateFlags Flags { get; set; } = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes;
 
     public string? PreferredBackend { get; set; }
 

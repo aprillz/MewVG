@@ -537,14 +537,11 @@ public struct MTLRegion
     public MTLOrigin Origin;
     public MTLSize Size;
 
-    public static MTLRegion Make2D(nuint x, nuint y, nuint width, nuint height)
+    public static MTLRegion Make2D(nuint x, nuint y, nuint width, nuint height) => new MTLRegion
     {
-        return new MTLRegion
-        {
-            Origin = new MTLOrigin { X = x, Y = y, Z = 0 },
-            Size = new MTLSize { Width = width, Height = height, Depth = 1 }
-        };
-    }
+        Origin = new MTLOrigin { X = x, Y = y, Z = 0 },
+        Size = new MTLSize { Width = width, Height = height, Depth = 1 }
+    };
 }
 
 /// <summary>
@@ -557,10 +554,7 @@ public struct MTLOrigin
     public nuint Y;
     public nuint Z;
 
-    public static MTLOrigin Make(nuint x, nuint y, nuint z)
-    {
-        return new MTLOrigin { X = x, Y = y, Z = z };
-    }
+    public static MTLOrigin Make(nuint x, nuint y, nuint z) => new MTLOrigin { X = x, Y = y, Z = z };
 }
 
 /// <summary>
@@ -573,8 +567,5 @@ public struct MTLSize
     public nuint Height;
     public nuint Depth;
 
-    public static MTLSize Make(nuint width, nuint height, nuint depth)
-    {
-        return new MTLSize { Width = width, Height = height, Depth = depth };
-    }
+    public static MTLSize Make(nuint width, nuint height, nuint depth) => new MTLSize { Width = width, Height = height, Depth = depth };
 }

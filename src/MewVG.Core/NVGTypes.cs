@@ -23,17 +23,11 @@ public enum NVGcreateFlags
     /// </summary>
     Antialias = 1 << 0,
 
-    // Legacy alias
-    NVG_ANTIALIAS = Antialias,
-
     /// <summary>
     /// Flag indicating if strokes should be drawn using stencil buffer.
     /// The rendering will be a little slower, but path overlaps (i.e. self-intersecting or sharp turns) will be drawn just once.
     /// </summary>
     StencilStrokes = 1 << 1,
-
-    // Legacy alias
-    NVG_STENCIL_STROKES = StencilStrokes,
 
     /// <summary>
     /// Flag indicating that additional debug checks are done.
@@ -67,56 +61,35 @@ public enum NVGimageFlags
     /// </summary>
     GenerateMipmaps = 1 << 0,
 
-    // Legacy alias
-    NVG_IMAGE_GENERATE_MIPMAPS = GenerateMipmaps,
-
     /// <summary>
     /// Repeat image in X direction.
     /// </summary>
     RepeatX = 1 << 1,
-
-    // Legacy alias
-    NVG_IMAGE_REPEATX = RepeatX,
 
     /// <summary>
     /// Repeat image in Y direction.
     /// </summary>
     RepeatY = 1 << 2,
 
-    // Legacy alias
-    NVG_IMAGE_REPEATY = RepeatY,
-
     /// <summary>
     /// Flip the image vertically.
     /// </summary>
     FlipY = 1 << 3,
-
-    // Legacy alias
-    NVG_IMAGE_FLIPY = FlipY,
 
     /// <summary>
     /// Image data has premultiplied alpha.
     /// </summary>
     Premultiplied = 1 << 4,
 
-    // Legacy alias
-    NVG_IMAGE_PREMULTIPLIED = Premultiplied,
-
     /// <summary>
     /// Use nearest filtering instead of linear.
     /// </summary>
     Nearest = 1 << 5,
 
-    // Legacy alias
-    NVG_IMAGE_NEAREST = Nearest,
-
     /// <summary>
     /// Do not delete Metal texture handle.
     /// </summary>
     NoDelete = 1 << 16,
-
-    // Legacy alias
-    NVG_IMAGE_NODELETE = NoDelete,
 }
 
 /// <summary>
@@ -140,8 +113,8 @@ public enum NVGtextureType
 /// </summary>
 public enum NVGtexture
 {
-    NVG_TEXTURE_ALPHA = 0,
-    NVG_TEXTURE_RGBA = 1,
+    Alpha = 0,
+    RGBA = 1,
 }
 
 /// <summary>
@@ -315,30 +288,15 @@ public struct NVGcolor
         A = a;
     }
 
-    public static NVGcolor RGB(byte r, byte g, byte b)
-    {
-        return RGBA(r, g, b, 255);
-    }
+    public static NVGcolor RGB(byte r, byte g, byte b) => RGBA(r, g, b, 255);
 
-    public static NVGcolor RGBf(float r, float g, float b)
-    {
-        return RGBAf(r, g, b, 1.0f);
-    }
+    public static NVGcolor RGBf(float r, float g, float b) => RGBAf(r, g, b, 1.0f);
 
-    public static NVGcolor RGBA(byte r, byte g, byte b, byte a)
-    {
-        return new NVGcolor(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
-    }
+    public static NVGcolor RGBA(byte r, byte g, byte b, byte a) => new NVGcolor(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
 
-    public static NVGcolor RGBAf(float r, float g, float b, float a)
-    {
-        return new NVGcolor(r, g, b, a);
-    }
+    public static NVGcolor RGBAf(float r, float g, float b, float a) => new NVGcolor(r, g, b, a);
 
-    public static NVGcolor HSL(float h, float s, float l)
-    {
-        return HSLA(h, s, l, 255);
-    }
+    public static NVGcolor HSL(float h, float s, float l) => HSLA(h, s, l, 255);
 
     public static NVGcolor HSLA(float h, float s, float l, byte a)
     {
@@ -409,22 +367,13 @@ public struct NVGcolor
             c0.A * oneminu + c1.A * t);
     }
 
-    public NVGcolor WithAlpha(byte a)
-    {
-        return new NVGcolor(R, G, B, a / 255.0f);
-    }
+    public NVGcolor WithAlpha(byte a) => new NVGcolor(R, G, B, a / 255.0f);
 
-    public NVGcolor WithAlphaf(float a)
-    {
-        return new NVGcolor(R, G, B, a);
-    }
+    public NVGcolor WithAlphaf(float a) => new NVGcolor(R, G, B, a);
 
     public Vector4 ToVector4() => new Vector4(R, G, B, A);
 
-    public Vector4 ToPremultiplied()
-    {
-        return new Vector4(R * A, G * A, B * A, A);
-    }
+    public Vector4 ToPremultiplied() => new Vector4(R * A, G * A, B * A, A);
 
     public static readonly NVGcolor White = new(1.0f, 1.0f, 1.0f, 1.0f);
     public static readonly NVGcolor Black = new(0.0f, 0.0f, 0.0f, 1.0f);
@@ -436,56 +385,13 @@ public struct NVGcolor
 /// </summary>
 public struct NVGpaint
 {
-    public float[] Xform; // [6] - 2x3 transform matrix
-    public float[] Extent; // [2] - extent
+    public Buffer6<float> Xform; // [6] - 2x3 transform matrix
+    public Buffer2<float> Extent; // [2] - extent
     public float Radius;
     public float Feather;
     public NVGcolor InnerColor;
     public NVGcolor OuterColor;
     public int Image;
-
-    // For backward compatibility with fixed array access
-    public float[] xform
-    {
-        get => Xform ??= new float[6];
-        set => Xform = value;
-    }
-
-    public float[] extent
-    {
-        get => Extent ??= new float[2];
-        set => Extent = value;
-    }
-
-    public int image
-    {
-        get => Image;
-        set => Image = value;
-    }
-
-    public NVGcolor innerColor
-    {
-        get => InnerColor;
-        set => InnerColor = value;
-    }
-
-    public NVGcolor outerColor
-    {
-        get => OuterColor;
-        set => OuterColor = value;
-    }
-
-    public float radius
-    {
-        get => Radius;
-        set => Radius = value;
-    }
-
-    public float feather
-    {
-        get => Feather;
-        set => Feather = value;
-    }
 }
 
 /// <summary>
@@ -596,8 +502,8 @@ public unsafe struct NVGpath
 /// Scissor structure used internally.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct NVGscissor
+public struct NVGscissor
 {
-    public fixed float Transform[6];
-    public fixed float Extent[2];
+    public Buffer6<float> Transform;
+    public Buffer2<float> Extent;
 }

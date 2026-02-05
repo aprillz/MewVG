@@ -1,4 +1,3 @@
-using System;
 using System.Runtime.InteropServices;
 
 using Aprillz.MewVG;
@@ -196,10 +195,7 @@ internal static unsafe partial class Program
     }
 
 
-    private static void DrawScene(NanoVG vg, int width, int height)
-    {
-        DrawDemo(vg, width, height);
-    }
+    private static void DrawScene(NanoVG vg, int width, int height) => DrawDemo(vg, width, height);
 
     private static void DrawDemo(NanoVG vg, float width, float height)
     {
@@ -1037,10 +1033,7 @@ internal static unsafe partial class Program
         return passDesc;
     }
 
-    private static void SetClearColor(nint attachment, MTLClearColor color)
-    {
-        objc_msgSend(attachment, Sel.SetClearColor, color);
-    }
+    private static void SetClearColor(nint attachment, MTLClearColor color) => objc_msgSend(attachment, Sel.SetClearColor, color);
 
     [LibraryImport("/usr/lib/libobjc.A.dylib", EntryPoint = "objc_msgSend")]
     private static partial void objc_msgSend(nint receiver, nint selector, MTLClearColor color);

@@ -4,10 +4,7 @@ public sealed class NanoVGMetalBackend : INanoVGBackend
 {
     public string Name => "Metal";
 
-    public bool IsSupported(NanoVGBackendOptions options)
-    {
-        return options.MetalDevice != IntPtr.Zero;
-    }
+    public bool IsSupported(NanoVGBackendOptions options) => options.MetalDevice != IntPtr.Zero;
 
     public NanoVG Create(NanoVGBackendOptions options)
     {

@@ -47,6 +47,8 @@ public static class MetalSelectors
 
     // Depth/stencil
     public static readonly nint setStencilCompareFunction = Metal.Sel.SetStencilCompareFunction;
+    public static readonly nint setStencilFailureOperation = Metal.Sel.SetStencilFailureOperation;
+    public static readonly nint setDepthFailureOperation = Metal.Sel.SetDepthFailureOperation;
     public static readonly nint setDepthStencilPassOperation = Metal.Sel.SetDepthStencilPassOperation;
     public static readonly nint setFrontFaceStencil = Metal.Sel.SetFrontFaceStencil;
     public static readonly nint setBackFaceStencil = Metal.Sel.SetBackFaceStencil;

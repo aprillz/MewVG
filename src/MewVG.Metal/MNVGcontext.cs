@@ -59,13 +59,13 @@ public enum MNVGcallType
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MNVGfragUniforms
 {
-    public fixed float scissorMat[12];     // 48 bytes - float3x4 (3 columns of float4)
-    public fixed float paintMat[12];       // 48 bytes - float3x4
+    public Buffer12<float> scissorMat;     // 48 bytes - float3x4 (3 columns of float4)
+    public Buffer12<float> paintMat;       // 48 bytes - float3x4
     public NVGcolor innerCol;              // 16 bytes
     public NVGcolor outerCol;              // 16 bytes
-    public fixed float scissorExt[2];      // 8 bytes
-    public fixed float scissorScale[2];    // 8 bytes
-    public fixed float extent[2];          // 8 bytes
+    public Buffer2<float> scissorExt;      // 8 bytes
+    public Buffer2<float> scissorScale;    // 8 bytes
+    public Buffer2<float> extent;          // 8 bytes
     public float radius;                   // 4 bytes
     public float feather;                  // 4 bytes
     public float strokeMult;               // 4 bytes
@@ -158,6 +158,11 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _stencilOnlyPipelineState;
     private IntPtr _pseudoSampler;           // id<MTLSamplerState>
     private IntPtr _pseudoTexture;           // id<MTLTexture>
+    private MTLPixelFormat _pipelinePixelFormat;
+    private MTLBlendFactor _blendSrcRgb;
+    private MTLBlendFactor _blendDstRgb;
+    private MTLBlendFactor _blendSrcAlpha;
+    private MTLBlendFactor _blendDstAlpha;
 
     // Depth stencil states
     private IntPtr _defaultStencilState;
@@ -388,68 +393,143 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void CreatePipelineStates()
     {
-        // Create render pipeline descriptor
+        var defaultBlend = new NVGcompositeOperationState
+        {
+            SrcRGB = (int)NVGblendFactor.One,
+            DstRGB = (int)NVGblendFactor.OneMinusSrcAlpha,
+            SrcAlpha = (int)NVGblendFactor.One,
+            DstAlpha = (int)NVGblendFactor.OneMinusSrcAlpha
+        };
+        UpdatePipelineStatesForBlend(defaultBlend);
+    }
+
+    private void UpdatePipelineStatesForBlend(NVGcompositeOperationState blend)
+    {
+        var ok = true;
+        var srcRgb = ConvertBlendFactor(blend.SrcRGB, ref ok);
+        var dstRgb = ConvertBlendFactor(blend.DstRGB, ref ok);
+        var srcAlpha = ConvertBlendFactor(blend.SrcAlpha, ref ok);
+        var dstAlpha = ConvertBlendFactor(blend.DstAlpha, ref ok);
+
+        if (!ok)
+        {
+            srcRgb = MTLBlendFactor.One;
+            dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
+            srcAlpha = MTLBlendFactor.One;
+            dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
+        }
+
+        if (_pipelineState != IntPtr.Zero &&
+            _stencilOnlyPipelineState != IntPtr.Zero &&
+            _pipelinePixelFormat == _pixelFormat &&
+            _blendSrcRgb == srcRgb &&
+            _blendDstRgb == dstRgb &&
+            _blendSrcAlpha == srcAlpha &&
+            _blendDstAlpha == dstAlpha)
+        {
+            return;
+        }
+
+        var newPipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: false);
+        if (newPipeline == IntPtr.Zero)
+        {
+            throw new InvalidOperationException("Failed to create render pipeline state");
+        }
+
+        var newStencilPipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: true);
+        if (newStencilPipeline == IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(newPipeline, ObjCRuntime.Selectors.release);
+            throw new InvalidOperationException("Failed to create stencil-only pipeline state");
+        }
+
+        if (_pipelineState != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_pipelineState, ObjCRuntime.Selectors.release);
+        }
+
+        if (_stencilOnlyPipelineState != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_stencilOnlyPipelineState, ObjCRuntime.Selectors.release);
+        }
+
+        _pipelineState = newPipeline;
+        _stencilOnlyPipelineState = newStencilPipeline;
+        _pipelinePixelFormat = _pixelFormat;
+        _blendSrcRgb = srcRgb;
+        _blendDstRgb = dstRgb;
+        _blendSrcAlpha = srcAlpha;
+        _blendDstAlpha = dstAlpha;
+    }
+
+    private IntPtr CreatePipelineState(
+        MTLBlendFactor srcRgb,
+        MTLBlendFactor dstRgb,
+        MTLBlendFactor srcAlpha,
+        MTLBlendFactor dstAlpha,
+        bool stencilOnly)
+    {
         var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
         var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
+        if (pipelineDescriptor == IntPtr.Zero)
+        {
+            return IntPtr.Zero;
+        }
 
-        // Set vertex function
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
-
-        // Set fragment function (use AA version if anti-aliasing is enabled)
-        var fragmentFunc = (_flags & NVGcreateFlags.NVG_ANTIALIAS) != 0 ? _fragmentAAFunction : _fragmentFunction;
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, fragmentFunc);
-
-        // Configure vertex descriptor
         var vertexDescriptor = CreateVertexDescriptor();
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
+        var fragmentFunc = (_flags & NVGcreateFlags.Antialias) != 0 ? _fragmentAAFunction : _fragmentFunction;
 
-        // Configure color attachment
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, stencilOnly ? IntPtr.Zero : fragmentFunc);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
+
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
         var colorAttachment0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
 
         ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setPixelFormat, (ulong)_pixelFormat);
         ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setBlendingEnabled, true);
-        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setSourceRGBBlendFactor, (ulong)MTLBlendFactor.SourceAlpha);
-        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setSourceAlphaBlendFactor, (ulong)MTLBlendFactor.One);
-        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setDestinationRGBBlendFactor, (ulong)MTLBlendFactor.OneMinusSourceAlpha);
-        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)MTLBlendFactor.OneMinusSourceAlpha);
+        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setSourceRGBBlendFactor, (ulong)srcRgb);
+        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setSourceAlphaBlendFactor, (ulong)srcAlpha);
+        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setDestinationRGBBlendFactor, (ulong)dstRgb);
+        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)dstAlpha);
+        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setWriteMask,
+            (ulong)(stencilOnly ? MTLColorWriteMask.None : MTLColorWriteMask.All));
 
-        // Set stencil format
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
-
-        // Create pipeline state
         var error = IntPtr.Zero;
-        _pipelineState = ObjCRuntime.SendMessage(
+        var pipeline = ObjCRuntime.SendMessage(
             _device,
             MetalSelectors.newRenderPipelineStateWithDescriptor_error,
             pipelineDescriptor,
             (IntPtr)(&error)
         );
 
-        if (_pipelineState == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("Failed to create render pipeline state");
-        }
-
-        // Create stencil-only pipeline state
-        ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.None);
-
-        error = IntPtr.Zero;
-        _stencilOnlyPipelineState = ObjCRuntime.SendMessage(
-            _device,
-            MetalSelectors.newRenderPipelineStateWithDescriptor_error,
-            pipelineDescriptor,
-            (IntPtr)(&error)
-        );
-
-        if (_stencilOnlyPipelineState == IntPtr.Zero)
-        {
-            throw new InvalidOperationException("Failed to create stencil-only pipeline state");
-        }
-
-        // Release descriptor
         ObjCRuntime.SendMessage(pipelineDescriptor, ObjCRuntime.Selectors.release);
         ObjCRuntime.SendMessage(vertexDescriptor, ObjCRuntime.Selectors.release);
+
+        return pipeline;
+    }
+
+    private static MTLBlendFactor ConvertBlendFactor(int factor, ref bool ok) => factor switch
+    {
+        (int)NVGblendFactor.Zero => MTLBlendFactor.Zero,
+        (int)NVGblendFactor.One => MTLBlendFactor.One,
+        (int)NVGblendFactor.SrcColor => MTLBlendFactor.SourceColor,
+        (int)NVGblendFactor.OneMinusSrcColor => MTLBlendFactor.OneMinusSourceColor,
+        (int)NVGblendFactor.DstColor => MTLBlendFactor.DestinationColor,
+        (int)NVGblendFactor.OneMinusDstColor => MTLBlendFactor.OneMinusDestinationColor,
+        (int)NVGblendFactor.SrcAlpha => MTLBlendFactor.SourceAlpha,
+        (int)NVGblendFactor.OneMinusSrcAlpha => MTLBlendFactor.OneMinusSourceAlpha,
+        (int)NVGblendFactor.DstAlpha => MTLBlendFactor.DestinationAlpha,
+        (int)NVGblendFactor.OneMinusDstAlpha => MTLBlendFactor.OneMinusDestinationAlpha,
+        (int)NVGblendFactor.SrcAlphaSaturate => MTLBlendFactor.SourceAlphaSaturated,
+        _ => FailBlendFactor(ref ok)
+    };
+
+    private static MTLBlendFactor FailBlendFactor(ref bool ok)
+    {
+        ok = false;
+        return MTLBlendFactor.One;
     }
 
     private IntPtr CreateVertexDescriptor()
@@ -491,15 +571,21 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Default stencil state (no stencil operations)
         var depthStencilDescriptor = ObjCRuntime.New(depthStencilDescriptorClass);
+        // Match NanoVG reference: always pass depth test (we only use stencil).
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setDepthCompareFunction, (ulong)MTLCompareFunction.Always);
         _defaultStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Fill shape stencil state
         var frontFaceStencil = ObjCRuntime.New(stencilDescriptorClass);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.IncrementWrap);
 
         var backFaceStencil = ObjCRuntime.New(stencilDescriptorClass);
         ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
+        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
+        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
         ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.DecrementWrap);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
@@ -508,50 +594,50 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Fill anti-alias stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
+        // Reference uses Zero here (not Keep) for correct AA fringe coverage.
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, IntPtr.Zero);
         _fillAntiAliasStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Fill stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.NotEqual);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Zero);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Zero);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.NotEqual);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, IntPtr.Zero);
         _fillStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Stroke shape stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.IncrementClamp);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.IncrementClamp);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, IntPtr.Zero);
         _strokeShapeStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Stroke anti-alias stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, IntPtr.Zero);
         _strokeAntiAliasStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Stroke clear stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Zero);
+        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Zero);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
 
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
+        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, IntPtr.Zero);
         _strokeClearStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Release descriptors
@@ -848,8 +934,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void SetBlendState(NVGcompositeOperationState blend)
     {
-        // Blend state is set in the pipeline, so this is a no-op for now
-        // In a full implementation, we'd need separate pipeline states for different blend modes
+        UpdatePipelineStatesForBlend(blend);
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _pipelineState);
     }
 
     private void RenderFill(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -897,7 +983,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (nuint)0
         );
 
-        if ((_flags & NVGcreateFlags.NVG_ANTIALIAS) != 0)
+        if ((_flags & NVGcreateFlags.Antialias) != 0)
         {
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -958,7 +1044,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 );
             }
 
-            if ((_flags & NVGcreateFlags.NVG_ANTIALIAS) != 0 && path.strokeCount > 0)
+            if ((_flags & NVGcreateFlags.Antialias) != 0 && path.strokeCount > 0)
             {
                 ObjCRuntime.SendMessage(
                     _renderEncoder,
@@ -973,7 +1059,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void RenderStroke(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        if ((_flags & NVGcreateFlags.NVG_STENCIL_STROKES) != 0)
+        if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
         {
             // Stencil stroke
             ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
@@ -1169,7 +1255,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         tex.flags = imageFlags;
 
         // Determine pixel format
-        var pixelFormat = type == (int)global::Aprillz.MewVG.NVGtexture.NVG_TEXTURE_ALPHA
+        var pixelFormat = type == (int)global::Aprillz.MewVG.NVGtexture.Alpha
             ? MTLPixelFormat.R8Unorm
             : MTLPixelFormat.RGBA8Unorm;
 
@@ -1191,7 +1277,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Upload data if provided
         if (!data.IsEmpty)
         {
-            var bytesPerPixel = type == (int)global::Aprillz.MewVG.NVGtexture.NVG_TEXTURE_ALPHA ? 1 : 4;
+            var bytesPerPixel = type == (int)global::Aprillz.MewVG.NVGtexture.Alpha ? 1 : 4;
             var bytesPerRow = width * bytesPerPixel;
 
             fixed (byte* ptr = data)
@@ -1296,7 +1382,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return false;
         }
 
-        var bytesPerPixel = tex.type == (int)global::Aprillz.MewVG.NVGtexture.NVG_TEXTURE_ALPHA ? 1 : 4;
+        var bytesPerPixel = tex.type == (int)global::Aprillz.MewVG.NVGtexture.Alpha ? 1 : 4;
         var bytesPerRow = tex.width * bytesPerPixel;
         var srcOffset = y * bytesPerRow + x * bytesPerPixel;
 
@@ -1361,10 +1447,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <summary>
     /// Signals that the frame has completed
     /// </summary>
-    public void FrameCompleted()
-    {
-        _semaphore.Signal();
-    }
+    public void FrameCompleted() => _semaphore.Signal();
 
     /// <summary>
     /// Sets viewport for rendering
@@ -1397,10 +1480,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <summary>
     /// Flushes the current frame and submits rendering commands
     /// </summary>
-    public void Flush()
-    {
-        EndFrame();
-    }
+    public void Flush() => EndFrame();
 
     /// <summary>
     /// Render fill paths from NVGContext
@@ -1650,8 +1730,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // Paint
-        frag->extent[0] = paint.Extent?[0] ?? 0;
-        frag->extent[1] = paint.Extent?[1] ?? 0;
+        frag->extent = paint.Extent;
         frag->strokeMult = (width * 0.5f + fringe * 0.5f) / fringe;
         frag->strokeThr = strokeThr;
 
@@ -1678,7 +1757,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
 
                 frag->type = (int)MNVGshaderType.MNVG_SHADER_FILLIMG;
-                frag->texType = tex.type == (int)NVGtextureType.RGBA ? 0 : 1;
+                if (tex.type == (int)NVGtextureType.RGBA)
+                {
+                    frag->texType = (tex.flags & (int)NVGimageFlags.Premultiplied) != 0 ? 0 : 1;
+                }
+                else
+                {
+                    frag->texType = 2;
+                }
             }
             else
             {
@@ -1686,14 +1772,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 frag->texType = 0;
                 frag->radius = paint.Radius;
                 frag->feather = paint.Feather;
-                if (paint.Xform != null)
-                {
-                    NVGMath.TransformInverse(invxform, paint.Xform);
-                }
-                else
-                {
-                    NVGMath.TransformIdentity(invxform);
-                }
+                NVGMath.TransformInverse(invxform, paint.Xform);
             }
         }
         else
@@ -1702,14 +1781,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             frag->texType = 0;
             frag->radius = paint.Radius;
             frag->feather = paint.Feather;
-            if (paint.Xform != null)
-            {
-                NVGMath.TransformInverse(invxform, paint.Xform);
-            }
-            else
-            {
-                NVGMath.TransformIdentity(invxform);
-            }
+            NVGMath.TransformInverse(invxform, paint.Xform);
         }
 
         frag->paintMat[0] = invxform[0];
@@ -1725,9 +1797,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         frag->paintMat[10] = 0;
         frag->paintMat[11] = 0;
 
-        frag->innerCol = paint.InnerColor;
-        frag->outerCol = paint.OuterColor;
+        frag->innerCol = PremultiplyColor(paint.InnerColor);
+        frag->outerCol = PremultiplyColor(paint.OuterColor);
     }
+
+    private static NVGcolor PremultiplyColor(NVGcolor color)
+        => new NVGcolor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
 
     private int AllocUniforms(int count)
     {

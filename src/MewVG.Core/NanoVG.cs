@@ -14,20 +14,11 @@ public abstract class NanoVG : IDisposable
 
     #region Frame Management
 
-    public void BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio = 1.0f)
-    {
-        _nvg.BeginFrame(windowWidth, windowHeight, devicePixelRatio);
-    }
+    public void BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio = 1.0f) => _nvg.BeginFrame(windowWidth, windowHeight, devicePixelRatio);
 
-    public void EndFrame()
-    {
-        _nvg.EndFrame();
-    }
+    public void EndFrame() => _nvg.EndFrame();
 
-    public void CancelFrame()
-    {
-        _nvg.CancelFrame();
-    }
+    public void CancelFrame() => _nvg.CancelFrame();
 
     #endregion
 

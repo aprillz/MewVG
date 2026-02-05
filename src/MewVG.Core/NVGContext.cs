@@ -72,18 +72,26 @@ internal unsafe struct NVGstate
     public int FontId;
 }
 
-[System.Runtime.CompilerServices.InlineArray(2)]
+[InlineArray(12)]
+public struct Buffer12<T>
+{
+    private T _element0;
+}
+
+[InlineArray(2)]
 public struct Buffer2<T>
 {
     private T _element0;
 }
+
 /// <summary>
 
-[System.Runtime.CompilerServices.InlineArray(6)]
+[InlineArray(6)]
 public struct Buffer6<T>
 {
     private T _element0;
 }
+
 /// <summary>
 /// Internal scissor state
 /// </summary>
@@ -303,9 +311,7 @@ internal sealed class NVGContext
     private static void SetPaintColor(ref NVGpaint p, NVGcolor color)
     {
         p = default;
-        p.Xform = new float[6];
         TransformIdentity(p.Xform);
-        p.Extent = new float[2];
         p.Radius = 0.0f;
         p.Feather = 1.0f;
         p.InnerColor = color;
@@ -315,8 +321,8 @@ internal sealed class NVGContext
     private static void ClonePaint(ref NVGpaint dst, in NVGpaint src)
     {
         dst = src;
-        dst.Xform = src.Xform != null ? (float[])src.Xform.Clone() : new float[6];
-        dst.Extent = src.Extent != null ? (float[])src.Extent.Clone() : new float[2];
+        dst.Xform = src.Xform;
+        dst.Extent = src.Extent;
     }
 
     private static NVGcompositeOperationState CompositeOperationState(NVGcompositeOperation op)
@@ -441,10 +447,7 @@ internal sealed class NVGContext
         state.CompositeOperation = CompositeOperationState(op);
     }
 
-    public void GlobalCompositeBlendFunc(int sfactor, int dfactor)
-    {
-        GlobalCompositeBlendFuncSeparate(sfactor, dfactor, sfactor, dfactor);
-    }
+    public void GlobalCompositeBlendFunc(int sfactor, int dfactor) => GlobalCompositeBlendFuncSeparate(sfactor, dfactor, sfactor, dfactor);
 
     public void GlobalCompositeBlendFuncSeparate(int srcRGB, int dstRGB, int srcAlpha, int dstAlpha)
     {
@@ -535,10 +538,7 @@ internal sealed class NVGContext
     {
         ref var state = ref GetState();
         state.Stroke = paint;
-        if (state.Stroke.Xform != null)
-        {
-            TransformMultiply(state.Stroke.Xform, state.Xform);
-        }
+        TransformMultiply(state.Stroke.Xform, state.Xform);
     }
 
     public void FillColor(NVGcolor color)
@@ -551,10 +551,7 @@ internal sealed class NVGContext
     {
         ref var state = ref GetState();
         state.Fill = paint;
-        if (state.Fill.Xform != null)
-        {
-            TransformMultiply(state.Fill.Xform, state.Xform);
-        }
+        TransformMultiply(state.Fill.Xform, state.Xform);
     }
 
     #endregion
@@ -651,15 +648,9 @@ internal sealed class NVGContext
         TextTriCount = 0;
     }
 
-    public void CancelFrame()
-    {
-        _renderer.Cancel();
-    }
+    public void CancelFrame() => _renderer.Cancel();
 
-    public void EndFrame()
-    {
-        _renderer.Flush();
-    }
+    public void EndFrame() => _renderer.Flush();
 
     #endregion
 
@@ -931,10 +922,7 @@ internal sealed class NVGContext
         AppendCommands(vals);
     }
 
-    public void RoundedRect(float x, float y, float w, float h, float r)
-    {
-        RoundedRectVarying(x, y, w, h, r, r, r, r);
-    }
+    public void RoundedRect(float x, float y, float w, float h, float r) => RoundedRectVarying(x, y, w, h, r, r, r, r);
 
     public void RoundedRectVarying(float x, float y, float w, float h,
         float radTopLeft, float radTopRight, float radBottomRight, float radBottomLeft)
@@ -986,10 +974,7 @@ internal sealed class NVGContext
         AppendCommands(vals);
     }
 
-    public void Circle(float cx, float cy, float r)
-    {
-        Ellipse(cx, cy, r, r);
-    }
+    public void Circle(float cx, float cy, float r) => Ellipse(cx, cy, r, r);
 
     #endregion
 
@@ -1972,8 +1957,6 @@ internal sealed class NVGContext
         const float large = 1e5f;
 
         NVGpaint p = default;
-        p.Xform = new float[6];
-        p.Extent = new float[2];
 
         var dx = ex - sx;
         var dy = ey - sy;
@@ -2007,8 +1990,6 @@ internal sealed class NVGContext
     public NVGpaint RadialGradient(float cx, float cy, float inr, float outr, NVGcolor icol, NVGcolor ocol)
     {
         NVGpaint p = default;
-        p.Xform = new float[6];
-        p.Extent = new float[2];
 
         var r = (inr + outr) * 0.5f;
         var f = outr - inr;
@@ -2031,8 +2012,6 @@ internal sealed class NVGContext
     public NVGpaint BoxGradient(float x, float y, float w, float h, float r, float f, NVGcolor icol, NVGcolor ocol)
     {
         NVGpaint p = default;
-        p.Xform = new float[6];
-        p.Extent = new float[2];
 
         TransformIdentity(p.Xform);
         p.Xform[4] = x + w * 0.5f;
@@ -2052,8 +2031,6 @@ internal sealed class NVGContext
     public NVGpaint ImagePattern(float cx, float cy, float w, float h, float angle, int image, float alpha)
     {
         NVGpaint p = default;
-        p.Xform = new float[6];
-        p.Extent = new float[2];
 
         TransformRotate(p.Xform, angle);
         p.Xform[4] = cx;

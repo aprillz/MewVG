@@ -754,10 +754,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         BindTexture(tex.Tex);
     }
 
-    private static void SetUniformValue(float[] data, int vecIndex, int component, float value)
-    {
-        data[vecIndex * 4 + component] = value;
-    }
+    private static void SetUniformValue(float[] data, int vecIndex, int component, float value) => data[vecIndex * 4 + component] = value;
 
     private static void SetUniformVec4(float[] data, int vecIndex, float x, float y, float z, float w)
     {
@@ -775,10 +772,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetUniformVec4(data, vecIndex + 2, t[4], t[5], 1.0f, 0.0f);
     }
 
-    private static NVGcolor Premultiply(NVGcolor color)
-    {
-        return new NVGcolor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
-    }
+    private static NVGcolor Premultiply(NVGcolor color) => new NVGcolor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
 
     private bool ConvertPaint(float[] frag, ref NVGpaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
     {
@@ -808,8 +802,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             SetUniformVec4(frag, 8, scissor.Extent[0], scissor.Extent[1], sx, sy);
         }
 
-        var extentX = paint.Extent != null && paint.Extent.Length > 0 ? paint.Extent[0] : 0f;
-        var extentY = paint.Extent != null && paint.Extent.Length > 1 ? paint.Extent[1] : 0f;
+        var extentX = paint.Extent[0];
+        var extentY = paint.Extent[1];
         SetUniformVec4(frag, 9, extentX, extentY, paint.Radius, paint.Feather);
 
         var strokeMult = (width * 0.5f + fringe * 0.5f) / fringe;
@@ -828,14 +822,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 Span<float> m1 = stackalloc float[6];
                 Span<float> m2 = stackalloc float[6];
                 Span<float> px = stackalloc float[6];
-                if (paint.Xform != null)
-                {
-                    paint.Xform.AsSpan().CopyTo(px);
-                }
-                else
-                {
-                    NVGMath.TransformIdentity(px);
-                }
+                px = paint.Xform;
 
                 NVGMath.TransformTranslate(m1, 0.0f, extentY * 0.5f);
                 NVGMath.TransformMultiply(m1, px);
@@ -847,14 +834,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
             else
             {
-                if (paint.Xform != null)
-                {
-                    NVGMath.TransformInverse(invxform, paint.Xform);
-                }
-                else
-                {
-                    NVGMath.TransformIdentity(invxform);
-                }
+                NVGMath.TransformInverse(invxform, paint.Xform);
             }
 
             SetUniformValue(frag, 10, 3, (float)GLNVGShaderType.FillImg);
@@ -870,14 +850,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         else
         {
             SetUniformValue(frag, 10, 3, (float)GLNVGShaderType.FillGrad);
-            if (paint.Xform != null)
-            {
-                NVGMath.TransformInverse(invxform, paint.Xform);
-            }
-            else
-            {
-                NVGMath.TransformIdentity(invxform);
-            }
+            NVGMath.TransformInverse(invxform, paint.Xform);
         }
 
         SetUniformMat3x4(frag, 3, invxform);
@@ -906,43 +879,37 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         return blend;
     }
 
-    private static BlendingFactorSrc ConvertBlendFuncFactorSrc(int factor, ref bool ok)
+    private static BlendingFactorSrc ConvertBlendFuncFactorSrc(int factor, ref bool ok) => factor switch
     {
-        return factor switch
-        {
-            (int)NVGblendFactor.Zero => BlendingFactorSrc.Zero,
-            (int)NVGblendFactor.One => BlendingFactorSrc.One,
-            (int)NVGblendFactor.SrcColor => BlendingFactorSrc.SrcColor,
-            (int)NVGblendFactor.OneMinusSrcColor => BlendingFactorSrc.OneMinusSrcColor,
-            (int)NVGblendFactor.DstColor => BlendingFactorSrc.DstColor,
-            (int)NVGblendFactor.OneMinusDstColor => BlendingFactorSrc.OneMinusDstColor,
-            (int)NVGblendFactor.SrcAlpha => BlendingFactorSrc.SrcAlpha,
-            (int)NVGblendFactor.OneMinusSrcAlpha => BlendingFactorSrc.OneMinusSrcAlpha,
-            (int)NVGblendFactor.DstAlpha => BlendingFactorSrc.DstAlpha,
-            (int)NVGblendFactor.OneMinusDstAlpha => BlendingFactorSrc.OneMinusDstAlpha,
-            (int)NVGblendFactor.SrcAlphaSaturate => BlendingFactorSrc.SrcAlphaSaturate,
-            _ => FailBlendSrc(ref ok)
-        };
-    }
+        (int)NVGblendFactor.Zero => BlendingFactorSrc.Zero,
+        (int)NVGblendFactor.One => BlendingFactorSrc.One,
+        (int)NVGblendFactor.SrcColor => BlendingFactorSrc.SrcColor,
+        (int)NVGblendFactor.OneMinusSrcColor => BlendingFactorSrc.OneMinusSrcColor,
+        (int)NVGblendFactor.DstColor => BlendingFactorSrc.DstColor,
+        (int)NVGblendFactor.OneMinusDstColor => BlendingFactorSrc.OneMinusDstColor,
+        (int)NVGblendFactor.SrcAlpha => BlendingFactorSrc.SrcAlpha,
+        (int)NVGblendFactor.OneMinusSrcAlpha => BlendingFactorSrc.OneMinusSrcAlpha,
+        (int)NVGblendFactor.DstAlpha => BlendingFactorSrc.DstAlpha,
+        (int)NVGblendFactor.OneMinusDstAlpha => BlendingFactorSrc.OneMinusDstAlpha,
+        (int)NVGblendFactor.SrcAlphaSaturate => BlendingFactorSrc.SrcAlphaSaturate,
+        _ => FailBlendSrc(ref ok)
+    };
 
-    private static BlendingFactorDest ConvertBlendFuncFactorDst(int factor, ref bool ok)
+    private static BlendingFactorDest ConvertBlendFuncFactorDst(int factor, ref bool ok) => factor switch
     {
-        return factor switch
-        {
-            (int)NVGblendFactor.Zero => BlendingFactorDest.Zero,
-            (int)NVGblendFactor.One => BlendingFactorDest.One,
-            (int)NVGblendFactor.SrcColor => BlendingFactorDest.SrcColor,
-            (int)NVGblendFactor.OneMinusSrcColor => BlendingFactorDest.OneMinusSrcColor,
-            (int)NVGblendFactor.DstColor => BlendingFactorDest.DstColor,
-            (int)NVGblendFactor.OneMinusDstColor => BlendingFactorDest.OneMinusDstColor,
-            (int)NVGblendFactor.SrcAlpha => BlendingFactorDest.SrcAlpha,
-            (int)NVGblendFactor.OneMinusSrcAlpha => BlendingFactorDest.OneMinusSrcAlpha,
-            (int)NVGblendFactor.DstAlpha => BlendingFactorDest.DstAlpha,
-            (int)NVGblendFactor.OneMinusDstAlpha => BlendingFactorDest.OneMinusDstAlpha,
-            (int)NVGblendFactor.SrcAlphaSaturate => BlendingFactorDest.SrcAlphaSaturate,
-            _ => FailBlendDst(ref ok)
-        };
-    }
+        (int)NVGblendFactor.Zero => BlendingFactorDest.Zero,
+        (int)NVGblendFactor.One => BlendingFactorDest.One,
+        (int)NVGblendFactor.SrcColor => BlendingFactorDest.SrcColor,
+        (int)NVGblendFactor.OneMinusSrcColor => BlendingFactorDest.OneMinusSrcColor,
+        (int)NVGblendFactor.DstColor => BlendingFactorDest.DstColor,
+        (int)NVGblendFactor.OneMinusDstColor => BlendingFactorDest.OneMinusDstColor,
+        (int)NVGblendFactor.SrcAlpha => BlendingFactorDest.SrcAlpha,
+        (int)NVGblendFactor.OneMinusSrcAlpha => BlendingFactorDest.OneMinusSrcAlpha,
+        (int)NVGblendFactor.DstAlpha => BlendingFactorDest.DstAlpha,
+        (int)NVGblendFactor.OneMinusDstAlpha => BlendingFactorDest.OneMinusDstAlpha,
+        (int)NVGblendFactor.SrcAlphaSaturate => BlendingFactorDest.SrcAlphaSaturate,
+        _ => FailBlendDst(ref ok)
+    };
 
     private static BlendingFactorSrc FailBlendSrc(ref bool ok)
     {
