@@ -1,7 +1,7 @@
 [![한국어](https://img.shields.io/badge/README.md-한국어-green.svg)](ko)
 
 <p align="center">
-  <img src="assets/logo/logo_h-960.png" alt="MewVG" height="120" />
+  <img src="assets/logo/logo_h-960.png" alt="MewVG" />
 </p>
 
 # MewVG
