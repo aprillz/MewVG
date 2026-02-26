@@ -49,7 +49,7 @@ MewVG/
 │   ├── MewVG.GL/         OpenGL 렌더링 백엔드
 │   └── MewVG.Metal/      Metal 렌더링 백엔드
 ├── samples/
-│   ├── MewVG.Demo.Windows/  Windows 데모 (GLFW + OpenGL)
+│   ├── MewVG.Demo.Windows/  Windows 데모 (OpenGL)
 │   ├── MewVG.Demo.Linux/    Linux 데모 (X11 + OpenGL)
 │   └── MewVG.Demo.MacOS/    macOS 데모 (Metal)
 └── build/
