@@ -1308,7 +1308,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private void CreateResources()
     {
-        var header = "#version 150 core\n" +
+        var header = "#version 140\n" +
                         "#define NANOVG_GL3 1\n" +
                         "#define UNIFORMARRAY_SIZE 11\n\n";
 
