@@ -1,5 +1,3 @@
-[![한국어](https://img.shields.io/badge/README.md-한국어-green.svg)](ko)
-
 # MewVG
 
 ![.NET](https://img.shields.io/badge/.NET-8%2B-512BD4?logo=dotnet&logoColor=white)
@@ -12,78 +10,78 @@
 
 ---
 
-**MewVG** is a cross-platform, fully managed .NET vector graphics library based on [NanoVG](https://github.com/memononen/nanovg).
+**MewVG**는 [NanoVG](https://github.com/memononen/nanovg) 기반의 크로스플랫폼, 완전 관리형(fully managed) .NET 벡터 그래픽스 라이브러리입니다.
 
 > [!IMPORTANT]
-> This project is an **early-stage prototype**. APIs may change significantly before v1.0.
+> 이 프로젝트는 **초기 단계 프로토타입**입니다. v1.0 이전까지 API가 크게 변경될 수 있습니다.
 
 ---
 
-## Packages
+## 패키지
 
-| Package | Description |
+| 패키지 | 설명 |
 |---|---|
-| `Aprillz.MewVG.Core` | Platform-agnostic NanoVG context and path API |
-| `Aprillz.MewVG.GL` | OpenGL rendering backend (Windows, Linux) |
-| `Aprillz.MewVG.Metal` | Metal rendering backend (macOS) |
+| `Aprillz.MewVG.Core` | 플랫폼 독립적인 NanoVG 컨텍스트 및 경로 API |
+| `Aprillz.MewVG.GL` | OpenGL 렌더링 백엔드 (Windows, Linux) |
+| `Aprillz.MewVG.Metal` | Metal 렌더링 백엔드 (macOS) |
 
-## Highlights
+## 주요 특징
 
-- **Pure C# / Fully Managed** &mdash; no native dependencies required
-- **Cross-platform** &mdash; OpenGL (Win32, X11) and Metal (macOS) backends
-- **NanoVG-compatible API** &mdash; familiar drawing model for paths, fills, strokes, and text
-- **NativeAOT / Trim friendly** &mdash; targets `net8.0` and `net10.0`
+- **순수 C# / 완전 관리형** &mdash; 네이티브 의존성 없음
+- **크로스플랫폼** &mdash; OpenGL (Win32, X11) 및 Metal (macOS) 백엔드
+- **NanoVG 호환 API** &mdash; 경로, 채우기, 스트로크, 텍스트를 위한 친숙한 드로잉 모델
+- **NativeAOT / Trim 지원** &mdash; `net8.0` 및 `net10.0` 대상
 
-## Getting Started
+## 시작하기
 
 ```bash
 dotnet add package Aprillz.MewVG.Core
-dotnet add package Aprillz.MewVG.GL      # for OpenGL
-# or
-dotnet add package Aprillz.MewVG.Metal    # for macOS Metal
+dotnet add package Aprillz.MewVG.GL      # OpenGL용
+# 또는
+dotnet add package Aprillz.MewVG.Metal    # macOS Metal용
 ```
 
-## Project Structure
+## 프로젝트 구조
 
 ```
 MewVG/
 ├── src/
-│   ├── MewVG.Core/       Core NanoVG context, types, math
-│   ├── MewVG.GL/         OpenGL rendering backend
-│   └── MewVG.Metal/      Metal rendering backend
+│   ├── MewVG.Core/       코어 NanoVG 컨텍스트, 타입, 수학 유틸리티
+│   ├── MewVG.GL/         OpenGL 렌더링 백엔드
+│   └── MewVG.Metal/      Metal 렌더링 백엔드
 ├── samples/
-│   ├── MewVG.GL.Demo/    OpenGL demo app
-│   └── MewVG.Metal.Demo/ Metal demo app
+│   ├── MewVG.GL.Demo/    OpenGL 데모 앱
+│   └── MewVG.Metal.Demo/ Metal 데모 앱
 └── build/
     └── MewVG.Common.props
 ```
 
-## Release
+## 릴리즈
 
-Releases are automated via GitHub Actions. To publish a new version:
+릴리즈는 GitHub Actions를 통해 자동화되어 있습니다. 새 버전을 배포하려면:
 
-1. Update the version in `build/MewVG.Common.props`
-2. Commit and push
-3. Create and push a git tag:
+1. `build/MewVG.Common.props`에서 버전을 업데이트
+2. 커밋 및 푸시
+3. Git 태그 생성 및 푸시:
    ```bash
    git tag v0.2.0
    git push origin v0.2.0
    ```
-4. The workflow automatically:
-   - Packs `MewVG.Core`, `MewVG.GL`, `MewVG.Metal` as NuGet packages
-   - Publishes `.nupkg` (and `.snupkg` symbols) to [nuget.org](https://www.nuget.org/)
-   - Creates a GitHub Release with auto-generated release notes
-   - Tags containing `-` (e.g. `v0.3.0-beta`) are marked as prerelease
+4. 워크플로우가 자동으로:
+   - `MewVG.Core`, `MewVG.GL`, `MewVG.Metal`을 NuGet 패키지로 패킹
+   - `.nupkg` (및 `.snupkg` 심볼)를 [nuget.org](https://www.nuget.org/)에 배포
+   - 자동 생성된 릴리즈 노트와 함께 GitHub Release 생성
+   - `-`를 포함하는 태그(예: `v0.3.0-beta`)는 프리릴리즈로 표시
 
-> **Requires** the `NUGET_API_KEY` secret configured in the repository settings.
+> **필수 조건**: 리포지토리 설정에 `NUGET_API_KEY` 시크릿이 구성되어 있어야 합니다.
 
-## License
+## 라이선스
 
-This project is licensed under the [MIT License](LICENSE).
+이 프로젝트는 [MIT 라이선스](../LICENSE)로 제공됩니다.
 
-### NanoVG
+### 원본 프로젝트
 
-MewVG is based on the following projects:
+MewVG는 다음 프로젝트를 기반으로 합니다:
 
 - **[NanoVG](https://github.com/memononen/nanovg)** by Mikko Mononen &mdash; **zlib License**
 
