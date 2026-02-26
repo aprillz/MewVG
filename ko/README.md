@@ -12,11 +12,6 @@
 
 **MewVG**는 [NanoVG](https://github.com/memononen/nanovg) 기반의 크로스플랫폼, 완전 관리형(fully managed) .NET 벡터 그래픽스 라이브러리입니다.
 
-> [!IMPORTANT]
-> 이 프로젝트는 **초기 단계 프로토타입**입니다. v1.0 이전까지 API가 크게 변경될 수 있습니다.
-
----
-
 ## 패키지
 
 | 패키지 | 설명 |
@@ -55,25 +50,6 @@ MewVG/
 └── build/
     └── MewVG.Common.props
 ```
-
-## 릴리즈
-
-릴리즈는 GitHub Actions를 통해 자동화되어 있습니다. 새 버전을 배포하려면:
-
-1. `build/MewVG.Common.props`에서 버전을 업데이트
-2. 커밋 및 푸시
-3. Git 태그 생성 및 푸시:
-   ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
-   ```
-4. 워크플로우가 자동으로:
-   - `MewVG.Core`, `MewVG.GL`, `MewVG.Metal`을 NuGet 패키지로 패킹
-   - `.nupkg` (및 `.snupkg` 심볼)를 [nuget.org](https://www.nuget.org/)에 배포
-   - 자동 생성된 릴리즈 노트와 함께 GitHub Release 생성
-   - `-`를 포함하는 태그(예: `v0.3.0-beta`)는 프리릴리즈로 표시
-
-> **필수 조건**: 리포지토리 설정에 `NUGET_API_KEY` 시크릿이 구성되어 있어야 합니다.
 
 ## 라이선스
 

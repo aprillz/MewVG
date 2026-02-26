@@ -14,11 +14,6 @@
 
 **MewVG** is a cross-platform, fully managed .NET vector graphics library based on [NanoVG](https://github.com/memononen/nanovg).
 
-> [!IMPORTANT]
-> This project is an **early-stage prototype**. APIs may change significantly before v1.0.
-
----
-
 ## Packages
 
 | Package | Description |
@@ -57,25 +52,6 @@ MewVG/
 └── build/
     └── MewVG.Common.props
 ```
-
-## Release
-
-Releases are automated via GitHub Actions. To publish a new version:
-
-1. Update the version in `build/MewVG.Common.props`
-2. Commit and push
-3. Create and push a git tag:
-   ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
-   ```
-4. The workflow automatically:
-   - Packs `MewVG.Core`, `MewVG.GL`, `MewVG.Metal` as NuGet packages
-   - Publishes `.nupkg` (and `.snupkg` symbols) to [nuget.org](https://www.nuget.org/)
-   - Creates a GitHub Release with auto-generated release notes
-   - Tags containing `-` (e.g. `v0.3.0-beta`) are marked as prerelease
-
-> **Requires** the `NUGET_API_KEY` secret configured in the repository settings.
 
 ## License
 
