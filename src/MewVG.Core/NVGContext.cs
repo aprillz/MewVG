@@ -70,6 +70,7 @@ internal unsafe struct NVGstate
     public float FontBlur;
     public NVGalign TextAlign;
     public int FontId;
+    public int ClipDepth;
 }
 
 [InlineArray(12)]
@@ -193,6 +194,8 @@ internal sealed class NVGContext
     // Path cache
     private readonly NVGpathCache _cache;
 
+    private readonly List<NVGClipPath> _clipStack = new();
+
     // Tolerances
     private float _tessTol;
 
@@ -206,6 +209,24 @@ internal sealed class NVGContext
     public int FillTriCount;
     public int StrokeTriCount;
     public int TextTriCount;
+
+    private readonly struct NVGClipPath
+    {
+        public NVGClipPath(NVGscissorState scissor, float fringe, float[] bounds, NVGpathData[] paths, NVGvertex[] verts)
+        {
+            Scissor = scissor;
+            Fringe = fringe;
+            Bounds = bounds;
+            Paths = paths;
+            Verts = verts;
+        }
+
+        public NVGscissorState Scissor { get; }
+        public float Fringe { get; }
+        public float[] Bounds { get; }
+        public NVGpathData[] Paths { get; }
+        public NVGvertex[] Verts { get; }
+    }
 
     public NVGContext(INVGRenderer renderer, bool edgeAntiAlias)
     {
@@ -263,6 +284,7 @@ internal sealed class NVGContext
             _states[_nstates].Scissor.Extent = _states[_nstates - 1].Scissor.Extent;
             ClonePaint(ref _states[_nstates].Fill, in _states[_nstates - 1].Fill);
             ClonePaint(ref _states[_nstates].Stroke, in _states[_nstates - 1].Stroke);
+            _states[_nstates].ClipDepth = _states[_nstates - 1].ClipDepth;
         }
         _nstates++;
     }
@@ -275,6 +297,19 @@ internal sealed class NVGContext
         }
 
         _nstates--;
+
+        var desiredClipDepth = _states[_nstates - 1].ClipDepth;
+        if (_clipStack.Count > desiredClipDepth)
+        {
+            _clipStack.RemoveRange(desiredClipDepth, _clipStack.Count - desiredClipDepth);
+            _renderer.ResetClip();
+            for (var i = 0; i < _clipStack.Count; i++)
+            {
+                var clip = _clipStack[i];
+                var scissor = clip.Scissor;
+                _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds, clip.Paths, clip.Verts);
+            }
+        }
     }
 
     public void Reset()
@@ -306,6 +341,13 @@ internal sealed class NVGContext
         state.FontBlur = 0.0f;
         state.TextAlign = NVGalign.Left | NVGalign.Baseline;
         state.FontId = 0;
+        state.ClipDepth = 0;
+
+        if (_clipStack.Count > 0)
+        {
+            _renderer.ResetClip();
+            _clipStack.Clear();
+        }
     }
 
     private static void SetPaintColor(ref NVGpaint p, NVGcolor color)
@@ -626,6 +668,81 @@ internal sealed class NVGContext
         state.Scissor.Xform = default;
         state.Scissor.Extent[0] = -1.0f;
         state.Scissor.Extent[1] = -1.0f;
+    }
+
+    #endregion
+
+    #region Clip Path
+
+    public void Clip()
+    {
+        ref var state = ref GetState();
+
+        FlattenPaths();
+        if (_cache.NPaths == 0)
+        {
+            return;
+        }
+
+        if (_edgeAntiAlias && state.ShapeAntiAlias)
+        {
+            ExpandFill(_fringeWidth, NVGlineJoin.Miter, 2.4f);
+        }
+        else
+        {
+            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f);
+        }
+
+        var clip = CaptureClipSnapshot(state.Scissor, _fringeWidth);
+        _clipStack.Add(clip);
+        state.ClipDepth = _clipStack.Count;
+
+        var scissor = clip.Scissor;
+        _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds, clip.Paths, clip.Verts);
+    }
+
+    public void ResetClip()
+    {
+        ref var state = ref GetState();
+        state.ClipDepth = 0;
+        _clipStack.Clear();
+        _renderer.ResetClip();
+    }
+
+    private NVGClipPath CaptureClipSnapshot(NVGscissorState scissor, float fringe)
+    {
+        int totalFillVerts = 0;
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            totalFillVerts += _cache.Paths[i].NFill;
+        }
+
+        var verts = totalFillVerts > 0 ? new NVGvertex[totalFillVerts] : Array.Empty<NVGvertex>();
+        var paths = _cache.NPaths > 0 ? new NVGpathData[_cache.NPaths] : Array.Empty<NVGpathData>();
+
+        int vertOffset = 0;
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref var srcPath = ref _cache.Paths[i];
+            var dstPath = srcPath;
+            dstPath.FillOffset = vertOffset;
+            dstPath.NStroke = 0;
+            dstPath.StrokeOffset = 0;
+
+            if (srcPath.NFill > 0)
+            {
+                _cache.Verts.AsSpan(srcPath.FillOffset, srcPath.NFill)
+                    .CopyTo(verts.AsSpan(vertOffset));
+                vertOffset += srcPath.NFill;
+            }
+
+            paths[i] = dstPath;
+        }
+
+        var bounds = new float[4];
+        Array.Copy(_cache.Bounds, bounds, 4);
+
+        return new NVGClipPath(scissor, fringe, bounds, paths, verts);
     }
 
     #endregion

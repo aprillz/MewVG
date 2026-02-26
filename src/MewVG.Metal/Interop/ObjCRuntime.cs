@@ -86,6 +86,9 @@ public static unsafe partial class ObjCRuntime
     public static partial void SendMessageNoReturn(nint receiver, nint selector, double arg1);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    public static partial void SendMessageNoReturn(nint receiver, nint selector, MTLClearColor arg1);
+
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     public static partial void SendMessageNoReturn(nint receiver, nint selector, nint arg1, uint arg2);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
@@ -168,15 +171,15 @@ public static unsafe partial class ObjCRuntime
     /// </summary>
     public static class Selectors
     {
-        public static readonly nint alloc = Aprillz.MewVG.Interop.Selectors.Alloc;
-        public static readonly nint init = Aprillz.MewVG.Interop.Selectors.Init;
-        public static readonly nint @new = Aprillz.MewVG.Interop.Selectors.New;
-        public static readonly nint release = Aprillz.MewVG.Interop.Selectors.Release;
-        public static readonly nint retain = Aprillz.MewVG.Interop.Selectors.Retain;
-        public static readonly nint autorelease = Aprillz.MewVG.Interop.Selectors.Autorelease;
-        public static readonly nint dealloc = Aprillz.MewVG.Interop.Selectors.Dealloc;
-        public static readonly nint description = ObjCRuntime.RegisterSelector("description");
-        public static readonly nint UTF8String = ObjCRuntime.RegisterSelector("UTF8String");
+        public static readonly nint alloc = Interop.Selectors.Alloc;
+        public static readonly nint init = Interop.Selectors.Init;
+        public static readonly nint @new = Interop.Selectors.New;
+        public static readonly nint release = Interop.Selectors.Release;
+        public static readonly nint retain = Interop.Selectors.Retain;
+        public static readonly nint autorelease = Interop.Selectors.Autorelease;
+        public static readonly nint dealloc = Interop.Selectors.Dealloc;
+        public static readonly nint description = RegisterSelector("description");
+        public static readonly nint UTF8String = RegisterSelector("UTF8String");
     }
 }
 

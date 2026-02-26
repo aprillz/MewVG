@@ -80,6 +80,14 @@ public abstract class NanoVG : IDisposable
 
     #endregion
 
+    #region Path Clipping
+
+    public void Clip() => _nvg.Clip();
+
+    public void ResetClip() => _nvg.ResetClip();
+
+    #endregion
+
     #region Paths
 
     public void BeginPath() => _nvg.BeginPath();

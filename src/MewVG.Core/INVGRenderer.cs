@@ -27,4 +27,13 @@ internal interface INVGRenderer
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts);
+
+    void RenderClip(
+        ref NVGscissorState scissor,
+        float fringe,
+        ReadOnlySpan<float> bounds,
+        ReadOnlySpan<NVGpathData> paths,
+        ReadOnlySpan<NVGvertex> verts);
+
+    void ResetClip();
 }

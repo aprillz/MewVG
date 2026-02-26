@@ -31,6 +31,7 @@ internal enum StencilFunction : int
 internal enum StencilOp : int
 {
     Keep = 0x1E00,
+    Replace = 0x1E01,
     Zero = 0,
     Incr = 0x1E02,
     IncrWrap = 0x8507,

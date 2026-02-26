@@ -138,11 +138,14 @@ public static unsafe partial class Metal
         public static readonly nint SetStencilFailureOperation = ObjCRuntime.RegisterSelector("setStencilFailureOperation:");
         public static readonly nint SetDepthFailureOperation = ObjCRuntime.RegisterSelector("setDepthFailureOperation:");
         public static readonly nint SetDepthStencilPassOperation = ObjCRuntime.RegisterSelector("setDepthStencilPassOperation:");
+        public static readonly nint SetStencilReadMask = ObjCRuntime.RegisterSelector("setReadMask:");
+        public static readonly nint SetStencilWriteMask = ObjCRuntime.RegisterSelector("setWriteMask:");
 
         // RenderPipelineDescriptor
         public static readonly nint SetVertexFunction = ObjCRuntime.RegisterSelector("setVertexFunction:");
         public static readonly nint SetFragmentFunction = ObjCRuntime.RegisterSelector("setFragmentFunction:");
         public static readonly nint SetVertexDescriptor = ObjCRuntime.RegisterSelector("setVertexDescriptor:");
+        public static readonly nint SetDepthAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setDepthAttachmentPixelFormat:");
         public static readonly nint SetStencilAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setStencilAttachmentPixelFormat:");
 
         // RenderPipelineColorAttachmentDescriptor

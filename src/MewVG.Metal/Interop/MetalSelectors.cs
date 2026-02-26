@@ -23,6 +23,7 @@ public static class MetalSelectors
     public static readonly nint setVertexFunction = Metal.Sel.SetVertexFunction;
     public static readonly nint setFragmentFunction = Metal.Sel.SetFragmentFunction;
     public static readonly nint setVertexDescriptor = Metal.Sel.SetVertexDescriptor;
+    public static readonly nint setDepthAttachmentPixelFormat = Metal.Sel.SetDepthAttachmentPixelFormat;
     public static readonly nint setStencilAttachmentPixelFormat = Metal.Sel.SetStencilAttachmentPixelFormat;
     public static readonly nint colorAttachments = Metal.Sel.ColorAttachments;
 
@@ -52,6 +53,8 @@ public static class MetalSelectors
     public static readonly nint setStencilFailureOperation = Metal.Sel.SetStencilFailureOperation;
     public static readonly nint setDepthFailureOperation = Metal.Sel.SetDepthFailureOperation;
     public static readonly nint setDepthStencilPassOperation = Metal.Sel.SetDepthStencilPassOperation;
+    public static readonly nint setStencilReadMask = Metal.Sel.SetStencilReadMask;
+    public static readonly nint setStencilWriteMask = Metal.Sel.SetStencilWriteMask;
     public static readonly nint setFrontFaceStencil = Metal.Sel.SetFrontFaceStencil;
     public static readonly nint setBackFaceStencil = Metal.Sel.SetBackFaceStencil;
 
