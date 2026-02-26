@@ -1,12 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <AssemblyName>MewVG.Metal.Demo</AssemblyName>
+    <AssemblyName>MewVG.Demo.MacOS</AssemblyName>
     <TargetFramework>net10.0</TargetFramework>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
   </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\MewVG.Demo.Shared\DemoRunner.cs" Link="DemoRunner.cs" />
+    <Compile Include="..\MewVG.Demo.Shared\DemoScene.cs" Link="DemoScene.cs" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MewVG.Core\MewVG.Core.csproj" />

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>MewVG.Demo.Windows</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <PublishAot>true</PublishAot>
+    <IsAotCompatible>true</IsAotCompatible>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="..\MewVG.Demo.Shared\DemoRunner.cs" Link="DemoRunner.cs" />
+    <Compile Include="..\MewVG.Demo.Shared\DemoScene.cs" Link="DemoScene.cs" />
+    <Compile Include="..\MewVG.Demo.Shared\GLMinimal.cs" Link="GLMinimal.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MewVG.GL\MewVG.GL.csproj" />
+  </ItemGroup>
+</Project>
