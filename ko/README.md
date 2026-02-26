@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="../assets/logo/logo_h-960.png" alt="MewVG" height="120" />
+</p>
+
 # MewVG
 
 ![.NET](https://img.shields.io/badge/.NET-8%2B-512BD4?logo=dotnet&logoColor=white)
@@ -45,8 +49,9 @@ MewVG/
 │   ├── MewVG.GL/         OpenGL 렌더링 백엔드
 │   └── MewVG.Metal/      Metal 렌더링 백엔드
 ├── samples/
-│   ├── MewVG.GL.Demo/    OpenGL 데모 앱
-│   └── MewVG.Metal.Demo/ Metal 데모 앱
+│   ├── MewVG.Demo.Windows/  Windows 데모 (GLFW + OpenGL)
+│   ├── MewVG.Demo.Linux/    Linux 데모 (X11 + OpenGL)
+│   └── MewVG.Demo.MacOS/    macOS 데모 (Metal)
 └── build/
     └── MewVG.Common.props
 ```
