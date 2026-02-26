@@ -51,7 +51,7 @@ MewVG/
 │   ├── MewVG.GL/         OpenGL rendering backend
 │   └── MewVG.Metal/      Metal rendering backend
 ├── samples/
-│   ├── MewVG.Demo.Windows/  Windows demo (GLFW + OpenGL)
+│   ├── MewVG.Demo.Windows/  Windows demo (OpenGL)
 │   ├── MewVG.Demo.Linux/    Linux demo (X11 + OpenGL)
 │   └── MewVG.Demo.MacOS/    macOS demo (Metal)
 └── build/
