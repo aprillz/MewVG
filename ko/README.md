@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/logo/logo_h-960.png" alt="MewVG" height="120" />
+  <img src="../assets/logo/logo_h-960.png" alt="MewVG" height="240" />
 </p>
 
 # MewVG
