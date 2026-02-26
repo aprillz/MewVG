@@ -13,6 +13,7 @@
     <Version>$(MewVGVersion)</Version>
     <RootNamespace>$(MewVGRootNamespace)</RootNamespace>
     <PackageLicenseExpression>$(MewVGPackageLicenseExpression)</PackageLicenseExpression>
+    <PackageIcon>logo_c-256.png</PackageIcon>
 
     <LangVersion>latest</LangVersion>
     <ImplicitUsings>enable</ImplicitUsings>
@@ -24,4 +25,8 @@
     <IncludeSource>true</IncludeSource>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(MSBuildThisFileDirectory)..\assets\logo\logo_c-256.png" Pack="true" PackagePath="" />
+  </ItemGroup>
 </Project>
