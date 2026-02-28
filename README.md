@@ -33,6 +33,13 @@
 - **NanoVG-compatible API** &mdash; familiar drawing model for paths, fills, strokes, and text
 - **NativeAOT / Trim friendly** &mdash; targets `net8.0` and `net10.0`
 
+## Requirements
+
+| Backend | Minimum |
+|---|---|
+| `MewVG.GL` | OpenGL 3.1 / GLSL 1.40 |
+| `MewVG.Metal` | Metal (macOS 10.11+) |
+
 ## Getting Started
 
 ```bash
