@@ -94,6 +94,8 @@ public static unsafe partial class Metal
         public static readonly nint SetUsage = ObjCRuntime.RegisterSelector("setUsage:");
         public static readonly nint SetStorageMode = ObjCRuntime.RegisterSelector("setStorageMode:");
         public static readonly nint PixelFormat = ObjCRuntime.RegisterSelector("pixelFormat");
+        public static readonly nint SetTextureType = ObjCRuntime.RegisterSelector("setTextureType:");
+        public static readonly nint SetSampleCount = ObjCRuntime.RegisterSelector("setSampleCount:");
 
         // RenderPassDescriptor
         public static readonly nint RenderPassDescriptor = ObjCRuntime.RegisterSelector("renderPassDescriptor");
@@ -106,6 +108,7 @@ public static unsafe partial class Metal
         public static readonly nint SetStoreAction = ObjCRuntime.RegisterSelector("setStoreAction:");
         public static readonly nint SetClearColor = ObjCRuntime.RegisterSelector("setClearColor:");
         public static readonly nint SetClearStencil = ObjCRuntime.RegisterSelector("setClearStencil:");
+        public static readonly nint SetResolveTexture = ObjCRuntime.RegisterSelector("setResolveTexture:");
         public static readonly nint Texture = ObjCRuntime.RegisterSelector("texture");
 
         // RenderPassColorAttachmentDescriptorArray
@@ -147,6 +150,7 @@ public static unsafe partial class Metal
         public static readonly nint SetVertexDescriptor = ObjCRuntime.RegisterSelector("setVertexDescriptor:");
         public static readonly nint SetDepthAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setDepthAttachmentPixelFormat:");
         public static readonly nint SetStencilAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setStencilAttachmentPixelFormat:");
+        public static readonly nint SetRasterSampleCount = ObjCRuntime.RegisterSelector("setSampleCount:");
 
         // RenderPipelineColorAttachmentDescriptor
         public static readonly nint SetPixelFormat = ObjCRuntime.RegisterSelector("setPixelFormat:");
@@ -222,6 +226,23 @@ public enum MTLPixelFormat : ulong
     Depth32Float = 252,
     Depth24Unorm_Stencil8 = 255,
     Depth32Float_Stencil8 = 260,
+}
+
+/// <summary>
+/// Metal texture type.
+/// </summary>
+public enum MTLTextureType : ulong
+{
+    Type1D = 0,
+    Type1DArray = 1,
+    Type2D = 2,
+    Type2DArray = 3,
+    Type2DMultisample = 4,
+    TypeCube = 5,
+    TypeCubeArray = 6,
+    Type3D = 7,
+    Type2DMultisampleArray = 8,
+    TypeTextureBuffer = 9,
 }
 
 /// <summary>

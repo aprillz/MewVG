@@ -49,6 +49,18 @@ public sealed class NanoVGMetal : NanoVG
         set => _context.StencilFormat = value;
     }
 
+    /// <summary>
+    /// Gets or sets the MSAA sample count (1 = no MSAA, 4 or 8 for MSAA).
+    /// When greater than 1, hardware MSAA is used for anti-aliasing and
+    /// geometry-based fringe AA is automatically skipped.
+    /// The caller must provide matching multisample textures in the render pass.
+    /// </summary>
+    public int SampleCount
+    {
+        get => _context.SampleCount;
+        set => _context.SampleCount = value;
+    }
+
     #region Frame Management
 
     /// <summary>

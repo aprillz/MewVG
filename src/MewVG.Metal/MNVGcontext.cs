@@ -169,6 +169,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _pseudoSampler;           // id<MTLSamplerState>
     private IntPtr _pseudoTexture;           // id<MTLTexture>
     private MTLPixelFormat _pipelinePixelFormat;
+    private int _pipelineSampleCount;
     private MTLBlendFactor _blendSrcRgb;
     private MTLBlendFactor _blendDstRgb;
     private MTLBlendFactor _blendSrcAlpha;
@@ -224,11 +225,17 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private NVGcreateFlags _flags;
     private MTLPixelFormat _pixelFormat;
     private MTLPixelFormat _stencilFormat;
+    private int _sampleCount = 1;
     private float _devicePixelRatio;
     private Vector2 _viewSize;
     private bool _recordingClipActive;
     private bool _clipActiveInRender;
     private bool _disposed;
+
+    /// <summary>
+    /// Whether geometry-based fringe anti-aliasing is active (not MSAA).
+    /// </summary>
+    private bool UseGeometryAA => (_flags & NVGcreateFlags.Antialias) != 0 && _sampleCount <= 1;
 
     /// <summary>
     /// Creates a new Metal NanoVG context
@@ -296,6 +303,17 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     {
         get => _stencilFormat;
         set => _stencilFormat = value;
+    }
+
+    /// <summary>
+    /// Gets or sets the MSAA sample count (1 = no MSAA, 4 or 8 for MSAA).
+    /// When greater than 1, hardware MSAA is used for anti-aliasing and
+    /// geometry-based fringe AA is automatically skipped.
+    /// </summary>
+    public int SampleCount
+    {
+        get => _sampleCount;
+        set => _sampleCount = Math.Max(1, value);
     }
 
     /// <summary>
@@ -440,6 +458,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_pipelineState != IntPtr.Zero &&
             _stencilOnlyPipelineState != IntPtr.Zero &&
             _pipelinePixelFormat == _pixelFormat &&
+            _pipelineSampleCount == _sampleCount &&
             _blendSrcRgb == srcRgb &&
             _blendDstRgb == dstRgb &&
             _blendSrcAlpha == srcAlpha &&
@@ -474,6 +493,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pipelineState = newPipeline;
         _stencilOnlyPipelineState = newStencilPipeline;
         _pipelinePixelFormat = _pixelFormat;
+        _pipelineSampleCount = _sampleCount;
         _blendSrcRgb = srcRgb;
         _blendDstRgb = dstRgb;
         _blendSrcAlpha = srcAlpha;
@@ -495,7 +515,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         var vertexDescriptor = CreateVertexDescriptor();
-        var fragmentFunc = (_flags & NVGcreateFlags.Antialias) != 0 ? _fragmentAAFunction : _fragmentFunction;
+        // With MSAA (sampleCount > 1) hardware handles edge smoothing, so skip geometry-based AA shader.
+        var useGeometryAA = (_flags & NVGcreateFlags.Antialias) != 0 && _sampleCount <= 1;
+        var fragmentFunc = useGeometryAA ? _fragmentAAFunction : _fragmentFunction;
 
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
         // Even for stencil-only passes we keep a fragment function so fragments are generated
@@ -508,6 +530,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setDepthAttachmentPixelFormat, (ulong)_stencilFormat);
         }
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
+
+        // Set MSAA sample count on the pipeline descriptor.
+        if (_sampleCount > 1)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
+        }
 
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
         var colorAttachment0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
@@ -1145,7 +1173,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (nuint)0
         );
 
-        if ((_flags & NVGcreateFlags.Antialias) != 0)
+        if (UseGeometryAA)
         {
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -1214,7 +1242,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 );
             }
 
-            if ((_flags & NVGcreateFlags.Antialias) != 0 && path.strokeCount > 0)
+            if (UseGeometryAA && path.strokeCount > 0)
             {
                 ObjCRuntime.SendMessage(
                     _renderEncoder,
@@ -1894,10 +1922,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         call = default;
 
         var convex = paths.Length == 1 && paths[0].Convex;
-        if (_recordingClipActive)
-        {
-            convex = true;
-        }
         call.type = convex ? MNVGcallType.MNVG_CONVEXFILL : MNVGcallType.MNVG_FILL;
         call.pathOffset = pathOffset;
         call.pathCount = paths.Length;

@@ -1560,15 +1560,15 @@ internal sealed class NVGContext
             {
                 var lw = w + woff;
                 var rw = w - woff;
-                float lu = 0;
-                float ru = 1;
+                float lu = lw;       // signed distance: inner edge (positive = inside)
+                float ru = -rw;      // signed distance: outer edge (negative = outside)
                 path.StrokeOffset = vertOffset;
 
                 // Create only half a fringe for convex shapes
                 if (convex)
                 {
                     lw = woff;
-                    lu = 0.5f;
+                    lu = woff;       // signed distance at fill fan boundary
                 }
 
                 // Looping

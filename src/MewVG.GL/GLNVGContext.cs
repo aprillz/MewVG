@@ -423,6 +423,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
+            SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 10, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
         }
         else
         {
@@ -431,6 +432,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
+            SetUniformValue(_uniforms[call.UniformOffset].Data, 10, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
         }
     }
 
@@ -708,39 +710,48 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         SetUniforms(call.UniformOffset + 1, call.Image);
 
-        if ((_flags & NVGcreateFlags.Antialias) != 0)
+        if (_clipActiveInRender)
         {
-            if (_clipActiveInRender)
+            // Clip path: keep stencil-based fringe order to respect clip mask.
+            if ((_flags & NVGcreateFlags.Antialias) != 0)
             {
-                // Only draw AA fringe where winding is zero, inside the clip.
                 StencilFunc(StencilFunction.Equal, ClipStencilRef, 0xff);
+                GL.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
+                GL.Disable(EnableCap.CullFace);
+                for (var i = 0; i < paths.Length; i++)
+                {
+                    GL.DrawArrays(PrimitiveType.TriangleStrip, paths[i].StrokeOffset, paths[i].StrokeCount);
+                }
+                GL.Enable(EnableCap.CullFace);
             }
-            else
-            {
-                StencilFunc(StencilFunction.Equal, 0x00, 0xff);
-            }
-            GL.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
-            for (var i = 0; i < paths.Length; i++)
-            {
-                GL.DrawArrays(PrimitiveType.TriangleStrip, paths[i].StrokeOffset, paths[i].StrokeCount);
-            }
-        }
 
-        StencilFunc(StencilFunction.Notequal, 0x0, _clipActiveInRender ? NanoVgStencilMask : 0xff);
-        GL.StencilOp(StencilOp.Zero, StencilOp.Zero, StencilOp.Zero);
-        if (_clipActiveInRender)
-        {
+            StencilFunc(StencilFunction.Notequal, 0x0, NanoVgStencilMask);
+            GL.StencilOp(StencilOp.Zero, StencilOp.Zero, StencilOp.Zero);
             StencilMask(NanoVgStencilMask);
-        }
-        GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
+            GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
 
-        if (_clipActiveInRender)
-        {
             RestoreClipStencilState();
         }
         else
         {
+            // Fill quad first (stencil != 0, zeros stencil).
+            StencilFunc(StencilFunction.Notequal, 0x0, 0xff);
+            GL.StencilOp(StencilOp.Zero, StencilOp.Zero, StencilOp.Zero);
+            GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
+
             GL.Disable(EnableCap.StencilTest);
+
+            // AA fringe on top without stencil.
+            // CullFace must be off — CW sub-paths produce back-facing fringe triangles.
+            if ((_flags & NVGcreateFlags.Antialias) != 0)
+            {
+                GL.Disable(EnableCap.CullFace);
+                for (var i = 0; i < paths.Length; i++)
+                {
+                    GL.DrawArrays(PrimitiveType.TriangleStrip, paths[i].StrokeOffset, paths[i].StrokeCount);
+                }
+                GL.Enable(EnableCap.CullFace);
+            }
         }
     }
 
@@ -1379,6 +1390,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "}\n" +
             "#ifdef EDGE_AA\n" +
             "float strokeMask() {\n" +
+            "\tif (strokeMult < 0.0) return clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);\n" +
             "\treturn min(1.0, (1.0-abs(ftcoord.x*2.0-1.0))*strokeMult) * min(1.0, ftcoord.y);\n" +
             "}\n" +
             "#endif\n" +
