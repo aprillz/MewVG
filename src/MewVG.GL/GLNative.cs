@@ -46,17 +46,21 @@ internal enum StencilFace : int
 
 internal enum TextureUnit : int
 {
-    Texture0 = 0x84C0
+    Texture0 = 0x84C0,
+    Texture1 = 0x84C1
 }
 
 internal enum TextureTarget : int
 {
-    Texture2D = 0x0DE1
+    Texture2D = 0x0DE1,
+    TextureBuffer = 0x8C2A
 }
 
 internal enum BufferTarget : int
 {
-    ArrayBuffer = 0x8892
+    ArrayBuffer = 0x8892,
+    TextureBuffer = 0x8C2A,
+    UniformBuffer = 0x8A11
 }
 
 internal enum BufferUsageHint : int
@@ -80,7 +84,8 @@ internal enum PixelStoreParameter : int
 internal enum PixelInternalFormat : int
 {
     Rgba = 0x1908,
-    R8 = 0x8229
+    R8 = 0x8229,
+    Rgba32f = 0x8814
 }
 
 internal enum PixelFormat : int
@@ -211,7 +216,21 @@ internal enum GetProgramParameterName : int
 internal enum GetPName : int
 {
     FramebufferBinding = 0x8CA6,
-    RenderbufferBinding = 0x8CA7
+    RenderbufferBinding = 0x8CA7,
+    MaxUniformBlockSize = 0x8A30
+}
+
+internal enum BlendEquationMode : int
+{
+    FuncAdd = 0x8006,
+    Max = 0x8008
+}
+
+[Flags]
+internal enum ClearBufferMask : uint
+{
+    StencilBufferBit = 0x00000400,
+    ColorBufferBit = 0x00004000
 }
 
 internal enum All : int
@@ -283,7 +302,17 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, uint> _glCheckFramebufferStatus;
     private static delegate* unmanaged<int, uint*, void> _glDeleteFramebuffers;
     private static delegate* unmanaged<int, uint*, void> _glDeleteRenderbuffers;
+    private static delegate* unmanaged<uint, void> _glBlendEquation;
+    private static delegate* unmanaged<float, float, float, float, void> _glClearColor;
+    private static delegate* unmanaged<int, void> _glClearStencil;
+    private static delegate* unmanaged<uint, void> _glClear;
+    private static delegate* unmanaged<int, int, int, int, void> _glScissor;
+    private static delegate* unmanaged<int, int, int, int, void> _glViewport;
     private static delegate* unmanaged<void> _glFinish;
+    private static delegate* unmanaged<uint, byte*, uint> _glGetUniformBlockIndex;
+    private static delegate* unmanaged<uint, uint, uint, void> _glUniformBlockBinding;
+    private static delegate* unmanaged<uint, uint, uint, void> _glBindBufferBase;
+    private static delegate* unmanaged<uint, uint, uint, void> _glTexBuffer;
 
     public static void Initialize(Func<string, nint> getProcAddress)
     {
@@ -378,7 +407,17 @@ internal static unsafe class GL
         _glCheckFramebufferStatus = (delegate* unmanaged<uint, uint>)LoadProc("glCheckFramebufferStatus");
         _glDeleteFramebuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteFramebuffers");
         _glDeleteRenderbuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteRenderbuffers");
+        _glBlendEquation = (delegate* unmanaged<uint, void>)LoadProc("glBlendEquation");
+        _glClearColor = (delegate* unmanaged<float, float, float, float, void>)LoadProc("glClearColor");
+        _glClearStencil = (delegate* unmanaged<int, void>)LoadProc("glClearStencil");
+        _glClear = (delegate* unmanaged<uint, void>)LoadProc("glClear");
+        _glScissor = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glScissor");
+        _glViewport = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glViewport");
         _glFinish = (delegate* unmanaged<void>)LoadProc("glFinish");
+        _glGetUniformBlockIndex = (delegate* unmanaged<uint, byte*, uint>)LoadProc("glGetUniformBlockIndex");
+        _glUniformBlockBinding = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glUniformBlockBinding");
+        _glBindBufferBase = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glBindBufferBase");
+        _glTexBuffer = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glTexBuffer");
     }
 
     public static void UseProgram(int program) => _glUseProgram((uint)program);
@@ -649,5 +688,42 @@ internal static unsafe class GL
         _glDeleteRenderbuffers(1, &rb);
     }
 
+    public static void BlendEquation(BlendEquationMode mode) => _glBlendEquation((uint)mode);
+
+    public static void ClearColor(float r, float g, float b, float a) => _glClearColor(r, g, b, a);
+
+    public static void ClearStencil(int s) => _glClearStencil(s);
+
+    public static void Clear(ClearBufferMask mask) => _glClear((uint)mask);
+
+    public static void Scissor(int x, int y, int width, int height) => _glScissor(x, y, width, height);
+    public static void Viewport(int x, int y, int width, int height) => _glViewport(x, y, width, height);
+
     public static void Finish() => _glFinish();
+
+    public static int GetUniformBlockIndex(int program, string name)
+    {
+        var utf8 = Encoding.UTF8.GetBytes(name);
+        fixed (byte* pName = utf8)
+        {
+            return (int)_glGetUniformBlockIndex((uint)program, pName);
+        }
+    }
+
+    public static void UniformBlockBinding(int program, int blockIndex, int bindingPoint)
+        => _glUniformBlockBinding((uint)program, (uint)blockIndex, (uint)bindingPoint);
+
+    public static void BindBufferBase(BufferTarget target, int index, int buffer)
+        => _glBindBufferBase((uint)target, (uint)index, (uint)buffer);
+
+    public static void TexBuffer(TextureTarget target, PixelInternalFormat internalFormat, int buffer)
+        => _glTexBuffer((uint)target, (uint)internalFormat, (uint)buffer);
+
+    public static void BufferData(BufferTarget target, int size, ReadOnlySpan<float> data, BufferUsageHint usage)
+    {
+        fixed (float* ptr = data)
+        {
+            _glBufferData((uint)target, size, ptr, (uint)usage);
+        }
+    }
 }

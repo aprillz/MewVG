@@ -47,7 +47,6 @@ public enum MNVGcallType
 {
     MNVG_NONE = 0,
     MNVG_FILL = 1,
-    MNVG_CONVEXFILL = 2,
     MNVG_STROKE = 3,
     MNVG_TRIANGLES = 4,
     MNVG_CLIP = 5,
@@ -92,6 +91,7 @@ public struct MNVGcall
     public int indexOffset;
     public int indexCount;
     public int uniformOffset;
+    public int cpuResolvedFill;
     public NVGcompositeOperationState blendFunc;
 }
 
@@ -146,6 +146,157 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     // Constants
     public const int MNVG_INIT_BUFFER_COUNT = 4;
     public const int MNVG_UNIFORM_ALIGN = 256;
+
+    // Embedded Metal shader source (matches GL backend's strokeMask analytical fill coverage)
+    private const string ShaderSource = """
+        #include <metal_stdlib>
+        #include <simd/simd.h>
+        using namespace metal;
+
+        typedef struct {
+          float2 pos [[attribute(0)]];
+          float2 tcoord [[attribute(1)]];
+        } Vertex;
+
+        typedef struct {
+          float4 pos  [[position]];
+          float2 fpos;
+          float2 ftcoord;
+        } RasterizerData;
+
+        typedef struct  {
+          float3x3 scissorMat;
+          float3x3 paintMat;
+          float4 innerCol;
+          float4 outerCol;
+          float2 scissorExt;
+          float2 scissorScale;
+          float2 extent;
+          float radius;
+          float feather;
+          float strokeMult;
+          float strokeThr;
+          int texType;
+          int type;
+        } Uniforms;
+
+        float scissorMask(constant Uniforms& uniforms, float2 p) {
+          float2 sc = (abs((uniforms.scissorMat * float3(p, 1.0f)).xy)
+                          - uniforms.scissorExt)
+                      * uniforms.scissorScale;
+          sc = saturate(float2(0.5f) - sc);
+          return sc.x * sc.y;
+        }
+
+        float sdroundrect(constant Uniforms& uniforms, float2 pt) {
+          float2 ext2 = uniforms.extent - float2(uniforms.radius);
+          float2 d = abs(pt) - ext2;
+          return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - uniforms.radius;
+        }
+
+        float strokeMask(constant Uniforms& uniforms, float2 ftcoord) {
+          if (uniforms.strokeMult < 0.0) {
+            return clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);
+          }
+          return clamp((1.0 - abs(ftcoord.x * 2.0 - 1.0)) * uniforms.strokeMult, 0.0, 1.0)
+                 * min(1.0, ftcoord.y);
+        }
+
+        vertex RasterizerData vertexShader(Vertex vert [[stage_in]],
+                                           constant float2& viewSize [[buffer(1)]]) {
+          RasterizerData out;
+          out.ftcoord = vert.tcoord;
+          out.fpos = vert.pos;
+          out.pos = float4(2.0 * vert.pos.x / viewSize.x - 1.0,
+                           1.0 - 2.0 * vert.pos.y / viewSize.y,
+                           0, 1);
+          return out;
+        }
+
+        fragment float4 fragmentShader(RasterizerData in [[stage_in]],
+                                       constant Uniforms& uniforms [[buffer(0)]],
+                                       texture2d<float> texture [[texture(0)]],
+                                       sampler sampler [[sampler(0)]]) {
+          float scissor = scissorMask(uniforms, in.fpos);
+          if (scissor == 0)
+            return float4(0);
+
+          if (uniforms.type == 0) {
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, pt))
+                               / uniforms.feather);
+            float4 color = mix(uniforms.innerCol, uniforms.outerCol, d);
+            return color * scissor;
+          } else if (uniforms.type == 1) {
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy / uniforms.extent;
+            float4 color = texture.sample(sampler, pt);
+            if (uniforms.texType == 1)
+              color = float4(color.xyz * color.w, color.w);
+            else if (uniforms.texType == 2)
+              color = float4(color.x);
+            color *= scissor;
+            return color * uniforms.innerCol;
+          } else if (uniforms.type == 3) {  // MNVG_SHADER_IMG
+            float4 color = texture.sample(sampler, in.ftcoord);
+            if (uniforms.texType == 1)
+              color = float4(color.xyz * color.w, color.w);
+            else if (uniforms.texType == 2)
+              color = float4(color.x);
+            color *= scissor;
+            return color * uniforms.innerCol;
+          } else {  // MNVG_SHADER_SIMPLE (stencil-only, color write masked)
+            return uniforms.innerCol * scissor;
+          }
+        }
+
+        fragment float4 fragmentShaderAA(RasterizerData in [[stage_in]],
+                                         constant Uniforms& uniforms [[buffer(0)]],
+                                         texture2d<float> texture [[texture(0)]],
+                                         sampler sampler [[sampler(0)]]) {
+          float scissor = scissorMask(uniforms, in.fpos);
+          if (scissor == 0)
+            return float4(0);
+
+          if (uniforms.type == 3) {  // MNVG_SHADER_IMG — no strokeAlpha
+            float4 color = texture.sample(sampler, in.ftcoord);
+            if (uniforms.texType == 1)
+              color = float4(color.xyz * color.w, color.w);
+            else if (uniforms.texType == 2)
+              color = float4(color.x);
+            color *= scissor;
+            return color * uniforms.innerCol;
+          }
+
+          if (uniforms.type == 2) {  // MNVG_SHADER_SIMPLE
+            return uniforms.innerCol * scissor;
+          }
+
+          float strokeAlpha = strokeMask(uniforms, in.ftcoord);
+          if (strokeAlpha < uniforms.strokeThr) {
+            return float4(0);
+          }
+
+          if (uniforms.type == 0) {  // MNVG_SHADER_FILLGRAD
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, pt))
+                                / uniforms.feather);
+            float4 color = mix(uniforms.innerCol, uniforms.outerCol, d);
+            color *= scissor;
+            color *= strokeAlpha;
+            return color;
+          } else {  // MNVG_SHADER_FILLIMG
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy / uniforms.extent;
+            float4 color = texture.sample(sampler, pt);
+            if (uniforms.texType == 1)
+              color = float4(color.xyz * color.w, color.w);
+            else if (uniforms.texType == 2)
+              color = float4(color.x);
+            color *= scissor;
+            color *= strokeAlpha;
+            return color * uniforms.innerCol;
+          }
+        }
+        """;
     // Reserve the MSB for clip so NanoVG's own stencil usage can keep using the lower bits.
     // This avoids clip getting overwritten by fill/stroke stencil passes.
     private const uint ClipStencilRef = 0x80;
@@ -335,7 +486,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             throw new InvalidOperationException("Failed to create command queue");
         }
 
-        // Load shader library from bitcode
+        // Load shader library from source (runtime compilation)
         LoadShaderLibrary();
 
         // Get shader functions
@@ -355,62 +506,32 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void LoadShaderLibrary()
     {
-        var bitcode = Shaders.ShaderBitcode.MacOS;
+        using var source = new NSString(ShaderSource);
+        var error = IntPtr.Zero;
+        _library = ObjCRuntime.SendMessage(
+            _device,
+            Metal.Sel.NewLibraryWithSource,
+            source.Handle,
+            IntPtr.Zero,  // options (nil)
+            (IntPtr)(&error)
+        );
 
-        if (bitcode.IsEmpty)
+        if (_library == IntPtr.Zero || error != IntPtr.Zero)
         {
-            throw new InvalidOperationException("Shader bitcode is empty");
-        }
-
-        fixed (byte* ptr = bitcode)
-        {
-            // Create dispatch_data from the bitcode
-            var dispatchData = Dispatch.DataCreate(
-                (void*)ptr,
-                (nuint)bitcode.Length,
-                IntPtr.Zero,
-                IntPtr.Zero
-            );
-
-            if (dispatchData == IntPtr.Zero)
+            var errorMsg = "Unknown error";
+            if (error != IntPtr.Zero)
             {
-                throw new InvalidOperationException("Failed to create dispatch data");
-            }
-
-            try
-            {
-                // Create library from data
-                var error = IntPtr.Zero;
-                _library = ObjCRuntime.SendMessage(
-                    _device,
-                    MetalSelectors.newLibraryWithData_error,
-                    dispatchData,
-                    (IntPtr)(&error)
-                );
-
-                if (_library == IntPtr.Zero || error != IntPtr.Zero)
+                var desc = ObjCRuntime.SendMessage(error, ObjCRuntime.Selectors.description);
+                if (desc != IntPtr.Zero)
                 {
-                    var errorMsg = "Unknown error";
-                    if (error != IntPtr.Zero)
+                    var utf8 = ObjCRuntime.SendMessage(desc, ObjCRuntime.Selectors.UTF8String);
+                    if (utf8 != IntPtr.Zero)
                     {
-                        var desc = ObjCRuntime.SendMessage(error, ObjCRuntime.Selectors.description);
-                        if (desc != IntPtr.Zero)
-                        {
-                            var utf8 = ObjCRuntime.SendMessage(desc, ObjCRuntime.Selectors.UTF8String);
-                            if (utf8 != IntPtr.Zero)
-                            {
-                                errorMsg = Marshal.PtrToStringUTF8(utf8) ?? errorMsg;
-                            }
-                        }
+                        errorMsg = Marshal.PtrToStringUTF8(utf8) ?? errorMsg;
                     }
-                    throw new InvalidOperationException($"Failed to create shader library: {errorMsg}");
                 }
             }
-            finally
-            {
-                // Release dispatch data
-                ObjCRuntime.SendMessage(dispatchData, ObjCRuntime.Selectors.release);
-            }
+            throw new InvalidOperationException($"Failed to compile shader library: {errorMsg}");
         }
     }
 
@@ -1103,10 +1224,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                     _clipActiveInRender = clipActive;
                     RenderFill(ref buffers, ref call);
                     break;
-                case MNVGcallType.MNVG_CONVEXFILL:
-                    _clipActiveInRender = clipActive;
-                    RenderConvexFill(ref buffers, ref call);
-                    break;
                 case MNVGcallType.MNVG_STROKE:
                     _clipActiveInRender = clipActive;
                     RenderStroke(ref buffers, ref call);
@@ -1127,6 +1244,71 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void RenderFill(ref MNVGbuffers buffers, ref MNVGcall call)
     {
+        if (call.cpuResolvedFill != 0)
+        {
+            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+            if (_clipActiveInRender)
+            {
+                ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            }
+
+            ObjCRuntime.SendMessage(
+                _renderEncoder,
+                MetalSelectors.setFragmentBuffer_offset_atIndex,
+                buffers.uniformBuffer,
+                (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN),
+                (nuint)0
+            );
+
+            var fillStart = -1;
+            var fillCount = 0;
+            for (var i = 0; i < call.pathCount; i++)
+            {
+                ref var path = ref _paths[call.pathOffset + i];
+                if (path.fillCount > 0)
+                {
+                    if (fillStart < 0)
+                    {
+                        fillStart = path.fillOffset;
+                    }
+
+                    fillCount += path.fillCount;
+                }
+            }
+
+            if (fillStart >= 0 && fillCount > 0)
+            {
+                ObjCRuntime.SendMessage(
+                    _renderEncoder,
+                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.Triangle,
+                    (nuint)fillStart,
+                    (nuint)fillCount
+                );
+            }
+
+            if (UseGeometryAA)
+            {
+                for (var i = 0; i < call.pathCount; i++)
+                {
+                    ref var path = ref _paths[call.pathOffset + i];
+                    if (path.strokeCount > 0)
+                    {
+                        ObjCRuntime.SendMessage(
+                            _renderEncoder,
+                            MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                            (ulong)MTLPrimitiveType.TriangleStrip,
+                            (nuint)path.strokeOffset,
+                            (nuint)path.strokeCount
+                        );
+                    }
+                }
+            }
+
+            return;
+        }
+
         // Draw shapes using stencil
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _stencilOnlyPipelineState);
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
@@ -1207,51 +1389,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_clipActiveInRender)
         {
             ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
-        }
-    }
-
-    private void RenderConvexFill(ref MNVGbuffers buffers, ref MNVGcall call)
-    {
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
-        if (_clipActiveInRender)
-        {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
-        }
-
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
-
-        for (var i = 0; i < call.pathCount; i++)
-        {
-            ref var path = ref _paths[call.pathOffset + i];
-
-            if (path.fillCount > 0)
-            {
-                ObjCRuntime.SendMessage(
-                    _renderEncoder,
-                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                    (ulong)MTLPrimitiveType.Triangle,
-                    (nuint)path.fillOffset,
-                    (nuint)path.fillCount
-                );
-            }
-
-            if (UseGeometryAA && path.strokeCount > 0)
-            {
-                ObjCRuntime.SendMessage(
-                    _renderEncoder,
-                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                    (ulong)MTLPrimitiveType.TriangleStrip,
-                    (nuint)path.strokeOffset,
-                    (nuint)path.strokeCount
-                );
-            }
         }
     }
 
@@ -1896,13 +2033,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ref var dstPath = ref _paths[_pathCount++];
             dstPath = default;
 
-            // Fill: convert triangle fan to triangle list for Metal.
+            // Fill: MewVG Core outputs triangle list (not fan). Copy as-is.
             dstPath.fillOffset = _vertCount;
-            dstPath.fillCount = 0;
-            if (path.NFill >= 3)
+            dstPath.fillCount = path.NFill;
+            if (path.NFill > 0)
             {
-                var fillSpan = verts.Slice(path.FillOffset, path.NFill);
-                dstPath.fillCount = AppendTriangleFan(fillSpan);
+                EnsureVerts(_vertCount + path.NFill);
+                verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(_vertCount));
+                _vertCount += path.NFill;
             }
 
             // Stroke: copy as-is.
@@ -1921,45 +2059,45 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ref var call = ref _calls[_callCount++];
         call = default;
 
-        var convex = paths.Length == 1 && paths[0].Convex;
-        call.type = convex ? MNVGcallType.MNVG_CONVEXFILL : MNVGcallType.MNVG_FILL;
+        call.type = MNVGcallType.MNVG_FILL;
         call.pathOffset = pathOffset;
         call.pathCount = paths.Length;
         call.image = paint.Image;
         call.blendFunc = compositeOperation;
-
-        // Allocate uniforms
-        call.uniformOffset = AllocUniforms(convex ? 1 : 2);
-
-        if (!convex)
+        call.cpuResolvedFill = 1;
+        for (var i = 0; i < paths.Length; i++)
         {
-            // Simple shader for stencil (match GL layout: simple at base, fill at +1)
-            fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
+            if (paths[i].NFill > 0 && (paths[i].NFill % 3) != 0)
             {
-                var frag = (MNVGfragUniforms*)ptr;
-                *frag = default;
-                frag->strokeThr = -1.0f;
-                frag->type = (int)MNVGshaderType.MNVG_SHADER_SIMPLE;
-            }
-
-            // Fill shader goes to +1
-            fixed (byte* ptr = &_uniforms[(call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
-            {
-                var frag = (MNVGfragUniforms*)ptr;
-                ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
-            }
-        }
-        else
-        {
-            // Convex fill uses single uniform
-            fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
-            {
-                var frag = (MNVGfragUniforms*)ptr;
-                ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
+                call.cpuResolvedFill = 0;
+                break;
             }
         }
 
-        // Quad for fill
+        var convex = paths.Length == 1 && paths[0].Convex;
+
+        // Always allocate 2 uniforms (simple at +0, fill paint at +1)
+        // to match GL layout — CpuResolvedFill uses +1 directly.
+        call.uniformOffset = AllocUniforms(2);
+
+        // Simple shader at +0 (used by stencil path for non-convex)
+        fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
+        {
+            var frag = (MNVGfragUniforms*)ptr;
+            *frag = default;
+            frag->strokeThr = -1.0f;
+            frag->type = (int)MNVGshaderType.MNVG_SHADER_SIMPLE;
+        }
+
+        // Fill shader at +1 with strokeMult = -1.0 (analytical fill coverage)
+        fixed (byte* ptr = &_uniforms[(call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
+        {
+            var frag = (MNVGfragUniforms*)ptr;
+            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
+            frag->strokeMult = -1.0f;
+        }
+
+        // Quad for stencil fill (non-convex only)
         if (!convex)
         {
             call.triangleOffset = _vertCount;
@@ -2094,11 +2232,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             dstPath = default;
 
             dstPath.fillOffset = _vertCount;
-            dstPath.fillCount = 0;
-            if (path.NFill >= 3)
+            dstPath.fillCount = path.NFill;
+            if (path.NFill > 0)
             {
-                var fillSpan = verts.Slice(path.FillOffset, path.NFill);
-                dstPath.fillCount = AppendTriangleFan(fillSpan);
+                EnsureVerts(_vertCount + path.NFill);
+                verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(_vertCount));
+                _vertCount += path.NFill;
             }
 
             dstPath.strokeOffset = 0;

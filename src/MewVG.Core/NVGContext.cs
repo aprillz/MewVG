@@ -1,9 +1,12 @@
-// NanoVG Internal Context
+﻿// NanoVG Internal Context
 // Ported from nanovg.c
 // This file contains the core path rendering, state management, and tessellation logic
 
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Numerics;
+
+using Aprillz.MewVG.Tess;
 
 using static Aprillz.MewVG.NVGMath;
 
@@ -55,6 +58,7 @@ internal unsafe struct NVGstate
 {
     public NVGcompositeOperationState CompositeOperation;
     public bool ShapeAntiAlias;
+    public NVGfillRule FillRule;
     public NVGpaint Fill;
     public NVGpaint Stroke;
     public float StrokeWidth;
@@ -173,11 +177,13 @@ internal sealed class NVGContext
 {
     private const int NVG_MAX_STATES = 32;
     private const int NVG_INIT_COMMANDS_SIZE = 256;
+    private const float EDGE_AA_FRINGE_PX = 1f;
 
     // Render backend
     private readonly INVGRenderer _renderer;
 
     private readonly bool _edgeAntiAlias;
+    private readonly bool _forceCoverageAaFringe = false;
 
     // Commands
     private float[] _commands;
@@ -193,6 +199,7 @@ internal sealed class NVGContext
 
     // Path cache
     private readonly NVGpathCache _cache;
+    private readonly Tessellator _fillTessellator = new();
 
     private readonly List<NVGClipPath> _clipStack = new();
 
@@ -202,6 +209,9 @@ internal sealed class NVGContext
     private float _distTol;
     private float _fringeWidth;
     private float _devicePxRatio;
+
+    /// <summary>Current bezier flatten tolerance (depends on devicePxRatio).</summary>
+    public float TessTol => _tessTol;
 
     // Statistics
     public int DrawCallCount;
@@ -258,7 +268,7 @@ internal sealed class NVGContext
     {
         _tessTol = 0.25f / ratio;
         _distTol = 0.01f / ratio;
-        _fringeWidth = 1.0f / ratio;
+        _fringeWidth = EDGE_AA_FRINGE_PX / ratio;
         _devicePxRatio = ratio;
     }
 
@@ -324,6 +334,7 @@ internal sealed class NVGContext
 
         state.CompositeOperation = CompositeOperationState(NVGcompositeOperation.SourceOver);
         state.ShapeAntiAlias = true;
+        state.FillRule = NVGfillRule.NonZero;
         state.StrokeWidth = 1.0f;
         state.MiterLimit = 10.0f;
         state.LineCap = NVGlineCap.Butt;
@@ -451,6 +462,12 @@ internal sealed class NVGContext
     {
         ref var state = ref GetState();
         state.ShapeAntiAlias = enabled;
+    }
+
+    public void FillRule(NVGfillRule rule)
+    {
+        ref var state = ref GetState();
+        state.FillRule = rule;
     }
 
     public void StrokeWidth(float width)
@@ -678,22 +695,20 @@ internal sealed class NVGContext
     {
         ref var state = ref GetState();
 
-        FlattenPaths();
+        ApplyPathTolerances(in state, forStroke: false);
+        FlattenPaths(enforceWinding: false);
         if (_cache.NPaths == 0)
         {
             return;
         }
 
-        if (_edgeAntiAlias && state.ShapeAntiAlias)
-        {
-            ExpandFill(_fringeWidth, NVGlineJoin.Miter, 2.4f);
-        }
-        else
-        {
-            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f);
-        }
+        var fillFringe = _fringeWidth;
 
-        var clip = CaptureClipSnapshot(state.Scissor, _fringeWidth);
+        // Clip uses stencil (binary inside/outside) — pass fringe=0 so fill
+        // triangles stay at geometric boundary (no inset that would shrink clip).
+        ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
+
+        var clip = CaptureClipSnapshot(state.Scissor, fillFringe);
         _clipStack.Add(clip);
         state.ClipDepth = _clipStack.Count;
 
@@ -1206,7 +1221,7 @@ internal sealed class NVGContext
                                  float x3, float y3, float x4, float y4,
                                  int level, NVGpointFlags type)
     {
-        if (level > 10)
+        if (level > 14)
         {
             return;
         }
@@ -1240,7 +1255,7 @@ internal sealed class NVGContext
         TesselateBezier(x1234, y1234, x234, y234, x34, y34, x4, y4, level + 1, type);
     }
 
-    private void FlattenPaths()
+    private void FlattenPaths(bool enforceWinding = true)
     {
         if (_cache.NPaths > 0)
         {
@@ -1321,8 +1336,8 @@ internal sealed class NVGContext
 
             pts = _cache.Points.AsSpan(path.First, path.Count);
 
-            // Enforce winding.
-            if (path.Count > 2)
+            // Legacy NanoVG winding normalization is optional for CPU-resolved fills.
+            if (enforceWinding && path.Count > 2)
             {
                 var area = PolyArea(pts);
                 if (path.Winding == NVGwinding.CCW && area < 0.0f)
@@ -1368,6 +1383,43 @@ internal sealed class NVGContext
         return area * 0.5f;
     }
 
+    private static bool IsConvexContour(ReadOnlySpan<NVGpoint> pts)
+    {
+        if (pts.Length < 3)
+        {
+            return false;
+        }
+
+        float sign = 0f;
+        for (var i = 0; i < pts.Length; i++)
+        {
+            ref readonly var a = ref pts[i];
+            ref readonly var b = ref pts[(i + 1) % pts.Length];
+            ref readonly var c = ref pts[(i + 2) % pts.Length];
+
+            var abx = b.X - a.X;
+            var aby = b.Y - a.Y;
+            var bcx = c.X - b.X;
+            var bcy = c.Y - b.Y;
+            var cross = abx * bcy - aby * bcx;
+            if (MathF.Abs(cross) <= 1e-8f)
+            {
+                continue;
+            }
+
+            if (sign == 0f)
+            {
+                sign = cross;
+            }
+            else if (cross * sign < 0f)
+            {
+                return false;
+            }
+        }
+
+        return sign != 0f;
+    }
+
     private static void PolyReverse(Span<NVGpoint> pts)
     {
         int i = 0, j = pts.Length - 1;
@@ -1383,20 +1435,35 @@ internal sealed class NVGContext
 
     #region Fill & Stroke Rendering
 
+    private void ApplyPathTolerances(in NVGstate state, bool forStroke = false)
+    {
+        var ratio = Maxf(_devicePxRatio, 0.0001f);
+        _tessTol = 0.25f / ratio;
+        _distTol = 0.01f / ratio;
+        _fringeWidth = EDGE_AA_FRINGE_PX / ratio;
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static TessWindingRule MapFillRuleToTess(NVGfillRule rule)
+        => rule == NVGfillRule.EvenOdd ? TessWindingRule.Odd : TessWindingRule.NonZero;
+
     public void Fill()
     {
         ref var state = ref GetState();
         var fillPaint = state.Fill;
 
-        FlattenPaths();
+        ApplyPathTolerances(in state, forStroke: false);
+        FlattenPaths(enforceWinding: false);
 
-        if (_edgeAntiAlias && state.ShapeAntiAlias)
+        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        if (useFringeAa)
         {
-            ExpandFill(_fringeWidth, NVGlineJoin.Miter, 2.4f);
+            var fillFringe = _fringeWidth;
+            ExpandFill(fillFringe, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f);
+            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
         }
 
         // Apply global alpha
@@ -1408,7 +1475,7 @@ internal sealed class NVGContext
             ref fillPaint,
             state.CompositeOperation,
             ref state.Scissor,
-            _fringeWidth,
+            useFringeAa ? _fringeWidth : 0.0f,
             _cache.Bounds,
             _cache.Paths.AsSpan(0, _cache.NPaths),
             _cache.Verts);
@@ -1420,6 +1487,239 @@ internal sealed class NVGContext
             FillTriCount += path.NFill - 2;
             FillTriCount += path.NStroke - 2;
             DrawCallCount += 2;
+        }
+    }
+
+    /// <summary>
+    /// Flatten + tessellate current path commands in object-space (identity transform).
+    /// Call after BeginPath + path commands with identity transform active.
+    /// The returned cache can be reused across frames via <see cref="FillFromCache"/>.
+    /// </summary>
+    public FrozenFillCache BuildFillCache(TessWindingRule windingRule)
+    {
+        ref var state = ref GetState();
+        ApplyPathTolerances(in state, forStroke: false);
+
+        var cache = new FrozenFillCache();
+        cache.TessTol = _tessTol;
+
+        // Commands are in object-space (identity transform) but tolerances are
+        // calibrated for screen-space. Compensate by the current transform's
+        // scale factor so bezier subdivision matches screen-space visual quality.
+        var xf = state.Xform;
+        var sx = MathF.Sqrt(xf[0] * xf[0] + xf[1] * xf[1]);
+        var sy = MathF.Sqrt(xf[2] * xf[2] + xf[3] * xf[3]);
+        var scale = Maxf(Maxf(sx, sy), 0.0001f);
+        var fringeWidthObj = _fringeWidth / scale;
+
+        var savedTessTol = _tessTol;
+        var savedDistTol = _distTol;
+        var savedFringeWidth = _fringeWidth;
+        if (scale > 1.0f)
+        {
+            _tessTol /= scale;
+            _distTol /= scale;
+        }
+
+        FlattenPaths(enforceWinding: false);
+
+        // Restore standard tolerances (compensated values only needed for flattening)
+        _tessTol = savedTessTol;
+        _distTol = savedDistTol;
+        _fringeWidth = savedFringeWidth;
+
+        // Check for single convex contour (directConvexFill fast path)
+        if (_cache.NPaths == 1)
+        {
+            ref var onlyPath = ref _cache.Paths[0];
+            if (onlyPath.Count >= 3)
+            {
+                var pts = _cache.Points.AsSpan(onlyPath.First, onlyPath.Count);
+                if (IsConvexContour(pts))
+                {
+                    cache.IsDirectConvex = true;
+                    onlyPath.Closed = true;
+                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? NVGwinding.CCW : NVGwinding.CW;
+                }
+            }
+        }
+
+        if (!cache.IsDirectConvex)
+        {
+            NormalizeContoursForFill(_distTol / (scale > 1.0f ? scale : 1.0f), 0.0f);
+        }
+
+        if (_cache.NPaths == 0)
+        {
+            ClearPathCache();
+            return cache;
+        }
+
+        if (!cache.IsDirectConvex)
+        {
+            // Compute joins + fringe signs in object-space for inset tessellation.
+            // fringeSigns are topology-dependent (inside/outside), transform-invariant.
+            CalculateJoins(fringeWidthObj, NVGlineJoin.Miter, 2.4f);
+
+            var sourcePathCount = _cache.NPaths;
+            Span<float> fringeSigns = sourcePathCount <= 128
+                ? stackalloc float[sourcePathCount]
+                : new float[sourcePathCount];
+
+            _fringeWidth = fringeWidthObj;
+            ComputeFillFringeSigns(fringeSigns, sourcePathCount, windingRule);
+            _fringeWidth = savedFringeWidth;
+
+            // Snapshot contour data (after CalculateJoins — DM vectors included)
+            cache.NContourPaths = _cache.NPaths;
+            cache.ContourPaths = _cache.Paths.AsSpan(0, _cache.NPaths).ToArray();
+            cache.NContourPoints = _cache.NPoints;
+            cache.ContourPoints = _cache.Points.AsSpan(0, _cache.NPoints).ToArray();
+
+            // Tessellate with fringe inset in object-space.
+            // Inset = fringeWidthObj * 0.5 * fringeSign. After uniform scale S at
+            // render time this becomes _fringeWidth * 0.5 * fringeSign, matching
+            // the screen-space fringe strip inner edge exactly.
+            _fillTessellator.Clear();
+            Span<Vector2> stackContour = stackalloc Vector2[128];
+            for (var i = 0; i < sourcePathCount; i++)
+            {
+                ref var path = ref _cache.Paths[i];
+                if (path.Count < 3) continue;
+                var pts = _cache.Points.AsSpan(path.First, path.Count);
+                var woff = fringeWidthObj * 0.5f * fringeSigns[i];
+
+                var contour = path.Count <= 128
+                    ? stackContour.Slice(0, path.Count)
+                    : new Vector2[path.Count].AsSpan();
+
+                for (var j = 0; j < path.Count; j++)
+                    InsetPoint(ref contour[j], in pts[j], woff);
+                _fillTessellator.AddContour(contour);
+            }
+
+            var tessResult = _fillTessellator.Tessellate(windingRule, TessElementType.Polygons, 3);
+            if (tessResult.Status == TessStatus.Ok)
+            {
+                cache.TessVertices = tessResult.Vertices;
+                cache.TessIndices = tessResult.Indices;
+                cache.TriangleCount = tessResult.Indices.Length / 3;
+            }
+        }
+        else
+        {
+            // Convex: just snapshot contour data (fan is computed at render time)
+            cache.NContourPaths = _cache.NPaths;
+            cache.ContourPaths = _cache.Paths.AsSpan(0, _cache.NPaths).ToArray();
+            cache.NContourPoints = _cache.NPoints;
+            cache.ContourPoints = _cache.Points.AsSpan(0, _cache.NPoints).ToArray();
+        }
+
+        ClearPathCache();
+        return cache;
+    }
+
+    /// <summary>
+    /// Render a fill using cached object-space tessellation + current transform.
+    /// Restores cached contour points, transforms to screen-space, generates fringe,
+    /// and submits to the renderer.
+    /// </summary>
+    public void FillFromCache(FrozenFillCache cache, TessWindingRule windingRule)
+    {
+        if (cache.NContourPaths == 0) return;
+
+        ref var state = ref GetState();
+        var fillPaint = state.Fill;
+        ApplyPathTolerances(in state, forStroke: false);
+
+        // Restore contour points and transform to screen-space
+        RestoreAndTransformContours(cache, state.Xform);
+
+        // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
+        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        if (useFringeAa)
+        {
+            ExpandFill(_fringeWidth, NVGlineJoin.Miter, 2.4f, windingRule, tessCache: cache);
+        }
+        else
+        {
+            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, windingRule, tessCache: cache);
+        }
+
+        // Submit to renderer
+        fillPaint.InnerColor.A *= state.Alpha;
+        fillPaint.OuterColor.A *= state.Alpha;
+
+        _renderer.RenderFill(
+            ref fillPaint,
+            state.CompositeOperation,
+            ref state.Scissor,
+            useFringeAa ? _fringeWidth : 0.0f,
+            _cache.Bounds,
+            _cache.Paths.AsSpan(0, _cache.NPaths),
+            _cache.Verts);
+
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref var path = ref _cache.Paths[i];
+            FillTriCount += path.NFill - 2;
+            FillTriCount += path.NStroke - 2;
+            DrawCallCount += 2;
+        }
+    }
+
+    private void RestoreAndTransformContours(FrozenFillCache cache, Buffer6<float> xform)
+    {
+        // Ensure capacity
+        EnsurePathCapacity(cache.NContourPaths);
+        if (cache.NContourPoints > _cache.CPoints)
+        {
+            var cpoints = (cache.NContourPoints + 0x7f) & ~0x7f;
+            Array.Resize(ref _cache.Points, cpoints);
+            _cache.CPoints = cpoints;
+        }
+
+        _cache.NPaths = cache.NContourPaths;
+        _cache.NPoints = cache.NContourPoints;
+
+        // Copy path metadata
+        cache.ContourPaths.AsSpan(0, cache.NContourPaths).CopyTo(_cache.Paths);
+
+        // Copy and transform points
+        for (var i = 0; i < cache.NContourPoints; i++)
+        {
+            ref var src = ref cache.ContourPoints[i];
+            ref var dst = ref _cache.Points[i];
+            dst = src; // copy all fields (flags etc.)
+            TransformPoint(out dst.X, out dst.Y, xform, src.X, src.Y);
+        }
+
+        // Recalculate edge directions + lengths (screen-space)
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref var path = ref _cache.Paths[i];
+            var pts = _cache.Points.AsSpan(path.First, path.Count);
+            for (var k = 0; k < path.Count; k++)
+            {
+                ref var p0 = ref pts[k];
+                ref var p1 = ref pts[(k + 1) % path.Count];
+                p0.DX = p1.X - p0.X;
+                p0.DY = p1.Y - p0.Y;
+                p0.Len = Normalize(ref p0.DX, ref p0.DY);
+            }
+        }
+
+        // Recompute bounds
+        _cache.Bounds[0] = _cache.Bounds[1] = 1e6f;
+        _cache.Bounds[2] = _cache.Bounds[3] = -1e6f;
+        for (var i = 0; i < _cache.NPoints; i++)
+        {
+            var x = _cache.Points[i].X;
+            var y = _cache.Points[i].Y;
+            _cache.Bounds[0] = Math.Min(_cache.Bounds[0], x);
+            _cache.Bounds[1] = Math.Min(_cache.Bounds[1], y);
+            _cache.Bounds[2] = Math.Max(_cache.Bounds[2], x);
+            _cache.Bounds[3] = Math.Max(_cache.Bounds[3], y);
         }
     }
 
@@ -1443,6 +1743,7 @@ internal sealed class NVGContext
         strokePaint.InnerColor.A *= state.Alpha;
         strokePaint.OuterColor.A *= state.Alpha;
 
+        ApplyPathTolerances(in state, forStroke: true);
         FlattenPaths();
 
         if (_edgeAntiAlias && state.ShapeAntiAlias)
@@ -1477,104 +1778,230 @@ internal sealed class NVGContext
 
     #region Expand Fill/Stroke (Simplified)
 
-    private void ExpandFill(float w, NVGlineJoin lineJoin, float miterLimit)
+    private void ExpandFill(float w, NVGlineJoin lineJoin, float miterLimit, TessWindingRule tessWindingRule,
+        FrozenFillCache? tessCache = null)
     {
+        var fastSingleConvex = false;
+        if (_cache.NPaths == 1)
+        {
+            ref var onlyPath = ref _cache.Paths[0];
+            if (onlyPath.Count >= 3)
+            {
+                var pts = _cache.Points.AsSpan(onlyPath.First, onlyPath.Count);
+                if (IsConvexContour(pts))
+                {
+                    // Keep original flattened contour as SSOT for the common UI case
+                    // (single convex shape), skipping normalization+tessellation work.
+                    fastSingleConvex = true;
+                    onlyPath.Closed = true;
+                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? NVGwinding.CCW : NVGwinding.CW;
+                }
+            }
+        }
+
+        if (!fastSingleConvex && tessCache == null)
+        {
+            NormalizeContoursForFill(_distTol, 0.0f);
+        }
+        if (_cache.NPaths == 0)
+        {
+            _cache.NVerts = 0;
+            return;
+        }
+
         CalculateJoins(w, lineJoin, miterLimit);
 
-        // Calculate max vertex usage
-        var cverts = 0;
-        for (var i = 0; i < _cache.NPaths; i++)
+        var aa = _fringeWidth;
+        var fringe = w > 0.0f;
+        var sourcePathCount = _cache.NPaths;
+        bool directConvexFill = false;
+        int directFirst = 0;
+        int directCount = 0;
+        Vector2[] tessVertices = Array.Empty<Vector2>();
+        int[] tessIndices = Array.Empty<int>();
+        int triangleCount;
+        bool tessNeedsTransform = false;
+
+        if (sourcePathCount == 1)
         {
-            ref var path = ref _cache.Paths[i];
-            cverts += path.Count + path.NBevel + 1;
-            if (w > 0.0f)
+            ref readonly var onlyPath = ref _cache.Paths[0];
+            if (onlyPath.Count >= 3)
             {
-                cverts += (path.Count + path.NBevel * 5 + 1) * 2;
+                var pts = _cache.Points.AsSpan(onlyPath.First, onlyPath.Count);
+                if (IsConvexContour(pts))
+                {
+                    directConvexFill = true;
+                    directFirst = onlyPath.First;
+                    directCount = onlyPath.Count;
+                }
+            }
+        }
+
+        // Compute fringe signs early so tessellator contours can be inset to match fringe.
+        Span<float> fringeSigns = sourcePathCount <= 128
+            ? stackalloc float[sourcePathCount]
+            : new float[sourcePathCount];
+        if (fringe && !directConvexFill)
+        {
+            ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+        }
+
+        if (!directConvexFill)
+        {
+            if (tessCache is { TessVertices: not null, TessIndices: not null })
+            {
+                // Use cached object-space tessellation (will be transformed during fill body emit)
+                tessVertices = tessCache.TessVertices;
+                tessIndices = tessCache.TessIndices;
+                triangleCount = tessCache.TriangleCount;
+                tessNeedsTransform = true;
+            }
+            else
+            {
+                _fillTessellator.Clear();
+                Span<Vector2> stackContour = stackalloc Vector2[128];
+                Vector2[]? rentedContour = null;
+                try
+                {
+                    for (var i = 0; i < sourcePathCount; i++)
+                    {
+                        ref var path = ref _cache.Paths[i];
+                        if (path.Count < 3)
+                        {
+                            continue;
+                        }
+
+                        var pts = _cache.Points.AsSpan(path.First, path.Count);
+                        var woff = fringe ? aa * 0.5f * fringeSigns[i] : 0.0f;
+                        if (path.Count <= stackContour.Length)
+                        {
+                            var contour = stackContour.Slice(0, path.Count);
+                            for (var j = 0; j < path.Count; j++)
+                            {
+                                InsetPoint(ref contour[j], in pts[j], woff);
+                            }
+
+                            _fillTessellator.AddContour(contour);
+                        }
+                        else
+                        {
+                            rentedContour = System.Buffers.ArrayPool<Vector2>.Shared.Rent(path.Count);
+                            var contour = rentedContour.AsSpan(0, path.Count);
+                            for (var j = 0; j < path.Count; j++)
+                            {
+                                InsetPoint(ref contour[j], in pts[j], woff);
+                            }
+
+                            _fillTessellator.AddContour(contour);
+                            System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+                            rentedContour = null;
+                        }
+                    }
+                }
+                finally
+                {
+                    if (rentedContour is not null)
+                    {
+                        System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+                    }
+                }
+
+                var tessResult = _fillTessellator.Tessellate(tessWindingRule, TessElementType.Polygons, 3);
+                if (tessResult.Status != TessStatus.Ok)
+                {
+                    _cache.NPaths = 0;
+                    _cache.NVerts = 0;
+                    return;
+                }
+
+                tessVertices = tessResult.Vertices;
+                tessIndices = tessResult.Indices;
+                triangleCount = tessIndices.Length / 3;
+            }
+        }
+        else
+        {
+            triangleCount = directCount - 2;
+        }
+
+        if (triangleCount == 0)
+        {
+            _cache.NPaths = 0;
+            _cache.NVerts = 0;
+            return;
+        }
+
+        var fringePathCount = 0;
+        if (fringe)
+        {
+            for (var i = 0; i < sourcePathCount; i++)
+            {
+                if (_cache.Paths[i].Count > 0)
+                {
+                    fringePathCount++;
+                }
+            }
+        }
+        var fillPathCount = triangleCount > 0 ? 1 : 0;
+        var finalPathCount = fringePathCount + fillPathCount;
+        EnsurePathCapacity(finalPathCount);
+
+        var cverts = triangleCount * 3;
+        if (directConvexFill && fringe)
+        {
+            // Bevel vertices split into 2 fan vertices (DL0 + DL1), adding 1 extra triangle each
+            cverts += _cache.Paths[0].NBevel * 3;
+        }
+        if (fringe)
+        {
+            for (var i = 0; i < sourcePathCount; i++)
+            {
+                ref var path = ref _cache.Paths[i];
+                if (path.Count > 0)
+                {
+                    cverts += (path.Count + path.NBevel * 5 + 1) * 2;
+                }
             }
         }
 
         EnsureVerts(cverts);
 
-        var convex = _cache.NPaths == 1 && _cache.Paths[0].Convex;
-        var aa = _fringeWidth;
-        var fringe = w > 0.0f;
+        if (fringe && directConvexFill)
+        {
+            ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+        }
 
         var vertOffset = 0;
-        for (var i = 0; i < _cache.NPaths; i++)
+        var pathOffset = 0;
+
+        if (fringe)
         {
-            ref var path = ref _cache.Paths[i];
-            var pts = _cache.Points.AsSpan(path.First, path.Count);
-
-            // Calculate shape vertices
-            var woff = 0.5f * aa;
-            path.FillOffset = vertOffset;
-
-            if (fringe)
+            for (var i = 0; i < sourcePathCount; i++)
             {
-                // Looping
-                for (var j = 0; j < path.Count; j++)
+                ref var srcPath = ref _cache.Paths[i];
+                if (srcPath.Count <= 0)
                 {
-                    ref var p1 = ref pts[j];
-                    if ((p1.Flags & NVGpointFlags.Bevel) != 0)
-                    {
-                        if ((p1.Flags & NVGpointFlags.Left) != 0)
-                        {
-                            var lx = p1.X + p1.DMX * woff;
-                            var ly = p1.Y + p1.DMY * woff;
-                            SetVert(ref _cache.Verts[vertOffset++], lx, ly, 0.5f, 1);
-                        }
-                        else
-                        {
-                            ref var p0 = ref pts[(j + path.Count - 1) % path.Count];
-                            var dlx0 = p0.DY;
-                            var dly0 = -p0.DX;
-                            var dlx1 = p1.DY;
-                            var dly1 = -p1.DX;
-                            var lx0 = p1.X + dlx0 * woff;
-                            var ly0 = p1.Y + dly0 * woff;
-                            var lx1 = p1.X + dlx1 * woff;
-                            var ly1 = p1.Y + dly1 * woff;
-                            SetVert(ref _cache.Verts[vertOffset++], lx0, ly0, 0.5f, 1);
-                            SetVert(ref _cache.Verts[vertOffset++], lx1, ly1, 0.5f, 1);
-                        }
-                    }
-                    else
-                    {
-                        SetVert(ref _cache.Verts[vertOffset++], p1.X + p1.DMX * woff, p1.Y + p1.DMY * woff, 0.5f, 1);
-                    }
-                }
-            }
-            else
-            {
-                for (var j = 0; j < path.Count; j++)
-                {
-                    ref var pt = ref pts[j];
-                    SetVert(ref _cache.Verts[vertOffset++], pt.X, pt.Y, 0.5f, 1);
-                }
-            }
-
-            path.NFill = vertOffset - path.FillOffset;
-
-            // Calculate fringe
-            if (fringe)
-            {
-                var lw = w + woff;
-                var rw = w - woff;
-                float lu = lw;       // signed distance: inner edge (positive = inside)
-                float ru = -rw;      // signed distance: outer edge (negative = outside)
-                path.StrokeOffset = vertOffset;
-
-                // Create only half a fringe for convex shapes
-                if (convex)
-                {
-                    lw = woff;
-                    lu = woff;       // signed distance at fill fan boundary
+                    continue;
                 }
 
-                // Looping
-                for (var j = 0; j < path.Count; j++)
+                var pts = _cache.Points.AsSpan(srcPath.First, srcPath.Count);
+
+                var outPath = srcPath;
+                outPath.FillOffset = 0;
+                outPath.NFill = 0;
+                outPath.Convex = false;
+                outPath.StrokeOffset = vertOffset;
+
+                var fringeDir = fringeSigns[i];
+                var woff = aa * 0.5f;
+                var lw = woff * fringeDir;
+                var rw = woff * fringeDir;
+                float lu = 0.5f;
+                float ru = -0.5f;
+
+                for (var j = 0; j < srcPath.Count; j++)
                 {
-                    ref var p0 = ref pts[(j + path.Count - 1) % path.Count];
+                    ref var p0 = ref pts[(j + srcPath.Count - 1) % srcPath.Count];
                     ref var p1 = ref pts[j];
 
                     if ((p1.Flags & (NVGpointFlags.Bevel | NVGpointFlags.InnerBevel)) != 0)
@@ -1588,18 +2015,277 @@ internal sealed class NVGContext
                     }
                 }
 
-                // Loop it
-                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[path.StrokeOffset].X, _cache.Verts[path.StrokeOffset].Y, lu, 1);
-                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[path.StrokeOffset + 1].X, _cache.Verts[path.StrokeOffset + 1].Y, ru, 1);
+                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[outPath.StrokeOffset].X, _cache.Verts[outPath.StrokeOffset].Y, lu, 1);
+                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[outPath.StrokeOffset + 1].X, _cache.Verts[outPath.StrokeOffset + 1].Y, ru, 1);
 
-                path.NStroke = vertOffset - path.StrokeOffset;
+                outPath.NStroke = vertOffset - outPath.StrokeOffset;
+                _cache.Paths[pathOffset++] = outPath;
+            }
+        }
+
+        if (triangleCount > 0)
+        {
+            ref var outPath = ref _cache.Paths[pathOffset++];
+            outPath = default;
+            outPath.FillOffset = vertOffset;
+            outPath.StrokeOffset = 0;
+            outPath.NStroke = 0;
+            outPath.Convex = true;
+
+            if (directConvexFill)
+            {
+                var pts = _cache.Points.AsSpan(directFirst, directCount);
+                if (fringe)
+                {
+                    // Bevel-aware inset fan (mirrors NanoVG's nvg__expandFill fill fan).
+                    // At sharp corners (bevel), DM magnitude >> 1 causes overshoot.
+                    // Split to two edge normals (DL, magnitude=1) to match fringe's BevelJoin.
+                    var woff = aa * 0.5f * fringeSigns[0];
+                    float cx = 0, cy = 0;
+                    float px = 0, py = 0;
+                    var fanIdx = 0;
+
+                    for (var j = 0; j < directCount; j++)
+                    {
+                        ref readonly var p1 = ref pts[j];
+
+                        if ((p1.Flags & (NVGpointFlags.Bevel | NVGpointFlags.InnerBevel)) != 0)
+                        {
+                            ref readonly var p0 = ref pts[j > 0 ? j - 1 : directCount - 1];
+                            var dlx0 = p0.DY;
+                            var dly0 = -p0.DX;
+                            var dlx1 = p1.DY;
+                            var dly1 = -p1.DX;
+
+                            // First edge normal vertex
+                            var fx = p1.X + dlx0 * woff;
+                            var fy = p1.Y + dly0 * woff;
+                            if (fanIdx == 0) { cx = fx; cy = fy; }
+                            else if (fanIdx == 1) { px = fx; py = fy; }
+                            else
+                            {
+                                SetVert(ref _cache.Verts[vertOffset++], cx, cy, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], px, py, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], fx, fy, 0.5f, 1);
+                                px = fx; py = fy;
+                            }
+                            fanIdx++;
+
+                            // Second edge normal vertex
+                            fx = p1.X + dlx1 * woff;
+                            fy = p1.Y + dly1 * woff;
+                            if (fanIdx == 1) { px = fx; py = fy; }
+                            else
+                            {
+                                SetVert(ref _cache.Verts[vertOffset++], cx, cy, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], px, py, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], fx, fy, 0.5f, 1);
+                                px = fx; py = fy;
+                            }
+                            fanIdx++;
+                        }
+                        else
+                        {
+                            // Smooth vertex: DM magnitude ≈ 1, safe to use.
+                            var fx = p1.X + p1.DMX * woff;
+                            var fy = p1.Y + p1.DMY * woff;
+                            if (fanIdx == 0) { cx = fx; cy = fy; }
+                            else if (fanIdx == 1) { px = fx; py = fy; }
+                            else
+                            {
+                                SetVert(ref _cache.Verts[vertOffset++], cx, cy, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], px, py, 0.5f, 1);
+                                SetVert(ref _cache.Verts[vertOffset++], fx, fy, 0.5f, 1);
+                                px = fx; py = fy;
+                            }
+                            fanIdx++;
+                        }
+                    }
+                }
+                else
+                {
+                    // No fringe: simple fan without inset
+                    for (var i = 1; i < directCount - 1; i++)
+                    {
+                        SetVert(ref _cache.Verts[vertOffset++], pts[0].X, pts[0].Y, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], pts[i].X, pts[i].Y, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], pts[i + 1].X, pts[i + 1].Y, 0.5f, 1);
+                    }
+                }
             }
             else
             {
-                path.StrokeOffset = 0;
-                path.NStroke = 0;
+                if (tessNeedsTransform)
+                {
+                    // Cached object-space tessellation: transform to screen-space
+                    ref readonly var xform = ref GetState().Xform;
+                    for (var i = 0; i < triangleCount; i++)
+                    {
+                        var i0 = tessIndices[i * 3];
+                        var i1 = tessIndices[i * 3 + 1];
+                        var i2 = tessIndices[i * 3 + 2];
+
+                        TransformPoint(out var x0, out var y0, xform, tessVertices[i0].X, tessVertices[i0].Y);
+                        TransformPoint(out var x1, out var y1, xform, tessVertices[i1].X, tessVertices[i1].Y);
+                        TransformPoint(out var x2, out var y2, xform, tessVertices[i2].X, tessVertices[i2].Y);
+
+                        SetVert(ref _cache.Verts[vertOffset++], x0, y0, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], x1, y1, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], x2, y2, 0.5f, 1);
+                    }
+                }
+                else
+                {
+                    for (var i = 0; i < triangleCount; i++)
+                    {
+                        var i0 = tessIndices[i * 3];
+                        var i1 = tessIndices[i * 3 + 1];
+                        var i2 = tessIndices[i * 3 + 2];
+
+                        var v0 = tessVertices[i0];
+                        var v1 = tessVertices[i1];
+                        var v2 = tessVertices[i2];
+
+                        SetVert(ref _cache.Verts[vertOffset++], v0.X, v0.Y, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], v1.X, v1.Y, 0.5f, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], v2.X, v2.Y, 0.5f, 1);
+                    }
+                }
+            }
+
+            outPath.NFill = vertOffset - outPath.FillOffset;
+        }
+
+        _cache.NPaths = finalPathCount;
+        _cache.NVerts = vertOffset;
+    }
+
+    private void ComputeFillFringeSigns(Span<float> signs, int sourcePathCount, TessWindingRule windingRule)
+    {
+        for (var i = 0; i < sourcePathCount; i++)
+        {
+            signs[i] = 1f;
+            ref readonly var path = ref _cache.Paths[i];
+            if (path.Count < 2)
+            {
+                continue;
+            }
+
+            var pts = _cache.Points.AsSpan(path.First, path.Count);
+            var probe = Maxf(_fringeWidth * 0.75f, _distTol * 4.0f);
+
+            if (TryProbeFringeSign(pts, 0, probe, sourcePathCount, windingRule, out var sign))
+            {
+                signs[i] = sign;
+            }
+            else if (path.Count > 2 &&
+                     TryProbeFringeSign(pts, path.Count / 2, probe, sourcePathCount, windingRule, out sign))
+            {
+                // Retry at a different vertex (midpoint of contour).
+                signs[i] = sign;
+            }
+            else
+            {
+                // Ambiguous — fall back to signed-area winding.
+                signs[i] = path.Winding == NVGwinding.CW ? 1f : -1f;
             }
         }
+    }
+
+    private bool TryProbeFringeSign(ReadOnlySpan<NVGpoint> pts, int vertexIndex,
+        float probe, int sourcePathCount, TessWindingRule windingRule, out float sign)
+    {
+        ref readonly var p = ref pts[vertexIndex];
+
+        // Use normalized DM direction for probing.
+        // DM (average of adjacent edge normals) reliably points toward/away from
+        // the polygon interior, even at sharp corners where a single edge normal
+        // (DL) may miss. Normalizing prevents magnitude explosion (DM up to 600x).
+        var dmLen = p.DMX * p.DMX + p.DMY * p.DMY;
+        float pdx, pdy;
+        if (dmLen > 1e-6f)
+        {
+            dmLen = MathF.Sqrt(dmLen);
+            pdx = p.DMX / dmLen;
+            pdy = p.DMY / dmLen;
+        }
+        else
+        {
+            // DM degenerate — fall back to edge normal (DL)
+            pdx = p.DY;
+            pdy = -p.DX;
+        }
+
+        var plusX = p.X + pdx * probe;
+        var plusY = p.Y + pdy * probe;
+        var minusX = p.X - pdx * probe;
+        var minusY = p.Y - pdy * probe;
+
+        var plusInside = IsPointInsideFill(plusX, plusY, sourcePathCount, windingRule);
+        var minusInside = IsPointInsideFill(minusX, minusY, sourcePathCount, windingRule);
+
+        if (plusInside && !minusInside)
+        {
+            // +DM direction is inside → DM points inward → positive woff insets
+            sign = 1f;
+            return true;
+        }
+
+        if (!plusInside && minusInside)
+        {
+            // -DM direction is inside → DM points outward → negative woff insets
+            sign = -1f;
+            return true;
+        }
+
+        sign = 0f;
+        return false;
+    }
+
+    private bool IsPointInsideFill(float x, float y, int sourcePathCount, TessWindingRule windingRule)
+    {
+        var winding = 0;
+        var crossings = 0;
+
+        for (var i = 0; i < sourcePathCount; i++)
+        {
+            ref readonly var path = ref _cache.Paths[i];
+            if (path.Count < 2)
+            {
+                continue;
+            }
+
+            var pts = _cache.Points.AsSpan(path.First, path.Count);
+            for (var j = 0; j < path.Count; j++)
+            {
+                ref readonly var a = ref pts[j];
+                ref readonly var b = ref pts[(j + 1) % path.Count];
+
+                var ayAbove = a.Y > y;
+                var byAbove = b.Y > y;
+                if (ayAbove == byAbove)
+                {
+                    continue;
+                }
+
+                var t = (y - a.Y) / (b.Y - a.Y);
+                var xHit = a.X + t * (b.X - a.X);
+                if (xHit <= x)
+                {
+                    continue;
+                }
+
+                crossings++;
+                if (windingRule == TessWindingRule.NonZero)
+                {
+                    winding += b.Y > a.Y ? 1 : -1;
+                }
+            }
+        }
+
+        return windingRule == TessWindingRule.NonZero
+            ? winding != 0
+            : (crossings & 1) != 0;
     }
 
     private void ExpandStroke(float w, float fringe, NVGlineCap lineCap, NVGlineJoin lineJoin, float miterLimit)
@@ -1607,6 +2293,10 @@ internal sealed class NVGContext
         var aa = fringe;
         float u0 = 0.0f, u1 = 1.0f;
         var ncap = CurveDivs(w, NVG_PI, _tessTol);
+        if (lineJoin == NVGlineJoin.Round || lineCap == NVGlineCap.Round)
+        {
+            ncap = Maxi(ncap, 12);
+        }
 
         w += aa * 0.5f;
 
@@ -1841,6 +2531,229 @@ internal sealed class NVGContext
         }
     }
 
+    private void EnsurePathCapacity(int count)
+    {
+        if (count > _cache.CPaths)
+        {
+            var cpaths = (count + 0x0f) & ~0x0f;
+            Array.Resize(ref _cache.Paths, cpaths);
+            _cache.CPaths = cpaths;
+        }
+    }
+
+    private void NormalizeContoursForFill(float epsWorld, float collinearTol)
+    {
+        if (_cache.NPaths == 0)
+        {
+            return;
+        }
+
+        var writePath = 0;
+        var writePoint = 0;
+
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref var srcPath = ref _cache.Paths[i];
+            if (srcPath.Count < 2)
+            {
+                continue;
+            }
+
+            var src = _cache.Points.AsSpan(srcPath.First, srcPath.Count);
+            var dstStart = writePoint;
+
+            var hasPrev = false;
+            NVGpoint prev = default;
+            for (var j = 0; j < src.Length; j++)
+            {
+                var p = src[j];
+                if (!hasPrev || !PtEquals(prev.X, prev.Y, p.X, p.Y, epsWorld))
+                {
+                    _cache.Points[writePoint++] = p;
+                    prev = p;
+                    hasPrev = true;
+                }
+            }
+
+            var count = writePoint - dstStart;
+            if (count > 1 &&
+                PtEquals(
+                    _cache.Points[dstStart].X, _cache.Points[dstStart].Y,
+                    _cache.Points[dstStart + count - 1].X, _cache.Points[dstStart + count - 1].Y,
+                    epsWorld))
+            {
+                count--;
+                writePoint--;
+            }
+
+            if (count < 3)
+            {
+                writePoint = dstStart;
+                continue;
+            }
+
+            RemoveCollinearVerticesInPlace(dstStart, ref count, collinearTol);
+            if (count < 3)
+            {
+                writePoint = dstStart;
+                continue;
+            }
+
+            var dstPath = srcPath;
+            dstPath.First = dstStart;
+            dstPath.Count = count;
+            dstPath.Closed = true;
+            RecomputePathSegmentData(dstStart, count);
+            var signedArea2 = ComputeSignedArea2(dstStart, count);
+            dstPath.Winding = signedArea2 >= 0.0 ? NVGwinding.CCW : NVGwinding.CW;
+            _cache.Paths[writePath++] = dstPath;
+            writePoint = dstStart + count;
+        }
+
+        _cache.NPaths = writePath;
+        _cache.NPoints = writePoint;
+        RecalculatePathBounds();
+    }
+
+    private void RemoveCollinearVerticesInPlace(int start, ref int count, float collinearTol)
+    {
+        if (count < 3)
+        {
+            return;
+        }
+
+        var rentedA = System.Buffers.ArrayPool<NVGpoint>.Shared.Rent(count);
+        var rentedB = System.Buffers.ArrayPool<NVGpoint>.Shared.Rent(count);
+        try
+        {
+            var src = rentedA.AsSpan(0, count);
+            var dst = rentedB.AsSpan(0, count);
+            _cache.Points.AsSpan(start, count).CopyTo(src);
+            var srcCount = count;
+
+            while (srcCount >= 3)
+            {
+                var removed = false;
+                var dstCount = 0;
+                for (var i = 0; i < srcCount; i++)
+                {
+                    var iPrev = (i + srcCount - 1) % srcCount;
+                    var iNext = (i + 1) % srcCount;
+
+                    ref readonly var a = ref src[iPrev];
+                    ref readonly var b = ref src[i];
+                    ref readonly var c = ref src[iNext];
+                    if (IsNearlyCollinear(in a, in b, in c, collinearTol))
+                    {
+                        removed = true;
+                        continue;
+                    }
+
+                    dst[dstCount++] = b;
+                }
+
+                srcCount = dstCount;
+                if (!removed)
+                {
+                    break;
+                }
+
+                var tmp = src;
+                src = dst;
+                dst = tmp;
+            }
+
+            count = srcCount;
+            if (count > 0)
+            {
+                src.Slice(0, count).CopyTo(_cache.Points.AsSpan(start, count));
+            }
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<NVGpoint>.Shared.Return(rentedA, clearArray: false);
+            System.Buffers.ArrayPool<NVGpoint>.Shared.Return(rentedB, clearArray: false);
+        }
+    }
+
+    private static bool IsNearlyCollinear(in NVGpoint a, in NVGpoint b, in NVGpoint c, float collinearTol)
+    {
+        var abx = (double)b.X - a.X;
+        var aby = (double)b.Y - a.Y;
+        var bcx = (double)c.X - b.X;
+        var bcy = (double)c.Y - b.Y;
+
+        var ab2 = abx * abx + aby * aby;
+        var bc2 = bcx * bcx + bcy * bcy;
+        var tol2 = (double)collinearTol * collinearTol;
+        if (ab2 <= tol2 || bc2 <= tol2)
+        {
+            return true;
+        }
+
+        var cross = abx * bcy - aby * bcx;
+        var cross2 = cross * cross;
+        // (|ab|+|bc|)^2 <= 2*(|ab|^2+|bc|^2). Avoids sqrt in hot path.
+        var rhs = tol2 * 2.0 * (ab2 + bc2);
+        return cross2 <= rhs;
+    }
+
+    private void RecomputePathSegmentData(int start, int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            var next = (i + 1) % count;
+            ref var p0 = ref _cache.Points[start + i];
+            ref var p1 = ref _cache.Points[start + next];
+            p0.DX = p1.X - p0.X;
+            p0.DY = p1.Y - p0.Y;
+            p0.Len = Normalize(ref p0.DX, ref p0.DY);
+        }
+    }
+
+    private double ComputeSignedArea2(int start, int count)
+    {
+        double area2 = 0.0;
+        for (var i = 0; i < count; i++)
+        {
+            var j = (i + 1) % count;
+            ref readonly var a = ref _cache.Points[start + i];
+            ref readonly var b = ref _cache.Points[start + j];
+            area2 += (double)a.X * b.Y - (double)b.X * a.Y;
+        }
+
+        return area2;
+    }
+
+    private void RecalculatePathBounds()
+    {
+        if (_cache.NPaths == 0)
+        {
+            _cache.Bounds[0] = 0;
+            _cache.Bounds[1] = 0;
+            _cache.Bounds[2] = 0;
+            _cache.Bounds[3] = 0;
+            return;
+        }
+
+        _cache.Bounds[0] = _cache.Bounds[1] = 1e6f;
+        _cache.Bounds[2] = _cache.Bounds[3] = -1e6f;
+
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref var path = ref _cache.Paths[i];
+            var pts = _cache.Points.AsSpan(path.First, path.Count);
+            for (var j = 0; j < pts.Length; j++)
+            {
+                ref var p = ref pts[j];
+                _cache.Bounds[0] = Minf(_cache.Bounds[0], p.X);
+                _cache.Bounds[1] = Minf(_cache.Bounds[1], p.Y);
+                _cache.Bounds[2] = Maxf(_cache.Bounds[2], p.X);
+                _cache.Bounds[3] = Maxf(_cache.Bounds[3], p.Y);
+            }
+        }
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void SetVert(ref NVGvertex vtx, float x, float y, float u, float v)
     {
@@ -1848,6 +2761,24 @@ internal sealed class NVGContext
         vtx.Y = y;
         vtx.U = u;
         vtx.V = v;
+    }
+
+    /// <summary>
+    /// Offset a point along its DM vector for tessellator inset, clamping DM magnitude
+    /// to 1 to prevent overshoot at sharp corners (where DM can be up to 600x).
+    /// </summary>
+    private static void InsetPoint(ref Vector2 dst, in NVGpoint pt, float woff)
+    {
+        var dmx = pt.DMX;
+        var dmy = pt.DMY;
+        var dmSq = dmx * dmx + dmy * dmy;
+        if (dmSq > 1.0f)
+        {
+            var invLen = 1.0f / MathF.Sqrt(dmSq);
+            dmx *= invLen;
+            dmy *= invLen;
+        }
+        dst = new Vector2(pt.X + dmx * woff, pt.Y + dmy * woff);
     }
 
     private void BevelJoin(ref int dst, ref NVGpoint p0, ref NVGpoint p1, float lw, float rw, float lu, float ru, float fringe)
@@ -2164,3 +3095,9 @@ internal sealed class NVGContext
 
     #endregion
 }
+
+
+
+
+
+

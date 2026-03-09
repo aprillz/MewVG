@@ -48,9 +48,13 @@ public abstract class NanoVG : IDisposable
 
     public void LineJoin(NVGlineJoin join) => _nvg.LineJoin(join);
 
+    public void ShapeAntiAlias(bool enabled) => _nvg.ShapeAntiAlias(enabled);
+
     public void GlobalAlpha(float alpha) => _nvg.GlobalAlpha(alpha);
 
     public void GlobalCompositeOperation(NVGcompositeOperation op) => _nvg.GlobalCompositeOperation(op);
+
+    public void FillRule(NVGfillRule rule) => _nvg.FillRule(rule);
 
     #endregion
 
@@ -129,6 +133,20 @@ public abstract class NanoVG : IDisposable
     public void Fill() => _nvg.Fill();
 
     public void Stroke() => _nvg.Stroke();
+
+    /// <summary>Current bezier flatten tolerance (depends on devicePxRatio).</summary>
+    public float TessTol => _nvg.TessTol;
+
+    /// <summary>
+    /// Build an object-space tessellation cache from the current path commands.
+    /// Call after BeginPath + path commands with identity transform active.
+    /// </summary>
+    public FrozenFillCache BuildFillCache(Tess.TessWindingRule windingRule) => _nvg.BuildFillCache(windingRule);
+
+    /// <summary>
+    /// Render a fill using cached object-space tessellation + current transform.
+    /// </summary>
+    public void FillFromCache(FrozenFillCache cache, Tess.TessWindingRule windingRule) => _nvg.FillFromCache(cache, windingRule);
 
     #endregion
 

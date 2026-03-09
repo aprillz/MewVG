@@ -134,6 +134,22 @@ public enum NVGwinding
 }
 
 /// <summary>
+/// Fill rule used for path topology resolution.
+/// </summary>
+public enum NVGfillRule
+{
+    /// <summary>
+    /// Non-zero winding rule.
+    /// </summary>
+    NonZero = 0,
+
+    /// <summary>
+    /// Even-odd rule.
+    /// </summary>
+    EvenOdd = 1,
+}
+
+/// <summary>
 /// Solidity types.
 /// </summary>
 public enum NVGsolidity

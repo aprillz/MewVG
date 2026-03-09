@@ -42,6 +42,7 @@ public static unsafe partial class Metal
         public static readonly nint NewDepthStencilStateWithDescriptor = ObjCRuntime.RegisterSelector("newDepthStencilStateWithDescriptor:");
         public static readonly nint NewRenderPipelineStateWithDescriptor = ObjCRuntime.RegisterSelector("newRenderPipelineStateWithDescriptor:error:");
         public static readonly nint NewLibraryWithData = ObjCRuntime.RegisterSelector("newLibraryWithData:error:");
+        public static readonly nint NewLibraryWithSource = ObjCRuntime.RegisterSelector("newLibraryWithSource:options:error:");
         public static readonly nint NewFunctionWithName = ObjCRuntime.RegisterSelector("newFunctionWithName:");
 
         // CommandQueue
