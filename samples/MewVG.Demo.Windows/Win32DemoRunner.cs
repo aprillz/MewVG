@@ -4,7 +4,7 @@ using Aprillz.MewVG;
 
 namespace MewVG.Demo.Windows;
 
-internal sealed unsafe class Win32DemoRunner : DemoRunner
+internal sealed unsafe partial class Win32DemoRunner : DemoRunner
 {
     private static Win32DemoRunner? s_instance;
 
@@ -146,7 +146,7 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
         NanoVGGL.Initialize(getProcAddress);
 
         _gl = new GLMinimal(getProcAddress);
-        _vg = new NanoVGGL();
+        _vg = new NanoVGGL( NVGcreateFlags.Antialias );
     }
 
     protected override void Execute()
@@ -345,7 +345,7 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
 
     // ─── Win32 Native ────────────────────────────────────────────────────────
 
-    private static class User32
+    private static partial class User32
     {
         public const uint CS_OWNDC = 0x0020;
         public const uint CS_HREDRAW = 0x0002;
@@ -359,102 +359,103 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
         public const uint WM_KEYDOWN = 0x0100;
         public const int VK_ESCAPE = 0x1B;
 
-        [DllImport("user32.dll")]
-        public static extern ushort RegisterClassExW(ref WNDCLASSEXW lpwcx);
+        [LibraryImport("user32.dll")]
+        public static partial ushort RegisterClassExW(ref WNDCLASSEXW lpwcx);
 
-        [DllImport("user32.dll")]
-        public static extern nint CreateWindowExW(
+        [LibraryImport("user32.dll", StringMarshalling = StringMarshalling.Utf16)]
+        public static partial nint CreateWindowExW(
             uint dwExStyle,
-            [MarshalAs(UnmanagedType.LPWStr)] string lpClassName,
-            [MarshalAs(UnmanagedType.LPWStr)] string lpWindowName,
+            string lpClassName,
+            string lpWindowName,
             uint dwStyle,
             int x, int y, int nWidth, int nHeight,
             nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
 
-        [DllImport("user32.dll")]
-        public static extern int DestroyWindow(nint hwnd);
+        [LibraryImport("user32.dll")]
+        public static partial int DestroyWindow(nint hwnd);
 
-        [DllImport("user32.dll")]
-        public static extern int ShowWindow(nint hwnd, int nCmdShow);
+        [LibraryImport("user32.dll")]
+        public static partial int ShowWindow(nint hwnd, int nCmdShow);
 
-        [DllImport("user32.dll")]
-        public static extern int PeekMessageW(ref MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+        [LibraryImport("user32.dll")]
+        public static partial int PeekMessageW(ref MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
 
-        [DllImport("user32.dll")]
-        public static extern int TranslateMessage(ref MSG lpMsg);
+        [LibraryImport("user32.dll")]
+        public static partial int TranslateMessage(ref MSG lpMsg);
 
-        [DllImport("user32.dll")]
-        public static extern nint DispatchMessageW(ref MSG lpMsg);
+        [LibraryImport("user32.dll")]
+        public static partial nint DispatchMessageW(ref MSG lpMsg);
 
-        [DllImport("user32.dll")]
-        public static extern nint DefWindowProcW(nint hWnd, uint Msg, nint wParam, nint lParam);
+        [LibraryImport("user32.dll")]
+        public static partial nint DefWindowProcW(nint hWnd, uint Msg, nint wParam, nint lParam);
 
-        [DllImport("user32.dll")]
-        public static extern nint LoadCursorW(nint hInstance, nint lpCursorName);
+        [LibraryImport("user32.dll")]
+        public static partial nint LoadCursorW(nint hInstance, nint lpCursorName);
 
-        [DllImport("user32.dll")]
-        public static extern int AdjustWindowRectEx(ref RECT lpRect, uint dwStyle, int bMenu, uint dwExStyle);
+        [LibraryImport("user32.dll")]
+        public static partial int AdjustWindowRectEx(ref RECT lpRect, uint dwStyle, int bMenu, uint dwExStyle);
 
-        [DllImport("user32.dll")]
-        public static extern nint GetDC(nint hwnd);
+        [LibraryImport("user32.dll")]
+        public static partial nint GetDC(nint hwnd);
 
-        [DllImport("user32.dll")]
-        public static extern int ReleaseDC(nint hwnd, nint hdc);
+        [LibraryImport("user32.dll")]
+        public static partial int ReleaseDC(nint hwnd, nint hdc);
 
-        [DllImport("user32")]
-        public static extern int GetSystemMetrics(int idx);
+        [LibraryImport("user32.dll")]
+        public static partial int GetSystemMetrics(int idx);
 
-        [DllImport("user32")]
-        public static extern int GetClientRect(nint hwnd, out RECT rc);
+        [LibraryImport("user32.dll")]
+        public static partial int GetClientRect(nint hwnd, out RECT rc);
     }
 
-    private static class Gdi32
+    private static partial class Gdi32
     {
         public const uint PFD_DRAW_TO_WINDOW = 0x00000004;
         public const uint PFD_SUPPORT_OPENGL = 0x00000020;
         public const uint PFD_DOUBLEBUFFER = 0x00000001;
 
-        [DllImport("gdi32.dll")]
-        public static extern int ChoosePixelFormat(nint hdc, ref PIXELFORMATDESCRIPTOR ppfd);
+        [LibraryImport("gdi32.dll")]
+        public static partial int ChoosePixelFormat(nint hdc, ref PIXELFORMATDESCRIPTOR ppfd);
 
-        [DllImport("gdi32.dll")]
-        public static extern int SetPixelFormat(nint hdc, int format, ref PIXELFORMATDESCRIPTOR ppfd);
+        [LibraryImport("gdi32.dll")]
+        public static partial int SetPixelFormat(nint hdc, int format, ref PIXELFORMATDESCRIPTOR ppfd);
 
-        [DllImport("gdi32.dll")]
-        public static extern int SwapBuffers(nint hdc);
+        [LibraryImport("gdi32.dll")]
+        public static partial int SwapBuffers(nint hdc);
 
-        [DllImport("gdi32")]
-        public static extern nint CreateRectRgn(int x1, int y1, int x2, int y2);
+        [LibraryImport("gdi32.dll")]
+        public static partial nint CreateRectRgn(int x1, int y1, int x2, int y2);
 
-        [DllImport("gdi32")]
-        public static extern int DeleteObject(nint obj);
+        [LibraryImport("gdi32.dll")]
+        public static partial int DeleteObject(nint obj);
     }
 
-    private static class Dwmapi
+    private static partial class Dwmapi
     {
-        [DllImport("dwmapi")] public static extern int DwmEnableBlurBehindWindow(nint hwnd, ref DWM_BLURBEHIND bb);
+        [LibraryImport("dwmapi.dll")]
+        public static partial int DwmEnableBlurBehindWindow(nint hwnd, ref DWM_BLURBEHIND bb);
     }
 
-    private static class Kernel32
+    private static partial class Kernel32
     {
-        [DllImport("kernel32.dll")]
-        public static extern nint GetModuleHandleW([MarshalAs(UnmanagedType.LPWStr)] string? lpModuleName);
+        [LibraryImport("kernel32.dll", StringMarshalling = StringMarshalling.Utf16)]
+        public static partial nint GetModuleHandleW(string? lpModuleName);
     }
 
     // ─── WGL Native ──────────────────────────────────────────────────────────
 
-    private static class WGL
+    private static partial class WGL
     {
-        [DllImport("opengl32.dll")]
-        public static extern nint wglCreateContext(nint hdc);
+        [LibraryImport("opengl32.dll")]
+        public static partial nint wglCreateContext(nint hdc);
 
-        [DllImport("opengl32.dll")]
-        public static extern int wglMakeCurrent(nint hdc, nint hglrc);
+        [LibraryImport("opengl32.dll")]
+        public static partial int wglMakeCurrent(nint hdc, nint hglrc);
 
-        [DllImport("opengl32.dll")]
-        public static extern int wglDeleteContext(nint hglrc);
+        [LibraryImport("opengl32.dll")]
+        public static partial int wglDeleteContext(nint hglrc);
 
-        [DllImport("opengl32.dll")]
-        public static extern nint wglGetProcAddress([MarshalAs(UnmanagedType.LPStr)] string lpszProc);
+        [LibraryImport("opengl32.dll", StringMarshalling = StringMarshalling.Utf8)]
+        public static partial nint wglGetProcAddress(string lpszProc);
     }
 }

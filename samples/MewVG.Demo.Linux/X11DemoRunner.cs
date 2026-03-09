@@ -3,7 +3,7 @@ using Aprillz.MewVG;
 
 namespace MewVG.Demo.Linux;
 
-internal sealed unsafe class X11DemoRunner : DemoRunner
+internal sealed unsafe partial class X11DemoRunner : DemoRunner
 {
     private readonly nint _display;
     private readonly nint _window;
@@ -48,7 +48,7 @@ internal sealed unsafe class X11DemoRunner : DemoRunner
             throw new InvalidOperationException("glXChooseVisual failed.");
         }
 
-        var visualInfo = Marshal.PtrToStructure<XVisualInfo>(vi);
+        var visualInfo = *(XVisualInfo*)vi;
 
         var cmap = X11.XCreateColormap(_display, root, visualInfo.visual, 0 /* AllocNone */);
 
@@ -308,7 +308,7 @@ internal sealed unsafe class X11DemoRunner : DemoRunner
         [FieldOffset(0)] public XClientMessageEvent xclient;
     }
 
-    private static class X11
+    private static partial class X11
     {
         public const nint StructureNotifyMask = 1 << 17;
         public const nint ExposureMask = 1 << 15;
@@ -321,76 +321,76 @@ internal sealed unsafe class X11DemoRunner : DemoRunner
 
         private const string Lib = "libX11.so.6";
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XOpenDisplay(nint display_name);
+        [LibraryImport(Lib)]
+        public static partial nint XOpenDisplay(nint display_name);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void XCloseDisplay(nint display);
+        [LibraryImport(Lib)]
+        public static partial void XCloseDisplay(nint display);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int XDefaultScreen(nint display);
+        [LibraryImport(Lib)]
+        public static partial int XDefaultScreen(nint display);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XRootWindow(nint display, int screen);
+        [LibraryImport(Lib)]
+        public static partial nint XRootWindow(nint display, int screen);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XCreateColormap(nint display, nint window, nint visual, int alloc);
+        [LibraryImport(Lib)]
+        public static partial nint XCreateColormap(nint display, nint window, nint visual, int alloc);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XCreateWindow(
+        [LibraryImport(Lib)]
+        public static partial nint XCreateWindow(
             nint display, nint parent,
             int x, int y, uint width, uint height,
             uint border_width, int depth, uint @class,
             nint visual, nuint valuemask, ref XSetWindowAttributes attributes);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void XDestroyWindow(nint display, nint window);
+        [LibraryImport(Lib)]
+        public static partial void XDestroyWindow(nint display, nint window);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void XMapWindow(nint display, nint window);
+        [LibraryImport(Lib)]
+        public static partial void XMapWindow(nint display, nint window);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void XStoreName(nint display, nint window, [MarshalAs(UnmanagedType.LPUTF8Str)] string name);
+        [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+        public static partial void XStoreName(nint display, nint window, string name);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XInternAtom(nint display, [MarshalAs(UnmanagedType.LPUTF8Str)] string name, [MarshalAs(UnmanagedType.Bool)] bool only_if_exists);
+        [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+        public static partial nint XInternAtom(nint display, string name, [MarshalAs(UnmanagedType.Bool)] bool only_if_exists);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int XSetWMProtocols(nint display, nint window, ref nint protocols, int count);
+        [LibraryImport(Lib)]
+        public static partial int XSetWMProtocols(nint display, nint window, ref nint protocols, int count);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern int XPending(nint display);
+        [LibraryImport(Lib)]
+        public static partial int XPending(nint display);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void XNextEvent(nint display, ref XEvent event_return);
+        [LibraryImport(Lib)]
+        public static partial void XNextEvent(nint display, ref XEvent event_return);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint XLookupKeysym(ref XKeyEvent key_event, int index);
+        [LibraryImport(Lib)]
+        public static partial nint XLookupKeysym(ref XKeyEvent key_event, int index);
     }
 
     // ─── GLX Native ─────────────────────────────────────────────────────────
 
-    private static class GLX
+    private static partial class GLX
     {
         private const string Lib = "libGL.so.1";
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint glXChooseVisual(nint display, int screen, nint attribList);
+        [LibraryImport(Lib)]
+        public static partial nint glXChooseVisual(nint display, int screen, nint attribList);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint glXCreateContext(nint display, nint visualInfo, nint shareList, int direct);
+        [LibraryImport(Lib)]
+        public static partial nint glXCreateContext(nint display, nint visualInfo, nint shareList, int direct);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
+        [LibraryImport(Lib)]
         [return: MarshalAs(UnmanagedType.Bool)]
-        public static extern bool glXMakeCurrent(nint display, nint drawable, nint ctx);
+        public static partial bool glXMakeCurrent(nint display, nint drawable, nint ctx);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void glXDestroyContext(nint display, nint ctx);
+        [LibraryImport(Lib)]
+        public static partial void glXDestroyContext(nint display, nint ctx);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern void glXSwapBuffers(nint display, nint drawable);
+        [LibraryImport(Lib)]
+        public static partial void glXSwapBuffers(nint display, nint drawable);
 
-        [DllImport(Lib, CallingConvention = CallingConvention.Cdecl)]
-        public static extern nint glXGetProcAddress([MarshalAs(UnmanagedType.LPUTF8Str)] string procName);
+        [LibraryImport(Lib, StringMarshalling = StringMarshalling.Utf8)]
+        public static partial nint glXGetProcAddress(string procName);
     }
 }
