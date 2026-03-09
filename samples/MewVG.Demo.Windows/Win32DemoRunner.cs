@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+
 using Aprillz.MewVG;
 
 namespace MewVG.Demo.Windows;
@@ -18,6 +19,8 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
     private int _winw = DefaultWidth;
     private int _winh = DefaultHeight;
     private bool _running = true;
+
+    public bool IsTransparencyBackground { get; set; } = true;
 
     public Win32DemoRunner()
     {
@@ -59,6 +62,11 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
         if (_hwnd == nint.Zero)
         {
             throw new InvalidOperationException("CreateWindowExW failed.");
+        }
+
+        if (IsTransparencyBackground)
+        {
+            ApplyBlurBehind();
         }
 
         _hdc = User32.GetDC(_hwnd);
@@ -148,7 +156,14 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
             ProcessEvents();
 
             _gl!.Viewport(0, 0, _winw, _winh);
-            _gl.ClearColor(0f, 0f, 0f, 0f);
+            if (IsTransparencyBackground)
+            {
+                _gl.ClearColor(0, 0, 0, 0);
+            }
+            else
+            {
+                _gl.ClearColor(0.5f, 0.5f, 0.5f, 1f);
+            }
             _gl.ClearStencil(0);
             _gl.Clear(GLMinimal.ColorBufferBit | GLMinimal.StencilBufferBit);
 
@@ -173,6 +188,20 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
         User32.ReleaseDC(_hwnd, _hdc);
         User32.DestroyWindow(_hwnd);
         s_instance = null;
+    }
+
+    private void ApplyBlurBehind()
+    {
+        User32.GetClientRect(_hwnd, out var cr);
+        var rgn = Gdi32.CreateRectRgn(0, 0, cr.right, cr.bottom);
+        var bb = new DWM_BLURBEHIND
+        {
+            dwFlags = 1 | 2, // DWM_BB_ENABLE | DWM_BB_BLURREGION
+            fEnable = 1,
+            hRgnBlur = rgn,
+        };
+        Dwmapi.DwmEnableBlurBehindWindow(_hwnd, ref bb);
+        Gdi32.DeleteObject(rgn);
     }
 
     private nint ResolveGLProc(string name)
@@ -305,6 +334,15 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
         public int bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct DWM_BLURBEHIND
+    {
+        public uint dwFlags;
+        public int fEnable;
+        public nint hRgnBlur;
+        public int fTransitionOnMaximized;
+    }
+
     // ─── Win32 Native ────────────────────────────────────────────────────────
 
     private static class User32
@@ -362,6 +400,12 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
 
         [DllImport("user32.dll")]
         public static extern int ReleaseDC(nint hwnd, nint hdc);
+
+        [DllImport("user32")]
+        public static extern int GetSystemMetrics(int idx);
+
+        [DllImport("user32")]
+        public static extern int GetClientRect(nint hwnd, out RECT rc);
     }
 
     private static class Gdi32
@@ -378,6 +422,17 @@ internal sealed unsafe class Win32DemoRunner : DemoRunner
 
         [DllImport("gdi32.dll")]
         public static extern int SwapBuffers(nint hdc);
+
+        [DllImport("gdi32")]
+        public static extern nint CreateRectRgn(int x1, int y1, int x2, int y2);
+
+        [DllImport("gdi32")]
+        public static extern int DeleteObject(nint obj);
+    }
+
+    private static class Dwmapi
+    {
+        [DllImport("dwmapi")] public static extern int DwmEnableBlurBehindWindow(nint hwnd, ref DWM_BLURBEHIND bb);
     }
 
     private static class Kernel32
