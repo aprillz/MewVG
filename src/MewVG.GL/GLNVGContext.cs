@@ -1,14 +1,17 @@
 // NanoVG OpenGL backend (GL3 core profile)
 // Ported from nanovg_gl.h
 
-using System.Runtime.InteropServices;
-using System.Threading;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
+
+using Aprillz.MewVG.Diagnostics;
 
 namespace Aprillz.MewVG;
 
 internal sealed class GLNVGContext : IDisposable, INVGRenderer
 {
+    private static readonly EnvDebugLogger Logger = new("MEWVG_GL_DEBUG", "[MewVG.GL]");
+
     private const int UniformArraySize = 11;
     private const int UniformFloatCount = UniformArraySize * 4;
     private const int ClipStencilRef = 0x80;
@@ -174,7 +177,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         _flags = flags;
         _coverageFillAaEnabled = true;
-        Debug.WriteLine($"[MewVG.GL] GLNVGContext ctor coverageForced={_coverageFillAaEnabled}");
+        Logger.Write($"GLNVGContext ctor coverageForced={_coverageFillAaEnabled}");
         GL.EnsureLoaded();
         CreateResources();
     }
@@ -234,12 +237,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             var fps = _fpsFrameCount / _fpsSw.Elapsed.TotalSeconds;
             var f = _fpsFrameCount;
-            Console.WriteLine(
-                $"[MewVG.GL] FPS:{fps,5:F1} | " +
-                $"DrawCalls/f:{_accumDrawCalls / f,4} | " +
-                $"Verts/f:{_accumVerts / f,6} | " +
-                $"Fill:{_accumFills / f,3} Stroke:{_accumStrokes / f,3} Clip:{_accumClips / f,3} | " +
-                $"CoverageFill:{_accumCoverageFills / f,3} CoverageStroke:{_accumCoverageStrokes / f,3}");
+            Logger.Write($"FPS:{fps,5:F1} | DrawCalls/f:{_accumDrawCalls / f,4} | Verts/f:{_accumVerts / f,6} | Fill:{_accumFills / f,3} Stroke:{_accumStrokes / f,3} Clip:{_accumClips / f,3} | CoverageFill:{_accumCoverageFills / f,3} CoverageStroke:{_accumCoverageStrokes / f,3}");
             _fpsFrameCount = 0;
             _accumDrawCalls = _accumCoverageFills = _accumCoverageStrokes = 0;
             _accumFills = _accumStrokes = _accumClips = 0;
@@ -552,7 +550,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0 && HasTransparency(paint);
             if (fringeVertCount > 0 && Interlocked.Exchange(ref _debugFillFringeRangeLogged, 1) == 0)
             {
-                Debug.WriteLine($"[MewVG.GL] Fill fringe U range: min={fringeMinU:F3}, max={fringeMaxU:F3}, verts={fringeVertCount}");
+                Logger.Write($"Fill fringe U range: min={fringeMinU:F3}, max={fringeMaxU:F3}, verts={fringeVertCount}");
             }
 
             if (call.HasTransparency)
@@ -1282,7 +1280,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         if (Interlocked.Exchange(ref _debugCoverageFillLogged, 1) == 0)
         {
-            Debug.WriteLine("[MewVG.GL] FillWithCoverage entered");
+            Logger.Write("FillWithCoverage entered");
         }
         _diagCoverageFills++;
 
