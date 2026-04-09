@@ -533,7 +533,22 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             quad[2] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
             quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
 
-            var isConvexFill = paths.Length == 1 && paths[0].Convex;
+            // Check convexity based on fill paths only; fringe-only paths (NFill==0) don't affect fill overlap.
+            var isConvexFill = false;
+            {
+                int fillPathCount = 0;
+                int fillPathIndex = -1;
+                for (var i = 0; i < paths.Length; i++)
+                {
+                    if (paths[i].NFill > 0)
+                    {
+                        fillPathCount++;
+                        fillPathIndex = i;
+                    }
+                }
+                if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
+                    isConvexFill = true;
+            }
             call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0 && HasTransparency(paint);
             if (fringeVertCount > 0 && Interlocked.Exchange(ref _debugFillFringeRangeLogged, 1) == 0)
             {

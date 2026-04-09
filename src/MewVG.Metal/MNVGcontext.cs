@@ -2074,7 +2074,26 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
         }
 
-        var convex = paths.Length == 1 && paths[0].Convex;
+        // Check convexity based on fill paths only; fringe-only paths (NFill==0)
+        // should not force the fill down the non-convex stencil path.
+        var convex = false;
+        {
+            int fillPathCount = 0;
+            int fillPathIndex = -1;
+            for (var i = 0; i < paths.Length; i++)
+            {
+                if (paths[i].NFill > 0)
+                {
+                    fillPathCount++;
+                    fillPathIndex = i;
+                }
+            }
+
+            if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
+            {
+                convex = true;
+            }
+        }
 
         // Always allocate 2 uniforms (simple at +0, fill paint at +1)
         // to match GL layout — CpuResolvedFill uses +1 directly.
