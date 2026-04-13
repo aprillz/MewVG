@@ -232,9 +232,13 @@ internal sealed class NVGContext
         }
 
         public NVGscissorState Scissor { get; }
+
         public float Fringe { get; }
+
         public float[] Bounds { get; }
+
         public NVGpathData[] Paths { get; }
+
         public NVGvertex[] Verts { get; }
     }
 
@@ -577,10 +581,22 @@ internal sealed class NVGContext
         TransformPremultiply(state.Xform, t);
     }
 
-    public void CurrentTransform(Span<float> xform)
+    public Matrix3x2 GetTransformMatrix()
+    {
+        ref readonly var state = ref GetState();
+        var x = state.Xform;
+        return new Matrix3x2(x[0], x[1], x[2], x[3], x[4], x[5]);
+    }
+
+    public void SetTransformMatrix(in Matrix3x2 matrix)
     {
         ref var state = ref GetState();
-        xform.CopyTo(state.Xform);
+        state.Xform[0] = matrix.M11;
+        state.Xform[1] = matrix.M12;
+        state.Xform[2] = matrix.M21;
+        state.Xform[3] = matrix.M22;
+        state.Xform[4] = matrix.M31;
+        state.Xform[5] = matrix.M32;
     }
 
     #endregion
@@ -3095,9 +3111,3 @@ internal sealed class NVGContext
 
     #endregion
 }
-
-
-
-
-
-

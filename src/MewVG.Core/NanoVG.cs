@@ -1,5 +1,7 @@
 // NanoVG shared public API (core wrapper)
 
+using System.Numerics;
+
 namespace Aprillz.MewVG;
 
 public abstract class NanoVG : IDisposable
@@ -61,6 +63,12 @@ public abstract class NanoVG : IDisposable
     #region Transforms
 
     public void ResetTransform() => _nvg.ResetTransform();
+
+    public void Transform(in Matrix3x2 matrix) => _nvg.Transform(matrix.M11, matrix.M12, matrix.M21, matrix.M22, matrix.M31, matrix.M32);
+
+    public Matrix3x2 GetTransformMatrix() => _nvg.GetTransformMatrix();
+
+    public void SetTransformMatrix(in Matrix3x2 matrix) => _nvg.SetTransformMatrix(in matrix);
 
     public void Translate(float x, float y) => _nvg.Translate(x, y);
 
