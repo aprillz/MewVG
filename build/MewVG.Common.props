@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <MewVGTitle>Aprillz.MewVG</MewVGTitle>
-    <MewVGVersion>0.3.2</MewVGVersion>
+    <MewVGVersion>0.4.0</MewVGVersion>
     <MewVGAuthor>Aprillz</MewVGAuthor>
     <MewVGDescription>A cross-platform, fully managed .NET vector graphics library based on NanoVG.</MewVGDescription>
 
