@@ -2020,7 +2020,20 @@ internal sealed class NVGContext
                     ref var p0 = ref pts[(j + srcPath.Count - 1) % srcPath.Count];
                     ref var p1 = ref pts[j];
 
-                    if ((p1.Flags & (NVGpointFlags.Bevel | NVGpointFlags.InnerBevel)) != 0)
+                    // Ignore InnerBevel for fill fringe. InnerBevel is set in
+                    // CalculateJoins to protect strokes from miter overlap at
+                    // interior corners, but for a thin filled rect its bevel
+                    // corners leave a small triangle at the original vertex
+                    // that's covered by neither the tess inset (which places
+                    // the boundary further inward along DM) nor the fringe
+                    // strip (which only fills between bevel corners and outside
+                    // vertices). The uncovered triangle flips to alpha<1 after
+                    // pixel-grid snapping and appears as a 1px speckle at the
+                    // contour's start vertex. The simple miter path gives a
+                    // vertex coincident with the tess inset and closes the gap.
+                    // Outer Bevel (at sharp convex corners) is still honored.
+                    var joinFlags = p1.Flags & ~NVGpointFlags.InnerBevel;
+                    if ((joinFlags & NVGpointFlags.Bevel) != 0)
                     {
                         BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru, aa);
                     }
