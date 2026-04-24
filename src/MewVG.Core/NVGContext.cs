@@ -1444,7 +1444,7 @@ internal sealed class NVGContext
         if (sign == 0f)
         {
             return false;
-    }
+        }
 
         // Allow small numerical slack; a simple convex polygon winds once (±2π),
         // self-intersecting contours wind ±4π or more.
@@ -3153,6 +3153,50 @@ internal sealed class NVGContext
         p.InnerColor = icol;
         p.OuterColor = ocol;
 
+        return p;
+    }
+
+    public NVGpaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
+    {
+        NVGpaint p = default;
+        p.PaintKind = (int)NVGpaintKind.GradientRadial;
+        p.Image = image;
+        p.Center[0] = centerX;
+        p.Center[1] = centerY;
+        p.Focal[0] = focalX;
+        p.Focal[1] = focalY;
+        p.Radius2[0] = radiusX;
+        p.Radius2[1] = radiusY;
+        p.SpreadMethod = spreadMethod;
+        p.InnerColor = NVGcolor.White;
+        p.OuterColor = NVGcolor.White;
+        p.Xform[0] = gradientTransform.M11;
+        p.Xform[1] = gradientTransform.M12;
+        p.Xform[2] = gradientTransform.M21;
+        p.Xform[3] = gradientTransform.M22;
+        p.Xform[4] = gradientTransform.M31;
+        p.Xform[5] = gradientTransform.M32;
+        return p;
+    }
+
+    public NVGpaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
+    {
+        NVGpaint p = default;
+        p.PaintKind = (int)NVGpaintKind.GradientLinear;
+        p.Image = image;
+        p.Center[0] = startX;
+        p.Center[1] = startY;
+        p.Focal[0] = endX;
+        p.Focal[1] = endY;
+        p.SpreadMethod = spreadMethod;
+        p.InnerColor = NVGcolor.White;
+        p.OuterColor = NVGcolor.White;
+        p.Xform[0] = gradientTransform.M11;
+        p.Xform[1] = gradientTransform.M12;
+        p.Xform[2] = gradientTransform.M21;
+        p.Xform[3] = gradientTransform.M22;
+        p.Xform[4] = gradientTransform.M31;
+        p.Xform[5] = gradientTransform.M32;
         return p;
     }
 

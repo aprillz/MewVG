@@ -38,6 +38,8 @@ public enum MNVGshaderType
     MNVG_SHADER_FILLIMG = 1,
     MNVG_SHADER_SIMPLE = 2,
     MNVG_SHADER_IMG = 3,
+    MNVG_SHADER_GRADIENT_RADIAL = 6,
+    MNVG_SHADER_GRADIENT_LINEAR = 7,
 }
 
 /// <summary>
@@ -69,11 +71,16 @@ public unsafe struct MNVGfragUniforms
     public Buffer2<float> extent;          // 8 bytes
     public float radius;                   // 4 bytes
     public float feather;                  // 4 bytes
+    public Buffer2<float> gradientCenter;  // 8 bytes
+    public Buffer2<float> gradientRadii;   // 8 bytes
+    public Buffer2<float> gradientFocal;   // 8 bytes
+    public float gradientSpread;           // 4 bytes
+    public float gradientReserved;         // 4 bytes
     public float strokeMult;               // 4 bytes
     public float strokeThr;                // 4 bytes
     public int texType;                    // 4 bytes
     public int type;                       // 4 bytes
-    // Total: 176 bytes
+    // Total: 208 bytes
 }
 
 /// <summary>
@@ -174,11 +181,46 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           float2 extent;
           float radius;
           float feather;
+          float2 gradientCenter;
+          float2 gradientRadii;
+          float2 gradientFocal;
+          float gradientSpread;
+          float gradientReserved;
           float strokeMult;
           float strokeThr;
           int texType;
           int type;
         } Uniforms;
+
+        float gradientRadialT(float2 p, float2 center, float2 focal, float2 radii, int spread) {
+          float2 np = (p - center) / radii;
+          float2 nf = (focal - center) / radii;
+          float2 d = np - nf;
+          float a = dot(d, d);
+          if (a <= 1e-6f) return 0.0f;
+          float b = 2.0f * dot(nf, d);
+          float c = dot(nf, nf) - 1.0f;
+          float disc = b * b - 4.0f * a * c;
+          if (disc <= 0.0f) return 1.0f;
+          float u = (-b + sqrt(disc)) / (2.0f * a);
+          if (u <= 1e-6f) return 1.0f;
+          float t = 1.0f / u;
+          if (spread == 0) return clamp(t, 0.0f, 1.0f);
+          if (spread == 2) return fract(max(t, 0.0f));
+          float r = fmod(max(t, 0.0f), 2.0f);
+          return r <= 1.0f ? r : 2.0f - r;
+        }
+
+        float gradientLinearT(float2 p, float2 startPt, float2 endPt, int spread) {
+          float2 axis = endPt - startPt;
+          float len2 = dot(axis, axis);
+          if (len2 <= 1e-6f) return 0.0f;
+          float t = dot(p - startPt, axis) / len2;
+          if (spread == 0) return clamp(t, 0.0f, 1.0f);
+          if (spread == 2) return fract(max(t, 0.0f));
+          float r = fmod(max(t, 0.0f), 2.0f);
+          return r <= 1.0f ? r : 2.0f - r;
+        }
 
         float scissorMask(constant Uniforms& uniforms, float2 p) {
           float2 sc = (abs((uniforms.scissorMat * float3(p, 1.0f)).xy)
@@ -227,6 +269,16 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                                / uniforms.feather);
             float4 color = mix(uniforms.innerCol, uniforms.outerCol, d);
             return color * scissor;
+          } else if (uniforms.type == 6) {
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientRadialT(pt, uniforms.gradientCenter, uniforms.gradientFocal, uniforms.gradientRadii, int(uniforms.gradientSpread));
+            float4 color = texture.sample(sampler, float2(t, 0.5f));
+            return color * uniforms.innerCol * scissor;
+          } else if (uniforms.type == 7) {
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientLinearT(pt, uniforms.gradientCenter, uniforms.gradientFocal, int(uniforms.gradientSpread));
+            float4 color = texture.sample(sampler, float2(t, 0.5f));
+            return color * uniforms.innerCol * scissor;
           } else if (uniforms.type == 1) {
             float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy / uniforms.extent;
             float4 color = texture.sample(sampler, pt);
@@ -281,6 +333,22 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, pt))
                                 / uniforms.feather);
             float4 color = mix(uniforms.innerCol, uniforms.outerCol, d);
+            color *= scissor;
+            color *= strokeAlpha;
+            return color;
+          } else if (uniforms.type == 6) {  // MNVG_SHADER_GRADIENT_RADIAL
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientRadialT(pt, uniforms.gradientCenter, uniforms.gradientFocal, uniforms.gradientRadii, int(uniforms.gradientSpread));
+            float4 color = texture.sample(sampler, float2(t, 0.5f));
+            color *= uniforms.innerCol;
+            color *= scissor;
+            color *= strokeAlpha;
+            return color;
+          } else if (uniforms.type == 7) {  // MNVG_SHADER_GRADIENT_LINEAR
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientLinearT(pt, uniforms.gradientCenter, uniforms.gradientFocal, int(uniforms.gradientSpread));
+            float4 color = texture.sample(sampler, float2(t, 0.5f));
+            color *= uniforms.innerCol;
             color *= scissor;
             color *= strokeAlpha;
             return color;
@@ -1031,6 +1099,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void UpdateBuffers(ref MNVGbuffers buffers)
     {
+        // Apple Silicon (unified memory): StorageModeShared means CPU and GPU share
+        // the same allocation — no staging copies, no didModifyRange calls needed.
+        // StorageModeManaged was designed for discrete GPUs with separate VRAM and
+        // causes per-frame IOAccelerator staging allocations that are never reclaimed
+        // at high frame rates.
+
         // Update vertex buffer
         var vertSize = _vertCount * sizeof(NVGvertex);
         if (buffers.vertBuffer == IntPtr.Zero || buffers.nverts < _vertCount)
@@ -1044,7 +1118,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 _device,
                 MetalSelectors.newBufferWithLength_options,
                 (nuint)vertSize,
-                (ulong)MTLResourceOptions.StorageModeManaged
+                (ulong)MTLResourceOptions.StorageModeShared
             );
             buffers.nverts = _vertCount;
         }
@@ -1056,9 +1130,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             {
                 Buffer.MemoryCopy(ptr, (void*)contents, vertSize, vertSize);
             }
-
-            var range = new NSRange { location = 0, length = (nuint)vertSize };
-            ObjCRuntime.SendMessage(buffers.vertBuffer, MetalSelectors.didModifyRange, range);
         }
 
         // Update uniform buffer
@@ -1074,7 +1145,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 _device,
                 MetalSelectors.newBufferWithLength_options,
                 (nuint)uniformSize,
-                (ulong)MTLResourceOptions.StorageModeManaged
+                (ulong)MTLResourceOptions.StorageModeShared
             );
             buffers.nuniforms = _uniformCount;
         }
@@ -1086,9 +1157,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             {
                 Buffer.MemoryCopy(ptr, (void*)contents, uniformSize, uniformSize);
             }
-
-            var range = new NSRange { location = 0, length = (nuint)uniformSize };
-            ObjCRuntime.SendMessage(buffers.uniformBuffer, MetalSelectors.didModifyRange, range);
         }
 
         // Update index buffer
@@ -1104,7 +1172,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 _device,
                 MetalSelectors.newBufferWithLength_options,
                 (nuint)indexSize,
-                (ulong)MTLResourceOptions.StorageModeManaged
+                (ulong)MTLResourceOptions.StorageModeShared
             );
             buffers.nindexes = _indexCount;
         }
@@ -1116,9 +1184,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             {
                 Buffer.MemoryCopy(ptr, (void*)contents, indexSize, indexSize);
             }
-
-            var range = new NSRange { location = 0, length = (nuint)indexSize };
-            ObjCRuntime.SendMessage(buffers.indexBuffer, MetalSelectors.didModifyRange, range);
         }
     }
 
@@ -2368,7 +2433,47 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         frag->strokeMult = (width * 0.5f + fringe * 0.5f) / fringe;
         frag->strokeThr = strokeThr;
 
-        if (paint.Image > 0)
+        if (paint.PaintKind == (int)NVGpaintKind.GradientRadial)
+        {
+            ref var tex = ref FindTexture(paint.Image);
+            if (tex.id == 0)
+            {
+                return;
+            }
+
+            frag->type = (int)MNVGshaderType.MNVG_SHADER_GRADIENT_RADIAL;
+            frag->texType = 0;
+            frag->gradientCenter[0] = paint.Center[0];
+            frag->gradientCenter[1] = paint.Center[1];
+            frag->gradientRadii[0] = paint.Radius2[0];
+            frag->gradientRadii[1] = paint.Radius2[1];
+            frag->gradientFocal[0] = paint.Focal[0];
+            frag->gradientFocal[1] = paint.Focal[1];
+            frag->gradientSpread = paint.SpreadMethod;
+            frag->gradientReserved = 0.0f;
+            NVGMath.TransformInverse(invxform, paint.Xform);
+        }
+        else if (paint.PaintKind == (int)NVGpaintKind.GradientLinear)
+        {
+            ref var tex = ref FindTexture(paint.Image);
+            if (tex.id == 0)
+            {
+                return;
+            }
+
+            frag->type = (int)MNVGshaderType.MNVG_SHADER_GRADIENT_LINEAR;
+            frag->texType = 0;
+            frag->gradientCenter[0] = paint.Center[0];
+            frag->gradientCenter[1] = paint.Center[1];
+            frag->gradientFocal[0] = paint.Focal[0];
+            frag->gradientFocal[1] = paint.Focal[1];
+            frag->gradientRadii[0] = 0.0f;
+            frag->gradientRadii[1] = 0.0f;
+            frag->gradientSpread = paint.SpreadMethod;
+            frag->gradientReserved = 0.0f;
+            NVGMath.TransformInverse(invxform, paint.Xform);
+        }
+        else if (paint.Image > 0)
         {
             if (GetTextureSize(paint.Image, out var tw, out var th))
             {

@@ -215,6 +215,9 @@ internal enum GetProgramParameterName : int
 
 internal enum GetPName : int
 {
+    MaxTextureSize = 0x0D33,
+    Viewport = 0x0BA2,
+    MaxRenderbufferSize = 0x84E8,
     FramebufferBinding = 0x8CA6,
     RenderbufferBinding = 0x8CA7,
     MaxUniformBlockSize = 0x8A30
@@ -292,6 +295,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<int, uint*, void> _glDeleteBuffers;
     private static delegate* unmanaged<int, uint*, void> _glDeleteVertexArrays;
     private static delegate* unmanaged<uint, int*, void> _glGetIntegerv;
+    private static delegate* unmanaged<uint> _glGetError;
     private static delegate* unmanaged<int, uint*, void> _glGenFramebuffers;
     private static delegate* unmanaged<uint, uint, void> _glBindFramebuffer;
     private static delegate* unmanaged<int, uint*, void> _glGenRenderbuffers;
@@ -397,6 +401,7 @@ internal static unsafe class GL
         _glDeleteBuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteBuffers");
         _glDeleteVertexArrays = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteVertexArrays");
         _glGetIntegerv = (delegate* unmanaged<uint, int*, void>)LoadProc("glGetIntegerv");
+        _glGetError = (delegate* unmanaged<uint>)LoadProc("glGetError");
         _glGenFramebuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glGenFramebuffers");
         _glBindFramebuffer = (delegate* unmanaged<uint, uint, void>)LoadProc("glBindFramebuffer");
         _glGenRenderbuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glGenRenderbuffers");
@@ -645,6 +650,8 @@ internal static unsafe class GL
         _glGetIntegerv((uint)pname, &value);
         return value;
     }
+
+    public static uint GetError() => _glGetError == null ? 0u : _glGetError();
 
     public static int GenFramebuffer()
     {

@@ -117,6 +117,13 @@ public enum NVGtexture
     RGBA = 1,
 }
 
+public enum NVGpaintKind
+{
+    Default = 0,
+    GradientRadial = 1,
+    GradientLinear = 2,
+}
+
 /// <summary>
 /// Winding direction.
 /// </summary>
@@ -408,6 +415,11 @@ public struct NVGpaint
     public NVGcolor InnerColor;
     public NVGcolor OuterColor;
     public int Image;
+    public Buffer2<float> Center; // [2] - center for radial gradients
+    public Buffer2<float> Focal; // [2] - normalized focal point for radial gradients
+    public Buffer2<float> Radius2; // [2] - radii for radial gradients
+    public int SpreadMethod;
+    public int PaintKind;
 }
 
 /// <summary>

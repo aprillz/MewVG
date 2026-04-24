@@ -12,7 +12,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 {
     private static readonly EnvDebugLogger Logger = new("MEWVG_GL_DEBUG", "[MewVG.GL]");
 
-    private const int UniformArraySize = 11;
+    private const int UniformArraySize = 13;
     private const int UniformFloatCount = UniformArraySize * 4;
     private const int ClipStencilRef = 0x80;
     private const int ClipStencilMask = 0x80;
@@ -98,6 +98,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         Img = 3,
         CoverageOutput = 4,
         CoverageComposite = 5,
+        GradientRadial = 6,
+        GradientLinear = 7,
     }
 
     private readonly NVGcreateFlags _flags;
@@ -429,8 +431,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var simple = _uniforms[call.UniformOffset].Data;
         Array.Clear(simple);
         SetUniformVec4(simple, 8, 1.0f, 1.0f, 1.0f, 1.0f);
-        SetUniformValue(simple, 10, 1, -1.0f);
-        SetUniformValue(simple, 10, 3, (float)GLNVGShaderType.Simple);
+        SetUniformValue(simple, 12, 1, -1.0f);
+        SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
     }
 
     public void RenderFill(
@@ -547,7 +549,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
                     isConvexFill = true;
             }
-            call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0 && HasTransparency(paint);
+            // Coverage AA triggers when the fill path was flagged non-convex by the core
+            // tessellator — this happens for transparent paints (to avoid double-blending
+            // in the fringe overlay) AND for self-intersecting sources like a pentagram.
+            // The coverage buffer's Max-blended accumulation collapses overlapping fringe
+            // strips to a clean boundary, where the stencil-fill + fringe-overlay path
+            // would leave visible seams cutting across the fill interior.
+            call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0;
             if (fringeVertCount > 0 && Interlocked.Exchange(ref _debugFillFringeRangeLogged, 1) == 0)
             {
                 Logger.Write($"Fill fringe U range: min={fringeMinU:F3}, max={fringeMaxU:F3}, verts={fringeVertCount}");
@@ -562,38 +570,38 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 var simple = _uniforms[call.UniformOffset].Data;
                 Array.Clear(simple);
                 SetUniformVec4(simple, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
-                SetUniformValue(simple, 10, 1, -1.0f); // strokeThr
-                SetUniformValue(simple, 10, 3, (float)GLNVGShaderType.Simple);
+                SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
+                SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
 
                 // uniformOffset+1: Paint for composite (type = CoverageComposite)
                 if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
                 {
                     return;
                 }
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 10, 0, -1.0f); // strokeMult
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 10, 3, (float)GLNVGShaderType.CoverageComposite);
+                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult
+                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 3, (float)GLNVGShaderType.CoverageComposite);
 
                 // uniformOffset+2: Coverage output (type = CoverageOutput)
                 var coverageOut = _uniforms[call.UniformOffset + 2].Data;
                 Array.Clear(coverageOut);
                 SetUniformVec4(coverageOut, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
-                SetUniformValue(coverageOut, 10, 0, -1.0f); // strokeMult (analytical fill)
-                SetUniformValue(coverageOut, 10, 1, -1.0f); // strokeThr (no discard)
-                SetUniformValue(coverageOut, 10, 3, (float)GLNVGShaderType.CoverageOutput);
+                SetUniformValue(coverageOut, 12, 0, -1.0f); // strokeMult (analytical fill)
+                SetUniformValue(coverageOut, 12, 1, -1.0f); // strokeThr (no discard)
+                SetUniformValue(coverageOut, 12, 3, (float)GLNVGShaderType.CoverageOutput);
             }
             else
             {
                 call.UniformOffset = AllocUniforms(2);
                 var simple = _uniforms[call.UniformOffset].Data;
                 Array.Clear(simple);
-                SetUniformValue(simple, 10, 1, -1.0f); // strokeThr
-                SetUniformValue(simple, 10, 3, (float)GLNVGShaderType.Simple);
+                SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
+                SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
 
                 if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
                 {
                     return;
                 }
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 10, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
             }
         }
         else
@@ -603,7 +611,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
-            SetUniformValue(_uniforms[call.UniformOffset].Data, 10, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
         }
     }
 
@@ -667,12 +675,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
-            SetUniformValue(_uniforms[call.UniformOffset].Data, 10, 3, (float)GLNVGShaderType.CoverageComposite);
+            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 3, (float)GLNVGShaderType.CoverageComposite);
 
             var coverageOut = _uniforms[call.UniformOffset + 1].Data;
             _uniforms[call.UniformOffset].Data.CopyTo(coverageOut, 0);
-            SetUniformValue(coverageOut, 10, 1, -1.0f);
-            SetUniformValue(coverageOut, 10, 3, (float)GLNVGShaderType.CoverageOutput);
+            SetUniformValue(coverageOut, 12, 1, -1.0f);
+            SetUniformValue(coverageOut, 12, 3, (float)GLNVGShaderType.CoverageOutput);
         }
         else if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
         {
@@ -719,7 +727,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             return;
         }
 
-        SetUniformValue(_uniforms[call.UniformOffset].Data, 10, 3, (float)GLNVGShaderType.Img);
+        SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 3, (float)GLNVGShaderType.Img);
     }
 
     public int CreateTexture(NVGtextureType type, int width, int height, NVGimageFlags flags, ReadOnlySpan<byte> data)
@@ -817,9 +825,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 continue;
             }
 
-            if (_textures[i].Tex != 0 && (_textures[i].Flags & NVGimageFlags.NoDelete) == 0)
+            int glTex = _textures[i].Tex;
+            if (glTex != 0 && (_textures[i].Flags & NVGimageFlags.NoDelete) == 0)
             {
-                GL.DeleteTexture(_textures[i].Tex);
+                // Invalidate bind cache before GL frees the name; otherwise a later
+                // GenTextures reusing the same name would skip the real bind call.
+                if (_boundTexture == glTex)
+                {
+                    _boundTexture = -1;
+                }
+                GL.DeleteTexture(glTex);
             }
 
             _textures[i] = default;
@@ -1076,6 +1091,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             EnableClipStencilTest();
         }
         SetUniforms(call.UniformOffset, call.Image);
+
         DrawArraysDiag(PrimitiveType.Triangles, call.TriangleOffset, call.TriangleCount);
         if (_clipActiveInRender)
         {
@@ -1386,6 +1402,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             RestoreClipStencilState();
         }
+        GL.Enable(EnableCap.CullFace);
+        _boundTexture = -1;
     }
 
     private void StrokeWithCoverage(in GLNVGCall call)
@@ -1436,6 +1454,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             RestoreClipStencilState();
         }
         GL.Enable(EnableCap.CullFace);
+        _boundTexture = -1;
     }
 
     private static void SetSimpleUniform(float[] frag, ref NVGscissorState scissor, float fringe)
@@ -1460,8 +1479,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             SetUniformVec4(frag, 8, scissor.Extent[0], scissor.Extent[1], sx, sy);
         }
 
-        SetUniformValue(frag, 10, 1, -1.0f); // strokeThr
-        SetUniformValue(frag, 10, 3, (float)GLNVGShaderType.Simple);
+        SetUniformValue(frag, 12, 1, -1.0f); // strokeThr
+        SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.Simple);
     }
 
     private void BindTexture(int tex)
@@ -1577,9 +1596,37 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetUniformVec4(frag, 9, extentX, extentY, paint.Radius, paint.Feather);
 
         var strokeMult = (width * 0.5f + fringe * 0.5f) / fringe;
-        SetUniformVec4(frag, 10, strokeMult, strokeThr, 0.0f, 0.0f);
+        SetUniformVec4(frag, 12, strokeMult, strokeThr, 0.0f, 0.0f);
 
-        if (paint.Image != 0)
+        if (paint.PaintKind == (int)NVGpaintKind.GradientRadial)
+        {
+            ref var tex = ref FindTexture(paint.Image);
+            if (tex.Id == 0)
+            {
+                return false;
+            }
+
+            SetUniformVec4(frag, 10, paint.Center[0], paint.Center[1], paint.Radius2[0], paint.Radius2[1]);
+            SetUniformVec4(frag, 11, paint.Focal[0], paint.Focal[1], paint.SpreadMethod, 0.0f);
+            SetUniformValue(frag, 12, 2, 0.0f);
+            SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.GradientRadial);
+            NVGMath.TransformInverse(invxform, paint.Xform);
+        }
+        else if (paint.PaintKind == (int)NVGpaintKind.GradientLinear)
+        {
+            ref var tex = ref FindTexture(paint.Image);
+            if (tex.Id == 0)
+            {
+                return false;
+            }
+
+            SetUniformVec4(frag, 10, paint.Center[0], paint.Center[1], 0.0f, 0.0f);
+            SetUniformVec4(frag, 11, paint.Focal[0], paint.Focal[1], paint.SpreadMethod, 0.0f);
+            SetUniformValue(frag, 12, 2, 0.0f);
+            SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.GradientLinear);
+            NVGMath.TransformInverse(invxform, paint.Xform);
+        }
+        else if (paint.Image != 0)
         {
             ref var tex = ref FindTexture(paint.Image);
             if (tex.Id == 0)
@@ -1607,19 +1654,19 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 NVGMath.TransformInverse(invxform, paint.Xform);
             }
 
-            SetUniformValue(frag, 10, 3, (float)GLNVGShaderType.FillImg);
+            SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.FillImg);
             if (tex.Type == NVGtextureType.RGBA)
             {
-                SetUniformValue(frag, 10, 2, (tex.Flags & NVGimageFlags.Premultiplied) != 0 ? 0.0f : 1.0f);
+                SetUniformValue(frag, 12, 2, (tex.Flags & NVGimageFlags.Premultiplied) != 0 ? 0.0f : 1.0f);
             }
             else
             {
-                SetUniformValue(frag, 10, 2, 2.0f);
+                SetUniformValue(frag, 12, 2, 2.0f);
             }
         }
         else
         {
-            SetUniformValue(frag, 10, 3, (float)GLNVGShaderType.FillGrad);
+            SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.FillGrad);
             NVGMath.TransformInverse(invxform, paint.Xform);
         }
 
@@ -1806,7 +1853,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         const string header = "#version 140\n" +
                         "#define NANOVG_GL3 1\n" +
-                        "#define UNIFORMARRAY_SIZE 11\n\n";
+                        "#define UNIFORMARRAY_SIZE 13\n\n";
 
         const string fillVertShader =
             "#ifdef NANOVG_GL3\n" +
@@ -1846,10 +1893,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\t#define extent frag[9].xy\n" +
             "\t#define radius frag[9].z\n" +
             "\t#define feather frag[9].w\n" +
-            "\t#define strokeMult frag[10].x\n" +
-            "\t#define strokeThr frag[10].y\n" +
-            "\t#define texType int(frag[10].z)\n" +
-            "\t#define type int(frag[10].w)\n" +
+            "\t#define gradientCenter frag[10].xy\n" +
+            "\t#define gradientRadii frag[10].zw\n" +
+            "\t#define gradientFocal frag[11].xy\n" +
+            "\t#define gradientSpread int(frag[11].z)\n" +
+            "\t#define strokeMult frag[12].x\n" +
+            "\t#define strokeThr frag[12].y\n" +
+            "\t#define texType int(frag[12].z)\n" +
+            "\t#define type int(frag[12].w)\n" +
             "\n" +
             "float sdroundrect(vec2 pt, vec2 ext, float rad) {\n" +
             "\tvec2 ext2 = ext - vec2(rad,rad);\n" +
@@ -1861,6 +1912,35 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\tvec2 sc = (abs((scissorMat * vec3(p,1.0)).xy) - scissorExt);\n" +
             "\tsc = vec2(0.5,0.5) - sc * scissorScale;\n" +
             "\treturn clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);\n" +
+            "}\n" +
+            "\n" +
+            "float gradientRadialT(vec2 p, vec2 center, vec2 focal, vec2 radii, int spread) {\n" +
+            "\tvec2 np = (p - center) / radii;\n" +
+            "\tvec2 nf = (focal - center) / radii;\n" +
+            "\tvec2 d = np - nf;\n" +
+            "\tfloat a = dot(d, d);\n" +
+            "\tif (a <= 1e-6) return 0.0;\n" +
+            "\tfloat b = 2.0 * dot(nf, d);\n" +
+            "\tfloat c = dot(nf, nf) - 1.0;\n" +
+            "\tfloat disc = b * b - 4.0 * a * c;\n" +
+            "\tif (disc <= 0.0) return 1.0;\n" +
+            "\tfloat u = (-b + sqrt(disc)) / (2.0 * a);\n" +
+            "\tif (u <= 1e-6) return 1.0;\n" +
+            "\tfloat t = 1.0 / u;\n" +
+            "\tif (spread == 0) return clamp(t, 0.0, 1.0);\n" +
+            "\tif (spread == 2) return fract(max(t, 0.0));\n" +
+            "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
+            "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
+            "}\n" +
+            "float gradientLinearT(vec2 p, vec2 startPt, vec2 endPt, int spread) {\n" +
+            "\tvec2 axis = endPt - startPt;\n" +
+            "\tfloat len2 = dot(axis, axis);\n" +
+            "\tif (len2 <= 1e-6) return 0.0;\n" +
+            "\tfloat t = dot(p - startPt, axis) / len2;\n" +
+            "\tif (spread == 0) return clamp(t, 0.0, 1.0);\n" +
+            "\tif (spread == 2) return fract(max(t, 0.0));\n" +
+            "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
+            "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
             "}\n" +
             "#ifdef EDGE_AA\n" +
             "float strokeMask() {\n" +
@@ -1891,6 +1971,20 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\t\tvec4 color = texture(tex, pt);\n" +
             "\t\tif (texType == 1) color = vec4(color.xyz*color.w,color.w);\n" +
             "\t\tif (texType == 2) color = vec4(color.x);\n" +
+            "\t\tcolor *= innerCol;\n" +
+            "\t\tcolor *= strokeAlpha * scissor;\n" +
+            "\t\tresult = color;\n" +
+            "\t} else if (type == 6) {\n" +
+            "\t\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
+            "\t\tfloat t = gradientRadialT(pt, gradientCenter, gradientFocal, gradientRadii, gradientSpread);\n" +
+            "\t\tvec4 color = texture(tex, vec2(t, 0.5));\n" +
+            "\t\tcolor *= innerCol;\n" +
+            "\t\tcolor *= strokeAlpha * scissor;\n" +
+            "\t\tresult = color;\n" +
+            "\t} else if (type == 7) {\n" +
+            "\t\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
+            "\t\tfloat t = gradientLinearT(pt, gradientCenter, gradientFocal, gradientSpread);\n" +
+            "\t\tvec4 color = texture(tex, vec2(t, 0.5));\n" +
             "\t\tcolor *= innerCol;\n" +
             "\t\tcolor *= strokeAlpha * scissor;\n" +
             "\t\tresult = color;\n" +

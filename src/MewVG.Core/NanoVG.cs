@@ -8,6 +8,7 @@ public abstract class NanoVG : IDisposable
 {
     private bool _disposed;
     private readonly NVGContext _nvg;
+    private readonly List<int> _ownedImages = [];
 
     internal NanoVG(INVGRenderer renderer, bool edgeAntiAlias)
     {
@@ -192,8 +193,14 @@ public abstract class NanoVG : IDisposable
     public NVGpaint LinearGradient(float sx, float sy, float ex, float ey, NVGcolor icol, NVGcolor ocol)
         => _nvg.LinearGradient(sx, sy, ex, ey, icol, ocol);
 
+    public NVGpaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
+        => _nvg.GradientLinear(in gradientTransform, startX, startY, endX, endY, spreadMethod, image);
+
     public NVGpaint RadialGradient(float cx, float cy, float inr, float outr, NVGcolor icol, NVGcolor ocol)
         => _nvg.RadialGradient(cx, cy, inr, outr, icol, ocol);
+
+    public NVGpaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
+        => _nvg.GradientRadial(in gradientTransform, centerX, centerY, focalX, focalY, radiusX, radiusY, spreadMethod, image);
 
     public NVGpaint BoxGradient(float x, float y, float w, float h, float r, float f, NVGcolor icol, NVGcolor ocol)
         => _nvg.BoxGradient(x, y, w, h, r, f, icol, ocol);
