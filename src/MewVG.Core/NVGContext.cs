@@ -1406,7 +1406,12 @@ internal sealed class NVGContext
             return false;
         }
 
+        // Skia-style convex test: consecutive turns must have the same sign AND
+        // the total signed turn angle must equal ±2π (exactly one revolution).
+        // The first condition alone is necessary but not sufficient — a self-
+        // intersecting pentagram has all turns in one direction but winds ±4π.
         float sign = 0f;
+        float turnSum = 0f;
         for (var i = 0; i < pts.Length; i++)
         {
             ref readonly var a = ref pts[i];
@@ -1431,9 +1436,53 @@ internal sealed class NVGContext
             {
                 return false;
             }
+
+            var dot = abx * bcx + aby * bcy;
+            turnSum += MathF.Atan2(cross, dot);
         }
 
-        return sign != 0f;
+        if (sign == 0f)
+        {
+            return false;
+    }
+
+        // Allow small numerical slack; a simple convex polygon winds once (±2π),
+        // self-intersecting contours wind ±4π or more.
+        const float revolution = MathF.PI * 2f;
+        return MathF.Abs(MathF.Abs(turnSum) - revolution) <= 1e-3f;
+    }
+
+    // Simple (non-self-intersecting) polygon test: sign of turn may flip (concave
+    // ok), but total turn angle must equal ±2π. Self-intersecting contours wind
+    // ±4π or more. Used to decide whether per-contour fringe AA is safe — the
+    // NanoVG-style fringe strip assumes a simple boundary; along a pentagram's
+    // self-intersecting edges the strip would cross itself at inner vertices
+    // and leave visible seams across the fill interior.
+    private static bool IsSimpleContour(ReadOnlySpan<NVGpoint> pts)
+    {
+        if (pts.Length < 3)
+        {
+            return false;
+        }
+
+        float turnSum = 0f;
+        for (var i = 0; i < pts.Length; i++)
+        {
+            ref readonly var a = ref pts[i];
+            ref readonly var b = ref pts[(i + 1) % pts.Length];
+            ref readonly var c = ref pts[(i + 2) % pts.Length];
+
+            var abx = b.X - a.X;
+            var aby = b.Y - a.Y;
+            var bcx = c.X - b.X;
+            var bcy = c.Y - b.Y;
+            var cross = abx * bcy - aby * bcx;
+            var dot = abx * bcx + aby * bcy;
+            turnSum += MathF.Atan2(cross, dot);
+        }
+
+        const float revolution = MathF.PI * 2f;
+        return MathF.Abs(MathF.Abs(turnSum) - revolution) <= 1e-3f;
     }
 
     private static void PolyReverse(Span<NVGpoint> pts)
@@ -1472,14 +1521,20 @@ internal sealed class NVGContext
         FlattenPaths(enforceWinding: false);
 
         var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        // miterLimit 4.0 (SVG default) keeps ~36° tips on miter instead of beveling.
+        // Bevel at a sharp convex tip emits outside-normal vertices that poke past
+        // the tip along both edge normals, producing visible 1–2px spikes at the
+        // corner in the fringe strip. Miter collapses those two vertices to a
+        // single point on the bisector, inside the fill body's coverage.
+        const float fillFringeMiterLimit = 4.0f;
         if (useFringeAa)
         {
             var fillFringe = _fringeWidth;
-            ExpandFill(fillFringe, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
+            ExpandFill(fillFringe, NVGlineJoin.Miter, fillFringeMiterLimit, MapFillRuleToTess(state.FillRule));
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
+            ExpandFill(0.0f, NVGlineJoin.Miter, fillFringeMiterLimit, MapFillRuleToTess(state.FillRule));
         }
 
         // Apply global alpha
@@ -1653,13 +1708,14 @@ internal sealed class NVGContext
 
         // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
         var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        const float fillFringeMiterLimit = 4.0f;
         if (useFringeAa)
         {
-            ExpandFill(_fringeWidth, NVGlineJoin.Miter, 2.4f, windingRule, tessCache: cache);
+            ExpandFill(_fringeWidth, NVGlineJoin.Miter, fillFringeMiterLimit, windingRule, tessCache: cache);
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, windingRule, tessCache: cache);
+            ExpandFill(0.0f, NVGlineJoin.Miter, fillFringeMiterLimit, windingRule, tessCache: cache);
         }
 
         // Submit to renderer
@@ -1990,6 +2046,12 @@ internal sealed class NVGContext
         var vertOffset = 0;
         var pathOffset = 0;
 
+        // Flag fills that need the coverage-AA pipeline instead of the stencil-
+        // fill + fringe-overlay pipeline. A self-intersecting source contour
+        // (pentagram) — its fringe strip crosses itself at inner vertices and
+        // leaves seams across the fill; coverage AA's MAX-blended accumulation
+        // collapses those overlaps to a clean boundary.
+        bool sourceHasNonSimple = false;
         if (fringe)
         {
             for (var i = 0; i < sourcePathCount; i++)
@@ -2001,6 +2063,10 @@ internal sealed class NVGContext
                 }
 
                 var pts = _cache.Points.AsSpan(srcPath.First, srcPath.Count);
+                if (!IsSimpleContour(pts))
+                {
+                    sourceHasNonSimple = true;
+                }
 
                 var outPath = srcPath;
                 outPath.FillOffset = 0;
@@ -2059,7 +2125,11 @@ internal sealed class NVGContext
             outPath.FillOffset = vertOffset;
             outPath.StrokeOffset = 0;
             outPath.NStroke = 0;
-            outPath.Convex = true;
+            // Non-simple sources produce a tessellated body that is not a single
+            // convex fan; flag it so the GL renderer routes to the coverage AA
+            // path (which handles the self-intersecting fringe correctly via
+            // Max blending) instead of the stencil-fill + fringe-overlay path.
+            outPath.Convex = !sourceHasNonSimple;
 
             if (directConvexFill)
             {
