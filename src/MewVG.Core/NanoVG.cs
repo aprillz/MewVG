@@ -162,6 +162,17 @@ public abstract class NanoVG : IDisposable
 
     public abstract int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data);
 
+    public int CreateOwnedImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
+    {
+        var image = CreateImageRGBA(width, height, imageFlags, data);
+        if (image != 0)
+        {
+            _ownedImages.Add(image);
+        }
+
+        return image;
+    }
+
     public abstract int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data);
 
     public abstract bool UpdateImage(int image, ReadOnlySpan<byte> data);
@@ -204,6 +215,12 @@ public abstract class NanoVG : IDisposable
         }
 
         _disposed = true;
+        for (var i = 0; i < _ownedImages.Count; i++)
+        {
+            DeleteImage(_ownedImages[i]);
+        }
+
+        _ownedImages.Clear();
         DisposeBackend();
     }
 
