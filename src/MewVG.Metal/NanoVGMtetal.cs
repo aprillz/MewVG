@@ -71,6 +71,23 @@ public sealed class NanoVGMetal : NanoVG
     public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer) => _context.SetRenderEncoder(renderEncoder, commandBuffer);
 
     /// <summary>
+    /// Extended setter that captures render-pass attachment textures so the Metal
+    /// renderer can rebuild an equivalent main encoder after a coverage-AA detour.
+    /// Pass IntPtr.Zero for textures that aren't applicable.
+    /// </summary>
+    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer,
+        IntPtr colorTexture, IntPtr stencilTexture, IntPtr msaaColorTexture)
+        => _context.SetRenderEncoder(renderEncoder, commandBuffer, colorTexture, stencilTexture, msaaColorTexture);
+
+    /// <summary>
+    /// Allocates (or resizes) the coverage-AA scratch texture used as the second
+    /// color attachment of the host's main render pass. Returns the texture handle
+    /// to attach as color[1]. Call before building the render pass each frame.
+    /// </summary>
+    public IntPtr EnsureCoverageTexture(int width, int height)
+        => _context.EnsureCoverageTexture(width, height);
+
+    /// <summary>
     /// Signals that the GPU has completed rendering the frame
     /// Call this in your command buffer completion handler
     /// </summary>

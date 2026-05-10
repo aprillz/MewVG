@@ -161,6 +161,8 @@ public static unsafe partial class Metal
         public static readonly nint SetDestinationRGBBlendFactor = ObjCRuntime.RegisterSelector("setDestinationRGBBlendFactor:");
         public static readonly nint SetDestinationAlphaBlendFactor = ObjCRuntime.RegisterSelector("setDestinationAlphaBlendFactor:");
         public static readonly nint SetWriteMask = ObjCRuntime.RegisterSelector("setWriteMask:");
+        public static readonly nint SetRgbBlendOperation = ObjCRuntime.RegisterSelector("setRgbBlendOperation:");
+        public static readonly nint SetAlphaBlendOperation = ObjCRuntime.RegisterSelector("setAlphaBlendOperation:");
 
         // CAMetalLayer
         public static readonly nint NextDrawable = ObjCRuntime.RegisterSelector("nextDrawable");
@@ -307,6 +309,20 @@ public enum MTLBlendFactor : ulong
     OneMinusBlendColor = 12,
     BlendAlpha = 13,
     OneMinusBlendAlpha = 14,
+}
+
+/// <summary>
+/// Metal per-attachment blend operation. Default Add (standard SrcOver et al.).
+/// Coverage AA build pass uses Max so overlapping fragments pin coverage to its
+/// peak rather than accumulating.
+/// </summary>
+public enum MTLBlendOperation : ulong
+{
+    Add = 0,
+    Subtract = 1,
+    ReverseSubtract = 2,
+    Min = 3,
+    Max = 4,
 }
 
 /// <summary>

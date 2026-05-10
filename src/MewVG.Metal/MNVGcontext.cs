@@ -38,6 +38,8 @@ public enum MNVGshaderType
     MNVG_SHADER_FILLIMG = 1,
     MNVG_SHADER_SIMPLE = 2,
     MNVG_SHADER_IMG = 3,
+    MNVG_SHADER_COVERAGE_OUTPUT = 4,
+    MNVG_SHADER_COVERAGE_COMPOSITE = 5,
     MNVG_SHADER_GRADIENT_RADIAL = 6,
     MNVG_SHADER_GRADIENT_LINEAR = 7,
 }
@@ -100,6 +102,10 @@ public struct MNVGcall
     public int uniformOffset;
     public int cpuResolvedFill;
     public NVGcompositeOperationState blendFunc;
+    // Coverage AA (transparent fill/stroke): when true, this call is dispatched
+    // through the coverage-build + composite passes that use FB fetch on color[1]
+    // to keep each pixel single-blended despite overlapping segment quads.
+    public bool hasCoverageAA;
 }
 
 /// <summary>
@@ -364,6 +370,86 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return color * uniforms.innerCol;
           }
         }
+
+        // ─── Coverage AA (transparent stroke/fill, single-encoder) ────────────
+        // Output struct used by the build pass to write strokeAlpha to color[1]
+        // while leaving color[0] untouched (writeMask handled at pipeline level).
+        struct CoverageOut {
+          float4 main [[color(0)]];
+          float4 cov  [[color(1)]];
+        };
+
+        // Coverage build: rasterize stroke / fill geometry once with MAX blending
+        // on color[1]. Each pixel ends up holding max(strokeAlpha) across all
+        // overlapping fragments — i.e. a true coverage value, not an SrcOver
+        // accumulation. color[0] is masked off via the pipeline's writeMask so
+        // this pass leaves the main framebuffer alone.
+        fragment CoverageOut fragmentCoverageBuild(RasterizerData in [[stage_in]],
+                                                    constant Uniforms& uniforms [[buffer(0)]]) {
+          float scissor = scissorMask(uniforms, in.fpos);
+          float strokeAlpha = strokeMask(uniforms, in.ftcoord);
+          if (strokeAlpha < uniforms.strokeThr) {
+            discard_fragment();
+          }
+          CoverageOut o;
+          o.main = float4(0);                          // ignored by writeMask
+          // Coverage texture is R8Unorm — only the red channel is stored. Write
+          // the same value to all channels so MAX blend with the destination's
+          // single channel still picks up the largest contribution; reads happen
+          // via .r in the composite shader.
+          o.cov = float4(strokeAlpha * scissor);
+          return o;
+        }
+
+        // Coverage composite: a bounds quad with SrcOver on color[0]. Reads the
+        // per-pixel coverage that the build pass wrote to color[1] using
+        // framebuffer fetch (`[[color(1)]]`) — no encoder switch, no tile flush.
+        // Outputs `paint × coverage` in premultiplied space; standard SrcOver
+        // blends that against the existing framebuffer exactly once per pixel.
+        // Also writes 0 back to color[1] so the next coverage pass on this frame
+        // starts from a zeroed scratch (eliminates the need for a clear pass).
+        fragment CoverageOut fragmentCoverageComposite(RasterizerData in [[stage_in]],
+                                                        constant Uniforms& uniforms [[buffer(0)]],
+                                                        texture2d<float> texture [[texture(0)]],
+                                                        sampler textureSampler [[sampler(0)]],
+                                                        float4 prevCov [[color(1)]]) {
+          // Coverage texture is R8Unorm so the build pass wrote into the red
+          // channel; read .r here (Metal returns 1.0 in .a for single-channel
+          // formats, which would silently give "fully covered" everywhere).
+          float coverage = prevCov.r;
+          float scissor = scissorMask(uniforms, in.fpos);
+
+          float4 color;
+          if (uniforms.type == 0) {                    // FILLGRAD (or solid via degenerate sdroundrect)
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, pt))
+                                / uniforms.feather);
+            color = mix(uniforms.innerCol, uniforms.outerCol, d);
+          } else if (uniforms.type == 6) {             // GRADIENT_RADIAL
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientRadialT(pt, uniforms.gradientCenter, uniforms.gradientFocal,
+                                      uniforms.gradientRadii, int(uniforms.gradientSpread));
+            color = texture.sample(textureSampler, float2(t, 0.5f)) * uniforms.innerCol;
+          } else if (uniforms.type == 7) {             // GRADIENT_LINEAR
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
+            float t = gradientLinearT(pt, uniforms.gradientCenter, uniforms.gradientFocal,
+                                      int(uniforms.gradientSpread));
+            color = texture.sample(textureSampler, float2(t, 0.5f)) * uniforms.innerCol;
+          } else {                                     // FILLIMG fallback (image-paint stroke is rare)
+            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy / uniforms.extent;
+            color = texture.sample(textureSampler, pt);
+            if (uniforms.texType == 1)
+              color = float4(color.xyz * color.w, color.w);
+            else if (uniforms.texType == 2)
+              color = float4(color.x);
+            color *= uniforms.innerCol;
+          }
+
+          CoverageOut o;
+          o.main = color * coverage * scissor;
+          o.cov = float4(0);                           // self-clear for next stroke this frame
+          return o;
+        }
         """;
     // Reserve the MSB for clip so NanoVG's own stencil usage can keep using the lower bits.
     // This avoids clip getting overwritten by fill/stroke stencil passes.
@@ -379,8 +465,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _commandQueue;        // id<MTLCommandQueue>
     private IntPtr _library;             // id<MTLLibrary>
     private IntPtr _vertexFunction;      // id<MTLFunction>
-    private IntPtr _fragmentFunction;    // id<MTLFunction>
-    private IntPtr _fragmentAAFunction;  // id<MTLFunction>
+    private IntPtr _fragmentFunction;            // id<MTLFunction>
+    private IntPtr _fragmentAAFunction;          // id<MTLFunction>
+    private IntPtr _fragmentCoverageBuildFn;     // id<MTLFunction>
+    private IntPtr _fragmentCoverageCompositeFn; // id<MTLFunction>
 
     // Pipeline states
     private IntPtr _pipelineState;           // id<MTLRenderPipelineState>
@@ -439,6 +527,17 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _renderEncoder;       // id<MTLRenderCommandEncoder>
     private IntPtr _commandBuffer;       // id<MTLCommandBuffer>
     private DispatchSemaphore _semaphore;
+
+    // Coverage AA infrastructure. Transparent stroke/fill calls take a build +
+    // composite path inside the same render encoder: build writes strokeAlpha to
+    // color[1] with MAX blend, composite reads that value via framebuffer fetch
+    // (`[[color(1)]]`) and applies paint×coverage to color[0] with SrcOver.
+    // Single-encoder, no tile flush, works on every Metal GPU.
+    private IntPtr _coverageTexture;            // R8Unorm, attached as color[1] of host's main pass
+    private int _coverageWidth;
+    private int _coverageHeight;
+    private IntPtr _coverageBuildPipeline;      // 2-attachment PSO: writeMask color[0]=None, color[1] MAX blend
+    private IntPtr _coverageCompositePipeline;  // 2-attachment PSO: writeMask color[0]=All SrcOver, color[1] cleared via shader
 
     // Settings
     private NVGcreateFlags _flags;
@@ -561,6 +660,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _vertexFunction = GetFunction("vertexShader");
         _fragmentFunction = GetFunction("fragmentShader");
         _fragmentAAFunction = GetFunction("fragmentShaderAA");
+        _fragmentCoverageBuildFn = GetFunction("fragmentCoverageBuild");
+        _fragmentCoverageCompositeFn = GetFunction("fragmentCoverageComposite");
 
         // Create pipeline states
         CreatePipelineStates();
@@ -738,6 +839,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(colorAttachment0, MetalSelectors.setWriteMask,
             (ulong)(stencilOnly ? MTLColorWriteMask.None : MTLColorWriteMask.All));
 
+        // Mirror color[1] (coverage AA scratch) attachment configuration even on
+        // pipelines that don't write to it: when the host adds a second color
+        // attachment to the render pass for coverage AA, all PSOs in that pass
+        // must declare matching attachment slots or Metal silently drops fragment
+        // output / fails validation. WriteMask=None here keeps these pipelines
+        // from disturbing the coverage texture during regular paint draws.
+        var colorAttachment1 = ObjCRuntime.SendMessage(colorAttachments,
+            MetalSelectors.objectAtIndexedSubscript, (nuint)1);
+        ObjCRuntime.SendMessage(colorAttachment1, MetalSelectors.setPixelFormat,
+            (ulong)CoveragePixelFormat);
+        ObjCRuntime.SendMessage(colorAttachment1, MetalSelectors.setBlendingEnabled, false);
+        ObjCRuntime.SendMessage(colorAttachment1, MetalSelectors.setWriteMask,
+            (ulong)MTLColorWriteMask.None);
+
         var error = IntPtr.Zero;
         var pipeline = ObjCRuntime.SendMessage(
             _device,
@@ -751,6 +866,194 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         return pipeline;
     }
+
+    /// <summary>
+    /// Builds the coverage-AA "build" pipeline: rasterizes stroke/fill geometry
+    /// once with MAX blending on color attachment 1 (alpha8) and writeMask=None
+    /// on color[0]. Uses <see cref="_fragmentCoverageBuildFn"/> which returns a
+    /// CoverageOut struct writing strokeAlpha to color[1].
+    /// </summary>
+    private IntPtr CreateCoverageBuildPipeline(MTLPixelFormat coveragePixelFormat)
+    {
+        var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
+        var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
+        if (pipelineDescriptor == IntPtr.Zero) return IntPtr.Zero;
+
+        var vertexDescriptor = CreateVertexDescriptor();
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, _fragmentCoverageBuildFn);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
+
+        if (_stencilFormat == MTLPixelFormat.Depth24Unorm_Stencil8 ||
+            _stencilFormat == MTLPixelFormat.Depth32Float_Stencil8)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setDepthAttachmentPixelFormat, (ulong)_stencilFormat);
+        }
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
+
+        if (_sampleCount > 1)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
+        }
+
+        var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
+
+        // color[0]: main framebuffer pixel format, blending off (won't be touched).
+        var color0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setPixelFormat, (ulong)_pixelFormat);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setBlendingEnabled, false);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.None);
+
+        // color[1]: alpha8 coverage scratch with MAX blend so overlap pins to peak.
+        var color1 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)1);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setPixelFormat, (ulong)coveragePixelFormat);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setBlendingEnabled, true);
+        ObjCRuntime.SendMessage(color1, Metal.Sel.SetRgbBlendOperation, (ulong)MTLBlendOperation.Max);
+        ObjCRuntime.SendMessage(color1, Metal.Sel.SetAlphaBlendOperation, (ulong)MTLBlendOperation.Max);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setSourceRGBBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setSourceAlphaBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationRGBBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
+
+        var error = IntPtr.Zero;
+        var pipeline = ObjCRuntime.SendMessage(_device,
+            MetalSelectors.newRenderPipelineStateWithDescriptor_error,
+            pipelineDescriptor, (IntPtr)(&error));
+
+        ObjCRuntime.SendMessage(pipelineDescriptor, ObjCRuntime.Selectors.release);
+        ObjCRuntime.SendMessage(vertexDescriptor, ObjCRuntime.Selectors.release);
+        return pipeline;
+    }
+
+    /// <summary>
+    /// Builds the coverage-AA "composite" pipeline: a bounds quad with SrcOver on
+    /// color[0]; <see cref="_fragmentCoverageCompositeFn"/> reads color[1] via
+    /// framebuffer fetch (`[[color(1)]]`) for per-pixel coverage and writes 0
+    /// back to color[1] so the next stroke this frame starts clean.
+    /// </summary>
+    private IntPtr CreateCoverageCompositePipeline(
+        MTLPixelFormat coveragePixelFormat,
+        MTLBlendFactor srcRgb, MTLBlendFactor dstRgb,
+        MTLBlendFactor srcAlpha, MTLBlendFactor dstAlpha)
+    {
+        var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
+        var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
+        if (pipelineDescriptor == IntPtr.Zero) return IntPtr.Zero;
+
+        var vertexDescriptor = CreateVertexDescriptor();
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, _fragmentCoverageCompositeFn);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
+
+        if (_stencilFormat == MTLPixelFormat.Depth24Unorm_Stencil8 ||
+            _stencilFormat == MTLPixelFormat.Depth32Float_Stencil8)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setDepthAttachmentPixelFormat, (ulong)_stencilFormat);
+        }
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
+
+        if (_sampleCount > 1)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
+        }
+
+        var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
+
+        // color[0]: SrcOver-style blending (matched to caller's composite operation).
+        var color0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setPixelFormat, (ulong)_pixelFormat);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setBlendingEnabled, true);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setSourceRGBBlendFactor, (ulong)srcRgb);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setSourceAlphaBlendFactor, (ulong)srcAlpha);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setDestinationRGBBlendFactor, (ulong)dstRgb);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)dstAlpha);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
+
+        // color[1]: REPLACE blending (srcFactor=One, dstFactor=Zero, Add) so the
+        // composite shader's `o.cov = 0` actually overwrites coverage to 0 — this
+        // is the self-clear that lets back-to-back coverage AA calls reuse the
+        // single coverage attachment without an explicit clear pass.
+        var color1 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)1);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setPixelFormat, (ulong)coveragePixelFormat);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setBlendingEnabled, true);
+        ObjCRuntime.SendMessage(color1, Metal.Sel.SetRgbBlendOperation, (ulong)MTLBlendOperation.Add);
+        ObjCRuntime.SendMessage(color1, Metal.Sel.SetAlphaBlendOperation, (ulong)MTLBlendOperation.Add);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setSourceRGBBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setSourceAlphaBlendFactor, (ulong)MTLBlendFactor.One);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationRGBBlendFactor, (ulong)MTLBlendFactor.Zero);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)MTLBlendFactor.Zero);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
+
+        var error = IntPtr.Zero;
+        var pipeline = ObjCRuntime.SendMessage(_device,
+            MetalSelectors.newRenderPipelineStateWithDescriptor_error,
+            pipelineDescriptor, (IntPtr)(&error));
+
+        ObjCRuntime.SendMessage(pipelineDescriptor, ObjCRuntime.Selectors.release);
+        ObjCRuntime.SendMessage(vertexDescriptor, ObjCRuntime.Selectors.release);
+        return pipeline;
+    }
+
+    /// <summary>
+    /// Returns true when paint composition would visibly differ between single-blend
+    /// and overlapping multi-blend — i.e. when the inner/outer color carries less
+    /// than full alpha. Mirrors the threshold used by the GL backend's
+    /// <c>HasTransparency(paint)</c>. Image paints are excluded (they have a separate
+    /// fragment path that doesn't produce the same overlap artifact).
+    /// </summary>
+    private static bool PaintHasTransparency(in NVGpaint paint)
+    {
+        if (paint.Image != 0) return false;
+        const float opaqueThreshold = 0.999f;
+        return paint.InnerColor.A < opaqueThreshold || paint.OuterColor.A < opaqueThreshold;
+    }
+
+    /// <summary>
+    /// Lazily creates and caches the coverage-build pipeline. Re-created if the
+    /// pixel format or sample count changed since last call.
+    /// </summary>
+    private IntPtr GetCoverageBuildPipeline()
+    {
+        if (_coverageBuildPipeline == IntPtr.Zero)
+        {
+            _coverageBuildPipeline = CreateCoverageBuildPipeline(CoveragePixelFormat);
+        }
+        return _coverageBuildPipeline;
+    }
+
+    /// <summary>
+    /// Lazily creates and caches the coverage-composite pipeline using the given
+    /// blend factors (so callers can match the call's compositeOperation).
+    /// </summary>
+    private IntPtr GetCoverageCompositePipeline(MTLBlendFactor srcRgb, MTLBlendFactor dstRgb,
+                                                 MTLBlendFactor srcAlpha, MTLBlendFactor dstAlpha)
+    {
+        // Cache shape: store factors used and recreate on mismatch. Most calls
+        // use the same SrcOver blend, so churn is rare.
+        if (_coverageCompositePipeline != IntPtr.Zero
+            && _coverageCompSrcRgb == srcRgb && _coverageCompDstRgb == dstRgb
+            && _coverageCompSrcAlpha == srcAlpha && _coverageCompDstAlpha == dstAlpha)
+        {
+            return _coverageCompositePipeline;
+        }
+        if (_coverageCompositePipeline != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_coverageCompositePipeline, ObjCRuntime.Selectors.release);
+        }
+        _coverageCompositePipeline = CreateCoverageCompositePipeline(
+            CoveragePixelFormat, srcRgb, dstRgb, srcAlpha, dstAlpha);
+        _coverageCompSrcRgb = srcRgb;
+        _coverageCompDstRgb = dstRgb;
+        _coverageCompSrcAlpha = srcAlpha;
+        _coverageCompDstAlpha = dstAlpha;
+        return _coverageCompositePipeline;
+    }
+
+    private MTLBlendFactor _coverageCompSrcRgb;
+    private MTLBlendFactor _coverageCompDstRgb;
+    private MTLBlendFactor _coverageCompSrcAlpha;
+    private MTLBlendFactor _coverageCompDstAlpha;
 
     private static MTLBlendFactor ConvertBlendFactor(int factor, ref bool ok) => factor switch
     {
@@ -1287,11 +1590,17 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                     break;
                 case MNVGcallType.MNVG_FILL:
                     _clipActiveInRender = clipActive;
-                    RenderFill(ref buffers, ref call);
+                    if (call.hasCoverageAA)
+                        RenderFillWithCoverage(ref buffers, ref call);
+                    else
+                        RenderFill(ref buffers, ref call);
                     break;
                 case MNVGcallType.MNVG_STROKE:
                     _clipActiveInRender = clipActive;
-                    RenderStroke(ref buffers, ref call);
+                    if (call.hasCoverageAA)
+                        RenderStrokeWithCoverage(ref buffers, ref call);
+                    else
+                        RenderStroke(ref buffers, ref call);
                     break;
                 case MNVGcallType.MNVG_TRIANGLES:
                     _clipActiveInRender = clipActive;
@@ -1455,6 +1764,151 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         {
             ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
         }
+    }
+
+    /// <summary>
+    /// Coverage-AA dispatcher for transparent fills. Pass A clears coverage by
+    /// virtue of the composite pipeline writing 0 back to color[1] at the end of
+    /// the *previous* coverage AA call (or by the initial render-pass clear); on
+    /// the first call of the frame the attachment is already 0 from clear action.
+    /// Pass B (build) rasterizes fill triangles with MAX blend on color[1]. Pass
+    /// C (composite) draws the bounds quad with FB fetch on color[1] and SrcOver
+    /// on color[0]. All three within the same render encoder — no tile flush.
+    /// </summary>
+    private void RenderFillWithCoverage(ref MNVGbuffers buffers, ref MNVGcall call)
+    {
+        if (call.triangleCount < 4) return;  // need a bounds quad
+
+        // ── Pass B: build coverage ────────────────────────────────────────────
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
+            GetCoverageBuildPipeline());
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
+            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+        if (_clipActiveInRender)
+        {
+            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+        }
+        // Use the +1 paint uniform — strokeMult=-1 so strokeMask gives analytical
+        // fill coverage. fragmentCoverageBuild ignores the type field.
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
+            buffers.uniformBuffer,
+            (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN), (nuint)0);
+
+        var fillStart = -1;
+        var fillCount = 0;
+        for (var i = 0; i < call.pathCount; i++)
+        {
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.fillCount > 0)
+            {
+                if (fillStart < 0) fillStart = path.fillOffset;
+                fillCount += path.fillCount;
+            }
+        }
+        if (fillStart >= 0 && fillCount > 0)
+        {
+            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                (ulong)MTLPrimitiveType.Triangle, (nuint)fillStart, (nuint)fillCount);
+        }
+
+        // Geometry-AA fringe also contributes coverage so anti-aliased boundaries
+        // make it into color[1].
+        if (UseGeometryAA)
+        {
+            for (var i = 0; i < call.pathCount; i++)
+            {
+                ref var path = ref _paths[call.pathOffset + i];
+                if (path.strokeCount > 0)
+                {
+                    ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                        (ulong)MTLPrimitiveType.TriangleStrip, (nuint)path.strokeOffset, (nuint)path.strokeCount);
+                }
+            }
+        }
+
+        // ── Pass C: composite ─────────────────────────────────────────────────
+        var ok = true;
+        var srcRgb = ConvertBlendFactor(call.blendFunc.SrcRGB, ref ok);
+        var dstRgb = ConvertBlendFactor(call.blendFunc.DstRGB, ref ok);
+        var srcAlpha = ConvertBlendFactor(call.blendFunc.SrcAlpha, ref ok);
+        var dstAlpha = ConvertBlendFactor(call.blendFunc.DstAlpha, ref ok);
+        if (!ok)
+        {
+            srcRgb = MTLBlendFactor.One; dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
+            srcAlpha = MTLBlendFactor.One; dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
+        }
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
+            GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
+        // Same paint uniform — composite shader switches on type for paint color.
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
+            buffers.uniformBuffer,
+            (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN), (nuint)0);
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+            (ulong)MTLPrimitiveType.TriangleStrip,
+            (nuint)call.triangleOffset, (nuint)call.triangleCount);
+
+        // Restore default stencil state for following calls (matches non-coverage path).
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
+            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+    }
+
+    /// <summary>
+    /// Coverage-AA dispatcher for transparent strokes. Same structure as fill
+    /// version but build pass rasterizes the stroke triangle strip; composite
+    /// pass draws the bounds quad over the stroke bbox.
+    /// </summary>
+    private void RenderStrokeWithCoverage(ref MNVGbuffers buffers, ref MNVGcall call)
+    {
+        if (call.triangleCount < 4) return;
+
+        // ── Pass B: build coverage from stroke geometry ───────────────────────
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
+            GetCoverageBuildPipeline());
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
+            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+        if (_clipActiveInRender)
+        {
+            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+        }
+        // Stroke uses uniform[+0] (the original stroke paint with proper strokeMult).
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
+            buffers.uniformBuffer,
+            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN), (nuint)0);
+
+        for (var i = 0; i < call.pathCount; i++)
+        {
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.strokeCount > 0)
+            {
+                ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.TriangleStrip, (nuint)path.strokeOffset, (nuint)path.strokeCount);
+            }
+        }
+
+        // ── Pass C: composite ─────────────────────────────────────────────────
+        var ok = true;
+        var srcRgb = ConvertBlendFactor(call.blendFunc.SrcRGB, ref ok);
+        var dstRgb = ConvertBlendFactor(call.blendFunc.DstRGB, ref ok);
+        var srcAlpha = ConvertBlendFactor(call.blendFunc.SrcAlpha, ref ok);
+        var dstAlpha = ConvertBlendFactor(call.blendFunc.DstAlpha, ref ok);
+        if (!ok)
+        {
+            srcRgb = MTLBlendFactor.One; dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
+            srcAlpha = MTLBlendFactor.One; dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
+        }
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
+            GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
+            buffers.uniformBuffer,
+            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN), (nuint)0);
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+            (ulong)MTLPrimitiveType.TriangleStrip,
+            (nuint)call.triangleOffset, (nuint)call.triangleCount);
+
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
+            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
     }
 
     private void RenderStroke(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -2106,11 +2560,94 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     {
         _renderEncoder = renderEncoder;
         _commandBuffer = commandBuffer;
-
-        // Register completion handler to signal semaphore
-        // This will be called when the command buffer completes
-        // In production, you'd want to use a proper completion handler
     }
+
+    /// <summary>
+    /// Extended overload kept for API symmetry with the call site that also has
+    /// the host's render-pass texture attachments at hand. Coverage AA itself
+    /// runs entirely within the host's existing encoder via framebuffer fetch on
+    /// color[1], so the texture handles are not stored here. Parameters are
+    /// accepted (and ignored) so callers don't need to know about that detail.
+    /// </summary>
+    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer,
+        IntPtr colorTexture, IntPtr stencilTexture, IntPtr msaaColorTexture)
+    {
+        _ = colorTexture; _ = stencilTexture; _ = msaaColorTexture;
+        _renderEncoder = renderEncoder;
+        _commandBuffer = commandBuffer;
+    }
+
+    /// <summary>
+    /// The pixel format used for the coverage AA scratch attachment (color[1]).
+    /// R8Unorm — single-channel, 8-bit unsigned. The shaders only use the alpha
+    /// channel of the float4 read via <c>[[color(1)]]</c>, but Metal interprets a
+    /// single-channel texture as red; both endpoints (build write &amp; composite
+    /// fetch) treat the channel consistently.
+    /// </summary>
+    public const MTLPixelFormat CoveragePixelFormat = MTLPixelFormat.R8Unorm;
+
+    /// <summary>
+    /// Ensures the coverage AA scratch texture (color[1] attachment) exists at the
+    /// requested size. Call from the host before building the main render pass so
+    /// the texture handle returned by <see cref="GetCoverageTexture"/> can be
+    /// attached as color[1]. Tile-memory storage on Apple Silicon keeps this
+    /// effectively free; on Intel/AMD it lands in private VRAM (~width×height bytes).
+    /// </summary>
+    public IntPtr EnsureCoverageTexture(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return IntPtr.Zero;
+        if (_coverageTexture != IntPtr.Zero
+            && _coverageWidth >= width && _coverageHeight >= height)
+        {
+            return _coverageTexture;
+        }
+
+        if (_coverageTexture != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_coverageTexture, ObjCRuntime.Selectors.release);
+            _coverageTexture = IntPtr.Zero;
+        }
+
+        var textureDescriptorClass = ObjCRuntime.GetClass("MTLTextureDescriptor");
+        var textureDescriptor = ObjCRuntime.SendMessage(
+            textureDescriptorClass,
+            MetalSelectors.texture2DDescriptorWithPixelFormat_width_height_mipmapped,
+            (ulong)CoveragePixelFormat,
+            (nuint)width,
+            (nuint)height,
+            false);
+
+        ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage,
+            (ulong)(MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderRead));
+        if (_sampleCount > 1)
+        {
+            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetSampleCount, (nuint)_sampleCount);
+            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetTextureType,
+                (ulong)MTLTextureType.Type2DMultisample);
+        }
+
+        // Try Memoryless first — on Apple Silicon TBDR this keeps the attachment in
+        // tile cache only (zero DRAM, zero memory traffic). If the device doesn't
+        // support Memoryless (Intel/AMD Macs lack it; newTextureWithDescriptor
+        // returns nil), fall back to Private storage which still keeps the texture
+        // GPU-only with one private VRAM allocation.
+        ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetStorageMode,
+            (ulong)MTLStorageMode.Memoryless);
+        _coverageTexture = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
+        if (_coverageTexture == IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetStorageMode,
+                (ulong)MTLStorageMode.Private);
+            _coverageTexture = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
+        }
+
+        _coverageWidth = width;
+        _coverageHeight = height;
+        return _coverageTexture;
+    }
+
+    /// <summary>The current coverage scratch texture, or IntPtr.Zero if not yet allocated.</summary>
+    public IntPtr GetCoverageTexture() => _coverageTexture;
 
     /// <summary>
     /// Signals that the frame has completed
@@ -2239,6 +2776,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
         }
 
+        // Coverage AA path: non-convex shape with transparent paint. Build pass +
+        // composite pass run within the same render encoder (no encoder switching
+        // → no tile flush) by writing to color[1] with MAX blending and reading it
+        // back via framebuffer fetch.
+        call.hasCoverageAA = !convex && _coverageTexture != IntPtr.Zero
+            && PaintHasTransparency(paint);
+
         // Always allocate 2 uniforms (simple at +0, fill paint at +1)
         // to match GL layout — CpuResolvedFill uses +1 directly.
         call.uniformOffset = AllocUniforms(2);
@@ -2260,7 +2804,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             frag->strokeMult = -1.0f;
         }
 
-        // Quad for stencil fill (non-convex only)
+        // Quad for stencil fill (non-convex only). Coverage AA reuses the same
+        // bounds quad as the composite pass, so it must be allocated either way.
         if (!convex)
         {
             call.triangleOffset = _vertCount;
@@ -2322,6 +2867,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.image = paint.Image;
         call.blendFunc = compositeOperation;
 
+        // Coverage AA path: transparent stroke (any concave/non-convex) goes
+        // through build + composite passes that share color[1] via FB fetch — no
+        // encoder switch, single SrcOver per pixel even at sharp join overlaps.
+        var isConvexStroke = paths.Length == 1 && paths[0].Convex;
+        call.hasCoverageAA = !isConvexStroke && _coverageTexture != IntPtr.Zero
+            && PaintHasTransparency(paint);
+
         // Allocate uniforms
         var stencilStrokes = (_flags & NVGcreateFlags.StencilStrokes) != 0 && !_recordingClipActive;
         call.uniformOffset = AllocUniforms(stencilStrokes ? 2 : 1);
@@ -2338,6 +2890,43 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             {
                 var frag = (MNVGfragUniforms*)ptr;
                 ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, 1.0f - 0.5f / 255.0f);
+            }
+        }
+
+        // Coverage AA composite needs a bounds quad. Compute from stroke verts
+        // (path bounds aren't passed to RenderStroke) and append after geometry.
+        if (call.hasCoverageAA)
+        {
+            float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+            float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+            for (var i = 0; i < paths.Length; i++)
+            {
+                ref readonly var path = ref paths[i];
+                if (path.NStroke <= 0) continue;
+                var src = verts.Slice(path.StrokeOffset, path.NStroke);
+                for (var j = 0; j < src.Length; j++)
+                {
+                    ref readonly var v = ref src[j];
+                    if (v.X < minX) minX = v.X;
+                    if (v.Y < minY) minY = v.Y;
+                    if (v.X > maxX) maxX = v.X;
+                    if (v.Y > maxY) maxY = v.Y;
+                }
+            }
+            if (float.IsPositiveInfinity(minX))
+            {
+                // No verts collected — disable coverage path; falls back to normal stroke.
+                call.hasCoverageAA = false;
+            }
+            else
+            {
+                EnsureVerts(_vertCount + 4);
+                call.triangleOffset = _vertCount;
+                call.triangleCount = 4;
+                _verts[_vertCount++] = new NVGvertex(maxX, maxY, 0.5f, 1.0f);
+                _verts[_vertCount++] = new NVGvertex(maxX, minY, 0.5f, 1.0f);
+                _verts[_vertCount++] = new NVGvertex(minX, maxY, 0.5f, 1.0f);
+                _verts[_vertCount++] = new NVGvertex(minX, minY, 0.5f, 1.0f);
             }
         }
     }
@@ -2802,6 +3391,31 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_fragmentAAFunction != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_fragmentAAFunction, ObjCRuntime.Selectors.release);
+        }
+
+        if (_fragmentCoverageBuildFn != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_fragmentCoverageBuildFn, ObjCRuntime.Selectors.release);
+        }
+
+        if (_fragmentCoverageCompositeFn != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_fragmentCoverageCompositeFn, ObjCRuntime.Selectors.release);
+        }
+
+        if (_coverageBuildPipeline != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_coverageBuildPipeline, ObjCRuntime.Selectors.release);
+        }
+
+        if (_coverageCompositePipeline != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_coverageCompositePipeline, ObjCRuntime.Selectors.release);
+        }
+
+        if (_coverageTexture != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_coverageTexture, ObjCRuntime.Selectors.release);
         }
 
         if (_library != IntPtr.Zero)
