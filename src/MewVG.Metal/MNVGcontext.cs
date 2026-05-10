@@ -1810,10 +1810,15 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         tex.type = type;
         tex.flags = imageFlags;
 
-        // Determine pixel format
-        var pixelFormat = type == (int)NVGtexture.Alpha
-            ? MTLPixelFormat.R8Unorm
-            : MTLPixelFormat.RGBA8Unorm;
+        // Determine pixel format. BGRA8Unorm tells Metal "storage layout is BGRA bytes"; the
+        // GPU returns shader sample as RGBA-ordered float4, so callers with BGRA-native
+        // sources (Direct2D / GDI / video decoders) skip the per-frame channel swap.
+        var pixelFormat = type switch
+        {
+            (int)NVGtexture.Alpha => MTLPixelFormat.R8Unorm,
+            (int)NVGtexture.BGRA => MTLPixelFormat.BGRA8Unorm,
+            _ => MTLPixelFormat.RGBA8Unorm,
+        };
 
         // Create texture descriptor
         var textureDescriptorClass = ObjCRuntime.GetClass("MTLTextureDescriptor");
@@ -1900,7 +1905,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Deletes a texture
+    /// Deletes a texture. Honors <see cref="NVGimageFlags.NoDelete"/>: when set, the
+    /// MTLTexture is externally owned (e.g. wrapped via <c>CreateTextureFromHandle</c>)
+    /// and only the slot + sampler are released here — the texture pointer is dropped
+    /// without sending <c>release</c>.
     /// </summary>
     public void DeleteTexture(int id)
     {
@@ -1915,9 +1923,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return;
         }
 
+        bool noDelete = (tex.flags & (int)NVGimageFlags.NoDelete) != 0;
         if (tex.tex != IntPtr.Zero)
         {
-            ObjCRuntime.SendMessage(tex.tex, ObjCRuntime.Selectors.release);
+            if (!noDelete)
+            {
+                ObjCRuntime.SendMessage(tex.tex, ObjCRuntime.Selectors.release);
+            }
             tex.tex = IntPtr.Zero;
         }
 
@@ -1928,6 +1940,73 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         tex.id = 0;
+    }
+
+    /// <summary>
+    /// Allocates an NVG texture slot wrapping an externally-owned MTLTexture. The
+    /// texture pointer is stored as-is (no retain) and is NOT released on
+    /// <see cref="DeleteTexture"/> — caller must include <see cref="NVGimageFlags.NoDelete"/>
+    /// in <paramref name="imageFlags"/>. Sampler is allocated based on flags, just like
+    /// <see cref="CreateTexture"/>. Returned id can be used with <c>nvgImagePattern</c> /
+    /// <c>nvgFillPaint</c> exactly like a normal NVG image.
+    /// </summary>
+    public int CreateTextureFromHandle(nint mtlTexture, int width, int height, int imageFlags)
+    {
+        if (mtlTexture == IntPtr.Zero) return 0;
+
+        // Find free texture slot (mirrors CreateTexture's bookkeeping).
+        var id = 0;
+        for (var i = 0; i < _textureCount; i++)
+        {
+            if (_textures[i].id == 0)
+            {
+                id = i + 1;
+                break;
+            }
+        }
+        if (id == 0)
+        {
+            if (_textureCount >= _textureCapacity)
+            {
+                var newCapacity = _textureCapacity * 2;
+                Array.Resize(ref _textures, newCapacity);
+                _textureCapacity = newCapacity;
+            }
+            id = ++_textureCount;
+        }
+
+        ref var tex = ref _textures[id - 1];
+        tex.id = id;
+        tex.width = width;
+        tex.height = height;
+        tex.type = (int)NVGtexture.RGBA;
+        // Force NoDelete — caller should have set it but enforce here so an accidental
+        // miss doesn't leak into a release of an externally-owned texture.
+        tex.flags = imageFlags | (int)NVGimageFlags.NoDelete;
+        tex.tex = mtlTexture;
+
+        // Sampler — mirror CreateTexture's logic without uploading data.
+        var samplerDescriptorClass = ObjCRuntime.GetClass("MTLSamplerDescriptor");
+        var samplerDescriptor = ObjCRuntime.New(samplerDescriptorClass);
+
+        var nearest = (imageFlags & (int)NVGimageFlags.Nearest) != 0;
+        var filter = nearest ? MTLSamplerMinMagFilter.Nearest : MTLSamplerMinMagFilter.Linear;
+        ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMinFilter, (ulong)filter);
+        ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMagFilter, (ulong)filter);
+        if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
+        {
+            ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMipFilter, (ulong)MTLSamplerMipFilter.Linear);
+        }
+        var repeatX = (imageFlags & (int)NVGimageFlags.RepeatX) != 0;
+        var repeatY = (imageFlags & (int)NVGimageFlags.RepeatY) != 0;
+        ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setSAddressMode,
+            (ulong)(repeatX ? MTLSamplerAddressMode.Repeat : MTLSamplerAddressMode.ClampToEdge));
+        ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setTAddressMode,
+            (ulong)(repeatY ? MTLSamplerAddressMode.Repeat : MTLSamplerAddressMode.ClampToEdge));
+        tex.sampler = ObjCRuntime.SendMessage(_device, MetalSelectors.newSamplerStateWithDescriptor, samplerDescriptor);
+        ObjCRuntime.SendMessage(samplerDescriptor, ObjCRuntime.Selectors.release);
+
+        return id;
     }
 
     /// <summary>
@@ -2496,7 +2575,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
 
                 frag->type = (int)MNVGshaderType.MNVG_SHADER_FILLIMG;
-                if (tex.type == (int)NVGtexture.RGBA)
+                // BGRA8Unorm textures sample to (R,G,B,A) the same as RGBA8Unorm — the GPU
+                // does the swizzle on read, so the shader sees colour data in either case.
+                // Only Alpha textures need texType=2 (replicate red channel to all).
+                if (tex.type == (int)NVGtexture.RGBA || tex.type == (int)NVGtexture.BGRA)
                 {
                     frag->texType = (tex.flags & (int)NVGimageFlags.Premultiplied) != 0 ? 0 : 1;
                 }

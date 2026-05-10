@@ -91,6 +91,13 @@ public sealed class NanoVGMetal : NanoVG
     public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.RGBA, width, height, (int)imageFlags, data);
 
     /// <summary>
+    /// Creates an image from BGRA byte-order data. The Metal backend uses
+    /// <c>MTLPixelFormat.BGRA8Unorm</c> for the texture so the GPU interprets the storage
+    /// as BGRA bytes and returns RGBA-ordered float4 to the shader on sample — no CPU swap.
+    /// </summary>
+    public override int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.BGRA, width, height, (int)imageFlags, data);
+
+    /// <summary>
     /// Creates an image from alpha data
     /// </summary>
     /// <param name="width">Image width</param>
@@ -113,6 +120,14 @@ public sealed class NanoVGMetal : NanoVG
         return _context.UpdateTexture(image, 0, 0, width, height, data);
     }
 
+    public override bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
+    {
+        // The texture's MTLPixelFormat (set at creation) decides the upload format. As long
+        // as the image was created via CreateImageBGRA, the Metal replaceRegion path writes
+        // straight bytes to a BGRA8Unorm texture — no swap needed.
+        return UpdateImage(image, data);
+    }
+
     /// <summary>
     /// Gets image size
     /// </summary>
@@ -124,7 +139,20 @@ public sealed class NanoVGMetal : NanoVG
     public override void DeleteImage(int image) => _context.DeleteTexture(image);
 
     public override int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags)
-        => throw new NotSupportedException("Metal backend does not support creating images from external texture handles.");
+        => throw new NotSupportedException("Metal backend does not support creating images from a 32-bit texture handle. Use CreateImageFromMtlTexture(nint mtlTexture, ...) with a native MTLTexture pointer instead.");
+
+    /// <summary>
+    /// Wraps an externally-owned MTLTexture as an NVG image without copying. Caller
+    /// MUST set <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/> — the
+    /// texture is retained by its owner and DeleteImage must only drop NVG's
+    /// bookkeeping, not release the MTL resource.
+    /// </summary>
+    /// <param name="mtlTexture">Pointer to a live MTLTexture (must outlive the returned image id).</param>
+    public int CreateImageFromMtlTexture(nint mtlTexture, int width, int height, NVGimageFlags flags)
+        => _context.CreateTextureFromHandle(mtlTexture, width, height, (int)flags);
+
+    public override int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, NVGimageFlags flags)
+        => _context.CreateTextureFromHandle(nativeHandle, width, height, (int)flags);
 
     public override int ImageHandle(int image)
         => throw new NotSupportedException("Metal backend does not expose texture handles.");

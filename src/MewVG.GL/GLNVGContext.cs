@@ -759,6 +759,15 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0,
                 PixelFormat.Rgba, PixelType.UnsignedByte, data);
         }
+        else if (type == NVGtextureType.BGRA)
+        {
+            // Internal format is GL_RGBA8 (driver swizzles for shader sampling). The
+            // BGRA + UnsignedInt_8_8_8_8_Rev pair tells the driver "the source is BGRA
+            // little-endian bytes" — on desktop NV/AMD/Intel this is the native upload
+            // path, faster than RGBA because no CPU/driver swizzle is needed.
+            GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0,
+                PixelFormat.Bgra, PixelType.UnsignedInt_8_8_8_8_Rev, data);
+        }
         else
         {
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.R8, width, height, 0,
@@ -860,6 +869,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             GL.TexSubImage2D(TextureTarget.Texture2D, 0, x, y, width, height,
                 PixelFormat.Rgba, PixelType.UnsignedByte, data);
+        }
+        else if (tex.Type == NVGtextureType.BGRA)
+        {
+            GL.TexSubImage2D(TextureTarget.Texture2D, 0, x, y, width, height,
+                PixelFormat.Bgra, PixelType.UnsignedInt_8_8_8_8_Rev, data);
         }
         else
         {
@@ -1655,7 +1669,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
 
             SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.FillImg);
-            if (tex.Type == NVGtextureType.RGBA)
+            // BGRA textures sample to (R,G,B,A) the same as RGBA — the GL_BGRA + REV upload
+            // already swizzled at upload time. So texType is colour (0/1) for both formats;
+            // only ALPHA textures take texType=2 (replicate red to alpha).
+            if (tex.Type == NVGtextureType.RGBA || tex.Type == NVGtextureType.BGRA)
             {
                 SetUniformValue(frag, 12, 2, (tex.Flags & NVGimageFlags.Premultiplied) != 0 ? 0.0f : 1.0f);
             }

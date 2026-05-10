@@ -103,9 +103,16 @@ public enum NVGtextureType
     Alpha = 0x01,
 
     /// <summary>
-    /// RGBA texture.
+    /// RGBA texture (red byte first in source data).
     /// </summary>
     RGBA = 0x02,
+
+    /// <summary>
+    /// BGRA texture (blue byte first in source data). Backends that support native BGRA upload
+    /// (GL <c>GL_BGRA</c>, Metal <c>BGRA8Unorm</c>) avoid the per-frame channel-swap that
+    /// callers with BGRA-native sources (Direct2D, GDI, video decoders) would otherwise pay.
+    /// </summary>
+    BGRA = 0x03,
 }
 
 /// <summary>
@@ -115,6 +122,7 @@ public enum NVGtexture
 {
     Alpha = 0,
     RGBA = 1,
+    BGRA = 2,
 }
 
 public enum NVGpaintKind

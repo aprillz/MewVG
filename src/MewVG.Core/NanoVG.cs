@@ -176,6 +176,60 @@ public abstract class NanoVG : IDisposable
 
     public abstract int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data);
 
+    /// <summary>
+    /// Creates an image from BGRA byte-order pixel data (B, G, R, A per pixel). Backends that
+    /// support BGRA upload natively (GL with <c>GL_BGRA</c> + <c>GL_UNSIGNED_INT_8_8_8_8_REV</c>,
+    /// Metal with <c>MTLPixelFormat.BGRA8Unorm</c>) skip the byte-order conversion entirely;
+    /// the default implementation falls back to a CPU swap into a temp RGBA buffer for backends
+    /// that don't override.
+    /// </summary>
+    /// <remarks>
+    /// Provided for callers (e.g. Direct2D / GDI / WIC sources, video decoders) whose pixel
+    /// format is natively BGRA. Using this avoids the per-frame swap + extra buffer that
+    /// <see cref="CreateImageRGBA"/> implicitly forces such callers to pay.
+    /// </remarks>
+    public virtual int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty)
+        {
+            return CreateImageRGBA(width, height, imageFlags, data);
+        }
+
+        var rgba = new byte[data.Length];
+        SwapBgraRgba(data, rgba);
+        return CreateImageRGBA(width, height, imageFlags, rgba);
+    }
+
+    /// <summary>
+    /// Updates an image from BGRA byte-order pixel data. See <see cref="CreateImageBGRA"/>
+    /// for the rationale; the default implementation also falls back to a CPU swap.
+    /// </summary>
+    public virtual bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty)
+        {
+            return UpdateImage(image, data);
+        }
+
+        var rgba = new byte[data.Length];
+        SwapBgraRgba(data, rgba);
+        return UpdateImage(image, rgba);
+    }
+
+    private static void SwapBgraRgba(ReadOnlySpan<byte> src, Span<byte> dst)
+    {
+        // BGRA byte 0/1/2/3 → RGBA byte 2/1/0/3 (swap R and B channels, keep G and A).
+        // Backends with native BGRA support override CreateImageBGRA / UpdateImageBGRA so
+        // this scalar fallback only runs on backends that genuinely need the conversion.
+        for (int i = 0; i < src.Length; i += 4)
+        {
+            dst[i + 0] = src[i + 2];
+            dst[i + 1] = src[i + 1];
+            dst[i + 2] = src[i + 0];
+            dst[i + 3] = src[i + 3];
+        }
+    }
+
     public abstract bool UpdateImage(int image, ReadOnlySpan<byte> data);
 
     public abstract bool ImageSize(int image, out int width, out int height);
@@ -183,6 +237,13 @@ public abstract class NanoVG : IDisposable
     public abstract void DeleteImage(int image);
 
     public abstract int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags);
+
+    /// <summary>Backend-agnostic external-texture wrapper. The handle is interpreted per
+    /// the active backend: GL → cast to int (texture id), Metal → MTLTexture pointer,
+    /// etc. Default implementation returns 0 (unsupported); concrete backends override
+    /// when they support zero-copy external texture wrapping. Caller MUST include
+    /// <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/>.</summary>
+    public virtual int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, NVGimageFlags flags) => 0;
 
     public abstract int ImageHandle(int image);
 

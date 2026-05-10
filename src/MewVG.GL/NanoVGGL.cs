@@ -22,6 +22,9 @@ public sealed class NanoVGGL : NanoVG
     public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
         => _gl.CreateTexture(NVGtextureType.RGBA, width, height, imageFlags, data);
 
+    public override int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
+        => _gl.CreateTexture(NVGtextureType.BGRA, width, height, imageFlags, data);
+
     public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
         => _gl.CreateTexture(NVGtextureType.Alpha, width, height, imageFlags, data);
 
@@ -33,6 +36,14 @@ public sealed class NanoVGGL : NanoVG
         }
 
         return _gl.UpdateTexture(image, 0, 0, width, height, data);
+    }
+
+    public override bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
+    {
+        // GL UpdateTexture dispatches on the stored NVGtextureType set at creation. The image
+        // must have been created via CreateImageBGRA for this to write the correct format;
+        // mismatched types fall through the existing UpdateImage path.
+        return UpdateImage(image, data);
     }
 
     public override bool ImageSize(int image, out int width, out int height) => _gl.GetTextureSize(image, out width, out height);
