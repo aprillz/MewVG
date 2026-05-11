@@ -2335,6 +2335,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
         {
             ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMipFilter, (ulong)MTLSamplerMipFilter.Linear);
+            // Use explicit float P/Invoke — LibraryImport float overload appears to
+            // mishandle the ARM64 ABI here, breaking subsequent text sampler creation.
+            ObjCRuntime.SendMessageFloat(samplerDescriptor, Metal.Sel.SetLodMaxClamp, 2.0f);
         }
 
         var repeatX = (imageFlags & (int)NVGimageFlags.RepeatX) != 0;

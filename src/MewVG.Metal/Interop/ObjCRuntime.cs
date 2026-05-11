@@ -85,6 +85,15 @@ public static unsafe partial class ObjCRuntime
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     public static partial void SendMessageNoReturn(nint receiver, nint selector, double arg1);
 
+    // Use DllImport (not LibraryImport) for the float overload. LibraryImport's
+    // source-generated marshalling for float was observed to corrupt subsequent
+    // objc_msgSend calls on Apple Silicon (ARM64) — float failed to reliably land
+    // in the s0 floating-point register. DllImport defers to the runtime's standard
+    // platform ABI which handles float correctly on both ARM64 (s0) and x86_64
+    // (xmm0). Single signature covers both architectures.
+    [DllImport(LibObjC, EntryPoint = "objc_msgSend")]
+    public static extern void SendMessageFloat(nint receiver, nint selector, float arg1);
+
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     public static partial void SendMessageNoReturn(nint receiver, nint selector, MTLClearColor arg1);
 

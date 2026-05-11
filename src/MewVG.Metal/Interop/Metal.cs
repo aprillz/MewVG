@@ -129,6 +129,7 @@ public static unsafe partial class Metal
         public static readonly nint SetMinFilter = ObjCRuntime.RegisterSelector("setMinFilter:");
         public static readonly nint SetMagFilter = ObjCRuntime.RegisterSelector("setMagFilter:");
         public static readonly nint SetMipFilter = ObjCRuntime.RegisterSelector("setMipFilter:");
+        public static readonly nint SetLodMaxClamp = ObjCRuntime.RegisterSelector("setLodMaxClamp:");
         public static readonly nint SetSAddressMode = ObjCRuntime.RegisterSelector("setSAddressMode:");
         public static readonly nint SetTAddressMode = ObjCRuntime.RegisterSelector("setTAddressMode:");
 
