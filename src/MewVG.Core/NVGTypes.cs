@@ -19,7 +19,7 @@ public enum NVGcreateFlags
     None = 0,
 
     /// <summary>
-    /// Flag indicating if geometry based anti-aliasing is used (may not be needed when using MSAA).
+    /// Flag indicating if geometry based anti-aliasing is used.
     /// </summary>
     Antialias = 1 << 0,
 

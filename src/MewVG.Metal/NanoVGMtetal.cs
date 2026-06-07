@@ -49,18 +49,6 @@ public sealed class NanoVGMetal : NanoVG
         set => _context.StencilFormat = value;
     }
 
-    /// <summary>
-    /// Gets or sets the MSAA sample count (1 = no MSAA, 4 or 8 for MSAA).
-    /// When greater than 1, hardware MSAA is used for anti-aliasing and
-    /// geometry-based fringe AA is automatically skipped.
-    /// The caller must provide matching multisample textures in the render pass.
-    /// </summary>
-    public int SampleCount
-    {
-        get => _context.SampleCount;
-        set => _context.SampleCount = value;
-    }
-
     #region Frame Management
 
     /// <summary>
@@ -69,15 +57,6 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="renderEncoder">Metal render command encoder</param>
     /// <param name="commandBuffer">Metal command buffer</param>
     public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer) => _context.SetRenderEncoder(renderEncoder, commandBuffer);
-
-    /// <summary>
-    /// Extended setter that captures render-pass attachment textures so the Metal
-    /// renderer can rebuild an equivalent main encoder after a coverage-AA detour.
-    /// Pass IntPtr.Zero for textures that aren't applicable.
-    /// </summary>
-    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer,
-        IntPtr colorTexture, IntPtr stencilTexture, IntPtr msaaColorTexture)
-        => _context.SetRenderEncoder(renderEncoder, commandBuffer, colorTexture, stencilTexture, msaaColorTexture);
 
     /// <summary>
     /// Allocates (or resizes) the coverage-AA scratch texture used as the second

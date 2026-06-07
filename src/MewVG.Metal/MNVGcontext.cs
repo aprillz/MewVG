@@ -476,7 +476,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _pseudoSampler;           // id<MTLSamplerState>
     private IntPtr _pseudoTexture;           // id<MTLTexture>
     private MTLPixelFormat _pipelinePixelFormat;
-    private int _pipelineSampleCount;
     private MTLBlendFactor _blendSrcRgb;
     private MTLBlendFactor _blendDstRgb;
     private MTLBlendFactor _blendSrcAlpha;
@@ -543,7 +542,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private NVGcreateFlags _flags;
     private MTLPixelFormat _pixelFormat;
     private MTLPixelFormat _stencilFormat;
-    private int _sampleCount = 1;
     private float _devicePixelRatio;
     private Vector2 _viewSize;
     private bool _recordingClipActive;
@@ -551,9 +549,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private bool _disposed;
 
     /// <summary>
-    /// Whether geometry-based fringe anti-aliasing is active (not MSAA).
+    /// Whether geometry-based fringe anti-aliasing is active.
     /// </summary>
-    private bool UseGeometryAA => (_flags & NVGcreateFlags.Antialias) != 0 && _sampleCount <= 1;
+    private bool UseGeometryAA => (_flags & NVGcreateFlags.Antialias) != 0;
 
     /// <summary>
     /// Creates a new Metal NanoVG context
@@ -621,17 +619,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     {
         get => _stencilFormat;
         set => _stencilFormat = value;
-    }
-
-    /// <summary>
-    /// Gets or sets the MSAA sample count (1 = no MSAA, 4 or 8 for MSAA).
-    /// When greater than 1, hardware MSAA is used for anti-aliasing and
-    /// geometry-based fringe AA is automatically skipped.
-    /// </summary>
-    public int SampleCount
-    {
-        get => _sampleCount;
-        set => _sampleCount = Math.Max(1, value);
     }
 
     /// <summary>
@@ -748,7 +735,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_pipelineState != IntPtr.Zero &&
             _stencilOnlyPipelineState != IntPtr.Zero &&
             _pipelinePixelFormat == _pixelFormat &&
-            _pipelineSampleCount == _sampleCount &&
             _blendSrcRgb == srcRgb &&
             _blendDstRgb == dstRgb &&
             _blendSrcAlpha == srcAlpha &&
@@ -783,7 +769,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pipelineState = newPipeline;
         _stencilOnlyPipelineState = newStencilPipeline;
         _pipelinePixelFormat = _pixelFormat;
-        _pipelineSampleCount = _sampleCount;
         _blendSrcRgb = srcRgb;
         _blendDstRgb = dstRgb;
         _blendSrcAlpha = srcAlpha;
@@ -805,8 +790,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         var vertexDescriptor = CreateVertexDescriptor();
-        // With MSAA (sampleCount > 1) hardware handles edge smoothing, so skip geometry-based AA shader.
-        var useGeometryAA = (_flags & NVGcreateFlags.Antialias) != 0 && _sampleCount <= 1;
+        var useGeometryAA = (_flags & NVGcreateFlags.Antialias) != 0;
         var fragmentFunc = useGeometryAA ? _fragmentAAFunction : _fragmentFunction;
 
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
@@ -820,12 +804,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setDepthAttachmentPixelFormat, (ulong)_stencilFormat);
         }
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
-
-        // Set MSAA sample count on the pipeline descriptor.
-        if (_sampleCount > 1)
-        {
-            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
-        }
 
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
         var colorAttachment0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
@@ -891,11 +869,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
 
-        if (_sampleCount > 1)
-        {
-            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
-        }
-
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
 
         // color[0]: main framebuffer pixel format, blending off (won't be touched).
@@ -953,11 +926,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
 
-        if (_sampleCount > 1)
-        {
-            ObjCRuntime.SendMessage(pipelineDescriptor, Metal.Sel.SetRasterSampleCount, (nuint)_sampleCount);
-        }
-
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
 
         // color[0]: SrcOver-style blending (matched to caller's composite operation).
@@ -1011,7 +979,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     /// <summary>
     /// Lazily creates and caches the coverage-build pipeline. Re-created if the
-    /// pixel format or sample count changed since last call.
+    /// pixel format or blend state changed since last call.
     /// </summary>
     private IntPtr GetCoverageBuildPipeline()
     {
@@ -2566,21 +2534,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Extended overload kept for API symmetry with the call site that also has
-    /// the host's render-pass texture attachments at hand. Coverage AA itself
-    /// runs entirely within the host's existing encoder via framebuffer fetch on
-    /// color[1], so the texture handles are not stored here. Parameters are
-    /// accepted (and ignored) so callers don't need to know about that detail.
-    /// </summary>
-    public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer,
-        IntPtr colorTexture, IntPtr stencilTexture, IntPtr msaaColorTexture)
-    {
-        _ = colorTexture; _ = stencilTexture; _ = msaaColorTexture;
-        _renderEncoder = renderEncoder;
-        _commandBuffer = commandBuffer;
-    }
-
-    /// <summary>
     /// The pixel format used for the coverage AA scratch attachment (color[1]).
     /// R8Unorm — single-channel, 8-bit unsigned. The shaders only use the alpha
     /// channel of the float4 read via <c>[[color(1)]]</c>, but Metal interprets a
@@ -2622,13 +2575,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage,
             (ulong)(MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderRead));
-        if (_sampleCount > 1)
-        {
-            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetSampleCount, (nuint)_sampleCount);
-            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetTextureType,
-                (ulong)MTLTextureType.Type2DMultisample);
-        }
-
         // Try Memoryless first — on Apple Silicon TBDR this keeps the attachment in
         // tile cache only (zero DRAM, zero memory traffic). If the device doesn't
         // support Memoryless (Intel/AMD Macs lack it; newTextureWithDescriptor

@@ -96,7 +96,6 @@ public static unsafe partial class Metal
         public static readonly nint SetStorageMode = ObjCRuntime.RegisterSelector("setStorageMode:");
         public static readonly nint PixelFormat = ObjCRuntime.RegisterSelector("pixelFormat");
         public static readonly nint SetTextureType = ObjCRuntime.RegisterSelector("setTextureType:");
-        public static readonly nint SetSampleCount = ObjCRuntime.RegisterSelector("setSampleCount:");
 
         // RenderPassDescriptor
         public static readonly nint RenderPassDescriptor = ObjCRuntime.RegisterSelector("renderPassDescriptor");
@@ -152,7 +151,6 @@ public static unsafe partial class Metal
         public static readonly nint SetVertexDescriptor = ObjCRuntime.RegisterSelector("setVertexDescriptor:");
         public static readonly nint SetDepthAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setDepthAttachmentPixelFormat:");
         public static readonly nint SetStencilAttachmentPixelFormat = ObjCRuntime.RegisterSelector("setStencilAttachmentPixelFormat:");
-        public static readonly nint SetRasterSampleCount = ObjCRuntime.RegisterSelector("setSampleCount:");
 
         // RenderPipelineColorAttachmentDescriptor
         public static readonly nint SetPixelFormat = ObjCRuntime.RegisterSelector("setPixelFormat:");
@@ -241,11 +239,9 @@ public enum MTLTextureType : ulong
     Type1DArray = 1,
     Type2D = 2,
     Type2DArray = 3,
-    Type2DMultisample = 4,
     TypeCube = 5,
     TypeCubeArray = 6,
     Type3D = 7,
-    Type2DMultisampleArray = 8,
     TypeTextureBuffer = 9,
 }
 
@@ -366,8 +362,6 @@ public enum MTLStoreAction : ulong
 {
     DontCare = 0,
     Store = 1,
-    MultisampleResolve = 2,
-    StoreAndMultisampleResolve = 3,
     Unknown = 4,
     CustomSampleDepthStore = 5,
 }
