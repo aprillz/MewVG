@@ -222,19 +222,27 @@ namespace LibTessDotNet
         {
             var v = _mesh._vHead._next;
 
-            var minVal = new Real[3] { v._coords.X, v._coords.Y, v._coords.Z };
-            var minVert = new MeshUtils.Vertex[3] { v, v, v };
-            var maxVal = new Real[3] { v._coords.X, v._coords.Y, v._coords.Z };
-            var maxVert = new MeshUtils.Vertex[3] { v, v, v };
+            Span<Real> minVal = stackalloc Real[3];
+            Span<Real> maxVal = stackalloc Real[3];
+            minVal[0] = maxVal[0] = v._coords.X;
+            minVal[1] = maxVal[1] = v._coords.Y;
+            minVal[2] = maxVal[2] = v._coords.Z;
+
+            var minVert0 = v;
+            var minVert1 = v;
+            var minVert2 = v;
+            var maxVert0 = v;
+            var maxVert1 = v;
+            var maxVert2 = v;
 
             for (; v != _mesh._vHead; v = v._next)
             {
-                if (v._coords.X < minVal[0]) { minVal[0] = v._coords.X; minVert[0] = v; }
-                if (v._coords.Y < minVal[1]) { minVal[1] = v._coords.Y; minVert[1] = v; }
-                if (v._coords.Z < minVal[2]) { minVal[2] = v._coords.Z; minVert[2] = v; }
-                if (v._coords.X > maxVal[0]) { maxVal[0] = v._coords.X; maxVert[0] = v; }
-                if (v._coords.Y > maxVal[1]) { maxVal[1] = v._coords.Y; maxVert[1] = v; }
-                if (v._coords.Z > maxVal[2]) { maxVal[2] = v._coords.Z; maxVert[2] = v; }
+                if (v._coords.X < minVal[0]) { minVal[0] = v._coords.X; minVert0 = v; }
+                if (v._coords.Y < minVal[1]) { minVal[1] = v._coords.Y; minVert1 = v; }
+                if (v._coords.Z < minVal[2]) { minVal[2] = v._coords.Z; minVert2 = v; }
+                if (v._coords.X > maxVal[0]) { maxVal[0] = v._coords.X; maxVert0 = v; }
+                if (v._coords.Y > maxVal[1]) { maxVal[1] = v._coords.Y; maxVert1 = v; }
+                if (v._coords.Z > maxVal[2]) { maxVal[2] = v._coords.Z; maxVert2 = v; }
             }
 
             // Find two vertices separated by at least 1/sqrt(3) of the maximum
@@ -252,8 +260,8 @@ namespace LibTessDotNet
             // Look for a third vertex which forms the triangle with maximum area
             // (Length of normal == twice the triangle area)
             Real maxLen2 = 0, tLen2;
-            var v1 = minVert[i];
-            var v2 = maxVert[i];
+            var v1 = i == 0 ? minVert0 : i == 1 ? minVert1 : minVert2;
+            var v2 = i == 0 ? maxVert0 : i == 1 ? maxVert1 : maxVert2;
             Vec3 d1, d2, tNorm;
             Vec3.Sub(ref v1._coords, ref v2._coords, out d1);
             for (v = _mesh._vHead._next; v != _mesh._vHead; v = v._next)
@@ -716,6 +724,22 @@ namespace LibTessDotNet
             return 0.5f * area;
         }
 
+        private Real SignedArea(ReadOnlySpan<ContourVertex> vertices)
+        {
+            Real area = 0.0f;
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var v0 = vertices[i];
+                var v1 = vertices[(i + 1) % vertices.Length];
+
+                area += v0.Position.X * v1.Position.Y;
+                area -= v0.Position.Y * v1.Position.X;
+            }
+
+            return 0.5f * area;
+        }
+
         /// <summary>
         /// Adds a closed contour to be tessellated.
         /// </summary>
@@ -727,6 +751,21 @@ namespace LibTessDotNet
         /// force the vertices to have a specified orientation.
         /// </param>
         public void AddContour(ContourVertex[] vertices, ContourOrientation forceOrientation = ContourOrientation.Original)
+        {
+            AddContourInternal(vertices.AsSpan(), forceOrientation);
+        }
+
+        /// <summary>
+        /// Adds a closed contour to be tessellated.
+        /// </summary>
+        /// <param name="vertices"> Vertices of the contour. </param>
+        /// <param name="forceOrientation">
+        /// Orientation of the contour.
+        /// <see cref="ContourOrientation.Original"/> keeps the orientation of the input vertices.
+        /// <see cref="ContourOrientation.Clockwise"/> and <see cref="ContourOrientation.CounterClockwise"/>
+        /// force the vertices to have a specified orientation.
+        /// </param>
+        internal void AddContour(ReadOnlySpan<ContourVertex> vertices, ContourOrientation forceOrientation = ContourOrientation.Original)
         {
             AddContourInternal(vertices, forceOrientation);
         }
@@ -777,6 +816,50 @@ namespace LibTessDotNet
                 }
 
                 int index = reverse ? vertices.Count - 1 - i : i;
+                // The new vertex is now e._Org.
+                e._Org._coords = vertices[index].Position;
+                e._Org._data = vertices[index].Data;
+
+                // The winding of an edge says how the winding number changes as we
+                // cross from the edge's right face to its left face.  We add the
+                // vertices in such an order that a CCW contour will add +1 to
+                // the winding number of the region inside the contour.
+                e._winding = 1;
+                e._Sym._winding = -1;
+            }
+        }
+
+        private void AddContourInternal(ReadOnlySpan<ContourVertex> vertices, ContourOrientation forceOrientation)
+        {
+            if (_mesh == null)
+            {
+                _mesh = _pool.Get<Mesh>();
+            }
+
+            bool reverse = false;
+            if (forceOrientation != ContourOrientation.Original)
+            {
+                var area = SignedArea(vertices);
+                reverse = (forceOrientation == ContourOrientation.Clockwise && area < 0.0f) || (forceOrientation == ContourOrientation.CounterClockwise && area > 0.0f);
+            }
+
+            MeshUtils.Edge e = null;
+            for (int i = 0; i < vertices.Length; ++i)
+            {
+                if (e == null)
+                {
+                    e = _mesh.MakeEdge(_pool);
+                    _mesh.Splice(_pool, e, e._Sym);
+                }
+                else
+                {
+                    // Create a new vertex and edge which immediately follow e
+                    // in the ordering around the left face.
+                    _mesh.SplitEdge(_pool, e);
+                    e = e._Lnext;
+                }
+
+                int index = reverse ? vertices.Length - 1 - i : i;
                 // The new vertex is now e._Org.
                 e._Org._coords = vertices[index].Position;
                 e._Org._data = vertices[index].Data;

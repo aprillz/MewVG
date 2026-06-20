@@ -50,3 +50,56 @@ public sealed class TessResult
     public int[] Indices { get; init; } = Array.Empty<int>();
 }
 
+/// <summary>
+/// Reusable storage for tessellation output.
+/// </summary>
+internal sealed class TessResultBuffer
+{
+    private Vector2[] _vertices = Array.Empty<Vector2>();
+    private int[] _indices = Array.Empty<int>();
+
+    public int VertexCount { get; private set; }
+
+    public int IndexCount { get; private set; }
+
+    public ReadOnlyMemory<Vector2> Vertices => _vertices.AsMemory(0, VertexCount);
+
+    public ReadOnlyMemory<int> Indices => _indices.AsMemory(0, IndexCount);
+
+    public void Clear()
+    {
+        VertexCount = 0;
+        IndexCount = 0;
+    }
+
+    internal Span<Vector2> PrepareVertices(int count)
+    {
+        if (_vertices.Length < count)
+        {
+            _vertices = new Vector2[count];
+        }
+
+        VertexCount = count;
+        return _vertices.AsSpan(0, count);
+    }
+
+    internal Span<int> PrepareIndices(int count)
+    {
+        if (_indices.Length < count)
+        {
+            _indices = new int[count];
+        }
+
+        IndexCount = count;
+        return _indices.AsSpan(0, count);
+    }
+}
+
+/// <summary>
+/// Tessellation output view backed by a caller-owned <see cref="TessResultBuffer"/>.
+/// </summary>
+internal readonly record struct TessBufferedResult(
+    TessStatus Status,
+    ReadOnlyMemory<Vector2> Vertices,
+    ReadOnlyMemory<int> Indices);
+

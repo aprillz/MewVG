@@ -48,7 +48,7 @@ public sealed class Tessellator
             contour[i].Data = default!;
         }
 
-        _tess.AddContour(new ArraySegment<ContourVertex>(_contourBuffer, 0, points.Length), ContourOrientation.Original);
+        _tess.AddContour(contour, ContourOrientation.Original);
         _hasContours = true;
     }
 
@@ -57,44 +57,14 @@ public sealed class Tessellator
         TessElementType elementType = TessElementType.Polygons,
         int polySize = 3)
     {
-        if (!_hasContours)
+        var status = RunTessellation(windingRule, elementType, polySize);
+        if (status != TessStatus.Ok || !_hasContours)
         {
-            return new TessResult
-            {
-                Status = TessStatus.Ok,
-                Vertices = Array.Empty<Vector2>(),
-                Indices = Array.Empty<int>()
-            };
-        }
-
-        if (!_inputValid)
-        {
-            return new TessResult { Status = TessStatus.InvalidInput };
-        }
-
-        try
-        {
-            _tess.Tessellate(
-                MapWinding(windingRule),
-                MapElementType(elementType),
-                polySize);
-        }
-        catch
-        {
-            return new TessResult { Status = TessStatus.InvalidInput };
-        }
-
-        if (_tess.Vertices is null || _tess.Elements is null)
-        {
-            return new TessResult { Status = TessStatus.InvalidInput };
+            return new TessResult { Status = status };
         }
 
         var outVerts = new Vector2[_tess.VertexCount];
-        for (int i = 0; i < _tess.VertexCount; i++)
-        {
-            var p = _tess.Vertices[i].Position;
-            outVerts[i] = new Vector2((float)p.X, (float)p.Y);
-        }
+        CopyVertices(outVerts);
 
         var outIndices = FilterUndefIndices(_tess.Elements, _tess.ElementCount, elementType, polySize);
 
@@ -106,6 +76,31 @@ public sealed class Tessellator
         };
     }
 
+    internal TessBufferedResult Tessellate(
+        TessWindingRule windingRule,
+        TessResultBuffer resultBuffer,
+        TessElementType elementType = TessElementType.Polygons,
+        int polySize = 3)
+    {
+        ArgumentNullException.ThrowIfNull(resultBuffer);
+
+        var status = RunTessellation(windingRule, elementType, polySize);
+        if (status != TessStatus.Ok || !_hasContours)
+        {
+            resultBuffer.Clear();
+            return new TessBufferedResult(status, resultBuffer.Vertices, resultBuffer.Indices);
+        }
+
+        var outVerts = resultBuffer.PrepareVertices(_tess.VertexCount);
+        CopyVertices(outVerts);
+
+        int indexCount = CountDefinedIndices(_tess.Elements, _tess.ElementCount, elementType, polySize);
+        var outIndices = resultBuffer.PrepareIndices(indexCount);
+        CopyDefinedIndices(_tess.Elements, _tess.ElementCount, elementType, polySize, outIndices);
+
+        return new TessBufferedResult(TessStatus.Ok, resultBuffer.Vertices, resultBuffer.Indices);
+    }
+
     private void EnsureContourCapacity(int count)
     {
         if (_contourBuffer.Length < count)
@@ -114,71 +109,103 @@ public sealed class Tessellator
         }
     }
 
+    private TessStatus RunTessellation(TessWindingRule windingRule, TessElementType elementType, int polySize)
+    {
+        if (!_hasContours)
+        {
+            return TessStatus.Ok;
+        }
+
+        if (!_inputValid)
+        {
+            return TessStatus.InvalidInput;
+        }
+
+        try
+        {
+            _tess.Tessellate(
+                MapWinding(windingRule),
+                MapElementType(elementType),
+                polySize);
+        }
+        catch
+        {
+            return TessStatus.InvalidInput;
+        }
+
+        if (_tess.Vertices is null || _tess.Elements is null)
+        {
+            return TessStatus.InvalidInput;
+        }
+
+        return TessStatus.Ok;
+    }
+
+    private void CopyVertices(Span<Vector2> destination)
+    {
+        for (int i = 0; i < destination.Length; i++)
+        {
+            var p = _tess.Vertices[i].Position;
+            destination[i] = new Vector2((float)p.X, (float)p.Y);
+        }
+    }
+
     private static int[] FilterUndefIndices(int[] elements, int elementCount, TessElementType elementType, int polySize)
     {
-        if (elements.Length == 0)
+        int kept = CountDefinedIndices(elements, elementCount, elementType, polySize);
+        if (kept == 0)
         {
             return Array.Empty<int>();
         }
 
-        if (elementType == TessElementType.Polygons)
-        {
-            int stride = Math.Max(3, polySize);
-            int maxCount = Math.Min(elements.Length, elementCount * stride);
-            int kept = 0;
-            for (int i = 0; i < maxCount; i++)
-            {
-                if (elements[i] != LibTessDotNet.Tess.Undef)
-                {
-                    kept++;
-                }
-            }
+        var result = new int[kept];
+        CopyDefinedIndices(elements, elementCount, elementType, polySize, result);
+        return result;
+    }
 
-            if (kept == 0)
-            {
-                return Array.Empty<int>();
-            }
-
-            var result = new int[kept];
-            int dst = 0;
-            for (int i = 0; i < maxCount; i++)
-            {
-                int idx = elements[i];
-                if (idx != LibTessDotNet.Tess.Undef)
-                {
-                    result[dst++] = idx;
-                }
-            }
-
-            return result;
-        }
-
-        int keptOther = 0;
-        for (int i = 0; i < elements.Length; i++)
+    private static int CountDefinedIndices(ReadOnlySpan<int> elements, int elementCount, TessElementType elementType, int polySize)
+    {
+        int maxCount = GetElementScanCount(elements.Length, elementCount, elementType, polySize);
+        int kept = 0;
+        for (int i = 0; i < maxCount; i++)
         {
             if (elements[i] != LibTessDotNet.Tess.Undef)
             {
-                keptOther++;
+                kept++;
             }
         }
 
-        if (keptOther == 0)
-        {
-            return Array.Empty<int>();
-        }
+        return kept;
+    }
 
-        var resultOther = new int[keptOther];
-        int dstOther = 0;
-        for (int i = 0; i < elements.Length; i++)
+    private static void CopyDefinedIndices(ReadOnlySpan<int> elements, int elementCount, TessElementType elementType, int polySize, Span<int> destination)
+    {
+        int maxCount = GetElementScanCount(elements.Length, elementCount, elementType, polySize);
+        int dst = 0;
+        for (int i = 0; i < maxCount; i++)
         {
             int idx = elements[i];
             if (idx != LibTessDotNet.Tess.Undef)
             {
-                resultOther[dstOther++] = idx;
+                destination[dst++] = idx;
             }
         }
+    }
 
-        return resultOther;
+    private static int GetElementScanCount(int elementLength, int elementCount, TessElementType elementType, int polySize)
+    {
+        if (elementLength == 0)
+        {
+            return 0;
+        }
+
+        if (elementType != TessElementType.Polygons)
+        {
+            return elementLength;
+        }
+
+        int stride = Math.Max(3, polySize);
+        return Math.Min(elementLength, elementCount * stride);
     }
 
     private static WindingRule MapWinding(TessWindingRule windingRule) => windingRule switch

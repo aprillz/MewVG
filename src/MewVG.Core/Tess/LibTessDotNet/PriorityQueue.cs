@@ -33,7 +33,7 @@
 */
 
 using System;
-using System.Collections.Generic;
+using System.Buffers;
 using System.Diagnostics;
 
 #if DOUBLE
@@ -78,9 +78,27 @@ namespace LibTessDotNet
             b = tmp;
         }
 
+        private static void Push(ref Span<StackItem> stack, ref StackItem[] rentedStack, ref int count, StackItem item)
+        {
+            if (count == stack.Length)
+            {
+                int newLength = stack.Length * 2;
+                var newStack = ArrayPool<StackItem>.Shared.Rent(newLength);
+                stack.CopyTo(newStack);
+                if (rentedStack != null)
+                {
+                    ArrayPool<StackItem>.Shared.Return(rentedStack);
+                }
+
+                rentedStack = newStack;
+                stack = rentedStack.AsSpan(0, newLength);
+            }
+
+            stack[count++] = item;
+        }
+
         public void Init()
         {
-            var stack = new Stack<StackItem>();
             int p, r, i, j, piv;
             uint seed = 2016473283;
 
@@ -92,47 +110,61 @@ namespace LibTessDotNet
                 _order[i] = piv;
             }
 
-            stack.Push(new StackItem { p = p, r = r });
-            while (stack.Count > 0)
-            {
-                var top = stack.Pop();
-                p = top.p;
-                r = top.r;
+            Span<StackItem> stack = stackalloc StackItem[64];
+            StackItem[] rentedStack = null;
+            int stackCount = 0;
 
-                while (r > p + 10)
+            try
+            {
+                Push(ref stack, ref rentedStack, ref stackCount, new StackItem { p = p, r = r });
+                while (stackCount > 0)
                 {
-                    seed = seed * 1539415821 + 1;
-                    i = p + (int)(seed % (r - p + 1));
-                    piv = _order[i];
-                    _order[i] = _order[p];
-                    _order[p] = piv;
-                    i = p - 1;
-                    j = r + 1;
-                    do {
-                        do { ++i; } while (!_leq(_keys[_order[i]], _keys[piv]));
-                        do { --j; } while (!_leq(_keys[piv], _keys[_order[j]]));
+                    var top = stack[--stackCount];
+                    p = top.p;
+                    r = top.r;
+
+                    while (r > p + 10)
+                    {
+                        seed = seed * 1539415821 + 1;
+                        i = p + (int)(seed % (r - p + 1));
+                        piv = _order[i];
+                        _order[i] = _order[p];
+                        _order[p] = piv;
+                        i = p - 1;
+                        j = r + 1;
+                        do {
+                            do { ++i; } while (!_leq(_keys[_order[i]], _keys[piv]));
+                            do { --j; } while (!_leq(_keys[piv], _keys[_order[j]]));
+                            Swap(ref _order[i], ref _order[j]);
+                        } while (i < j);
                         Swap(ref _order[i], ref _order[j]);
-                    } while (i < j);
-                    Swap(ref _order[i], ref _order[j]);
-                    if (i - p < r - j)
-                    {
-                        stack.Push(new StackItem { p = j + 1, r = r });
-                        r = i - 1;
+                        if (i - p < r - j)
+                        {
+                            Push(ref stack, ref rentedStack, ref stackCount, new StackItem { p = j + 1, r = r });
+                            r = i - 1;
+                        }
+                        else
+                        {
+                            Push(ref stack, ref rentedStack, ref stackCount, new StackItem { p = p, r = i - 1 });
+                            p = j + 1;
+                        }
                     }
-                    else
+                    for (i = p + 1; i <= r; ++i)
                     {
-                        stack.Push(new StackItem { p = p, r = i - 1 });
-                        p = j + 1;
+                        piv = _order[i];
+                        for (j = i; j > p && !_leq(_keys[piv], _keys[_order[j - 1]]); --j)
+                        {
+                            _order[j] = _order[j - 1];
+                        }
+                        _order[j] = piv;
                     }
                 }
-                for (i = p + 1; i <= r; ++i)
+            }
+            finally
+            {
+                if (rentedStack != null)
                 {
-                    piv = _order[i];
-                    for (j = i; j > p && !_leq(_keys[piv], _keys[_order[j - 1]]); --j)
-                    {
-                        _order[j] = _order[j - 1];
-                    }
-                    _order[j] = piv;
+                    ArrayPool<StackItem>.Shared.Return(rentedStack);
                 }
             }
 

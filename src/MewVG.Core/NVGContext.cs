@@ -200,6 +200,7 @@ internal sealed class NVGContext
     // Path cache
     private readonly NVGpathCache _cache;
     private readonly Tessellator _fillTessellator = new();
+    private readonly TessResultBuffer _fillTessResultBuffer = new();
 
     private readonly List<NVGClipPath> _clipStack = new();
 
@@ -1653,20 +1654,37 @@ internal sealed class NVGContext
             // the screen-space fringe strip inner edge exactly.
             _fillTessellator.Clear();
             Span<Vector2> stackContour = stackalloc Vector2[128];
-            for (var i = 0; i < sourcePathCount; i++)
+            Vector2[]? rentedContour = null;
+            try
             {
-                ref var path = ref _cache.Paths[i];
-                if (path.Count < 3) continue;
-                var pts = _cache.Points.AsSpan(path.First, path.Count);
-                var woff = fringeWidthObj * 0.5f * fringeSigns[i];
+                for (var i = 0; i < sourcePathCount; i++)
+                {
+                    ref var path = ref _cache.Paths[i];
+                    if (path.Count < 3) continue;
+                    var pts = _cache.Points.AsSpan(path.First, path.Count);
+                    var woff = fringeWidthObj * 0.5f * fringeSigns[i];
 
-                var contour = path.Count <= 128
-                    ? stackContour.Slice(0, path.Count)
-                    : new Vector2[path.Count].AsSpan();
+                    var contour = path.Count <= stackContour.Length
+                        ? stackContour.Slice(0, path.Count)
+                        : (rentedContour = System.Buffers.ArrayPool<Vector2>.Shared.Rent(path.Count)).AsSpan(0, path.Count);
 
-                for (var j = 0; j < path.Count; j++)
-                    InsetPoint(ref contour[j], in pts[j], woff);
-                _fillTessellator.AddContour(contour);
+                    for (var j = 0; j < path.Count; j++)
+                        InsetPoint(ref contour[j], in pts[j], woff);
+                    _fillTessellator.AddContour(contour);
+
+                    if (rentedContour is not null)
+                    {
+                        System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+                        rentedContour = null;
+                    }
+                }
+            }
+            finally
+            {
+                if (rentedContour is not null)
+                {
+                    System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+                }
             }
 
             var tessResult = _fillTessellator.Tessellate(windingRule, TessElementType.Polygons, 3);
@@ -1889,8 +1907,8 @@ internal sealed class NVGContext
         bool directConvexFill = false;
         int directFirst = 0;
         int directCount = 0;
-        Vector2[] tessVertices = Array.Empty<Vector2>();
-        int[] tessIndices = Array.Empty<int>();
+        ReadOnlySpan<Vector2> tessVertices = default;
+        ReadOnlySpan<int> tessIndices = default;
         int triangleCount;
         bool tessNeedsTransform = false;
 
@@ -1978,7 +1996,11 @@ internal sealed class NVGContext
                     }
                 }
 
-                var tessResult = _fillTessellator.Tessellate(tessWindingRule, TessElementType.Polygons, 3);
+                var tessResult = _fillTessellator.Tessellate(
+                    tessWindingRule,
+                    _fillTessResultBuffer,
+                    TessElementType.Polygons,
+                    3);
                 if (tessResult.Status != TessStatus.Ok)
                 {
                     _cache.NPaths = 0;
@@ -1986,8 +2008,8 @@ internal sealed class NVGContext
                     return;
                 }
 
-                tessVertices = tessResult.Vertices;
-                tessIndices = tessResult.Indices;
+                tessVertices = tessResult.Vertices.Span;
+                tessIndices = tessResult.Indices.Span;
                 triangleCount = tessIndices.Length / 3;
             }
         }

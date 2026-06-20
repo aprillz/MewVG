@@ -35,7 +35,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq.Expressions;
 using System.Runtime.CompilerServices;
 #if DOUBLE
 using Real = System.Double;
@@ -130,8 +129,6 @@ namespace LibTessDotNet
         private T[] _items = new T[64];
         private int _count;
 
-        private static readonly Func<T> Creator = Expression.Lambda<Func<T>>(Expression.New(typeof(T))).Compile();
-
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public T GetTyped()
         {
@@ -143,7 +140,7 @@ namespace LibTessDotNet
                 return item;
             }
 
-            return Creator();
+            return new T();
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

@@ -79,7 +79,7 @@ namespace LibTessDotNet
             _initialized = false;
 
             _nodes[1] = 1;
-            _handles[1] = new HandleElem();
+            _handles[1] = new HandleElem(); // so that Minimum() returns NULL
         }
 
         private void FloatDown(int curr)
