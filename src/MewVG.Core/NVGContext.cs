@@ -2168,40 +2168,41 @@ internal sealed class NVGContext
 
                     for (var j = 0; j < directCount; j++)
                     {
-                        ref readonly var p1 = ref pts[j];
+                        ref var p1 = ref pts[j];
 
-                        if ((p1.Flags & (NVGpointFlags.Bevel | NVGpointFlags.InnerBevel)) != 0)
+                        // Mirror the fringe exactly: BevelJoin (ChooseBevel) is used ONLY when the Bevel flag
+                        // is set; InnerBevel-only and smooth joins use the plain miter inset (the else branch).
+                        if ((p1.Flags & NVGpointFlags.Bevel) != 0)
                         {
-                            ref readonly var p0 = ref pts[j > 0 ? j - 1 : directCount - 1];
-                            var dlx0 = p0.DY;
-                            var dly0 = -p0.DX;
-                            var dlx1 = p1.DY;
-                            var dly1 = -p1.DX;
+                            ref var p0 = ref pts[j > 0 ? j - 1 : directCount - 1];
+                            // Use the EXACT inner points the fringe strip uses at this join (same ChooseBevel,
+                            // same InnerBevel flag, same inset), so the fill-body edge and the fringe inner edge
+                            // are coincident - no sub-pixel seam. Raw edge normals only match ChooseBevel's
+                            // InnerBevel branch; at an outer convex bevel the fringe uses the miter point, so the
+                            // old code left a thin seam that showed as interior zigzag on thin fills.
+                            ChooseBevel((p1.Flags & NVGpointFlags.InnerBevel) != 0, ref p0, ref p1, woff,
+                                out var bx0, out var by0, out var bx1, out var by1);
 
-                            // First edge normal vertex
-                            var fx = p1.X + dlx0 * woff;
-                            var fy = p1.Y + dly0 * woff;
-                            if (fanIdx == 0) { cx = fx; cy = fy; }
-                            else if (fanIdx == 1) { px = fx; py = fy; }
+                            // First inner vertex
+                            if (fanIdx == 0) { cx = bx0; cy = by0; }
+                            else if (fanIdx == 1) { px = bx0; py = by0; }
                             else
                             {
                                 SetVert(ref _cache.Verts[vertOffset++], cx, cy, 0.5f, 1);
                                 SetVert(ref _cache.Verts[vertOffset++], px, py, 0.5f, 1);
-                                SetVert(ref _cache.Verts[vertOffset++], fx, fy, 0.5f, 1);
-                                px = fx; py = fy;
+                                SetVert(ref _cache.Verts[vertOffset++], bx0, by0, 0.5f, 1);
+                                px = bx0; py = by0;
                             }
                             fanIdx++;
 
-                            // Second edge normal vertex
-                            fx = p1.X + dlx1 * woff;
-                            fy = p1.Y + dly1 * woff;
-                            if (fanIdx == 1) { px = fx; py = fy; }
+                            // Second inner vertex
+                            if (fanIdx == 1) { px = bx1; py = by1; }
                             else
                             {
                                 SetVert(ref _cache.Verts[vertOffset++], cx, cy, 0.5f, 1);
                                 SetVert(ref _cache.Verts[vertOffset++], px, py, 0.5f, 1);
-                                SetVert(ref _cache.Verts[vertOffset++], fx, fy, 0.5f, 1);
-                                px = fx; py = fy;
+                                SetVert(ref _cache.Verts[vertOffset++], bx1, by1, 0.5f, 1);
+                                px = bx1; py = by1;
                             }
                             fanIdx++;
                         }
