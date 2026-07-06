@@ -662,6 +662,16 @@ internal static unsafe class GL
 
     public static uint GetError() => _glGetError == null ? 0u : _glGetError();
 
+    public static void GetViewport(out int x, out int y, out int width, out int height)
+    {
+        var values = stackalloc int[4];
+        _glGetIntegerv((uint)GetPName.Viewport, values);
+        x = values[0];
+        y = values[1];
+        width = values[2];
+        height = values[3];
+    }
+
     public static int GenFramebuffer()
     {
         uint fb;
