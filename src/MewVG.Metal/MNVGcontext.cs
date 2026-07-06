@@ -1442,13 +1442,16 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 ObjCRuntime.SendMessage(buffers.vertBuffer, ObjCRuntime.Selectors.release);
             }
 
+            // Grow with 2x headroom instead of the exact count, so alternating
+            // small/large frames don't reallocate a new MTLBuffer on every frame.
+            var newVertCapacity = Math.Max(_vertCount, buffers.nverts * 2);
             buffers.vertBuffer = ObjCRuntime.SendMessage(
                 _device,
                 MetalSelectors.newBufferWithLength_options,
-                (nuint)vertSize,
+                (nuint)(newVertCapacity * sizeof(NVGvertex)),
                 (ulong)MTLResourceOptions.StorageModeShared
             );
-            buffers.nverts = _vertCount;
+            buffers.nverts = newVertCapacity;
         }
 
         if (_vertCount > 0)
@@ -1469,13 +1472,16 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 ObjCRuntime.SendMessage(buffers.uniformBuffer, ObjCRuntime.Selectors.release);
             }
 
+            // Grow with 2x headroom instead of the exact count, so alternating
+            // small/large frames don't reallocate a new MTLBuffer on every frame.
+            var newUniformCapacity = Math.Max(_uniformCount, buffers.nuniforms * 2);
             buffers.uniformBuffer = ObjCRuntime.SendMessage(
                 _device,
                 MetalSelectors.newBufferWithLength_options,
-                (nuint)uniformSize,
+                (nuint)(newUniformCapacity * MNVG_UNIFORM_ALIGN),
                 (ulong)MTLResourceOptions.StorageModeShared
             );
-            buffers.nuniforms = _uniformCount;
+            buffers.nuniforms = newUniformCapacity;
         }
 
         if (_uniformCount > 0)
