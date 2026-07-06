@@ -765,6 +765,8 @@ namespace LibTessDotNet
 
             if (_mesh == null)
             {
+                _vertexCount = 0;
+                _elementCount = 0;
                 return;
             }
 
