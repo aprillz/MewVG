@@ -146,6 +146,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private bool _disposed;
     private readonly bool _coverageFillAaEnabled;
 
+    // captured once per Flush() so the coverage passes don't re-query GL state per call
+    private int _flushMainFbo;
+    private int _flushViewportX;
+    private int _flushViewportY;
+    private int _flushViewportWidth;
+    private int _flushViewportHeight;
 
     private static bool HasTransparency(in NVGpaint paint)
         => paint.InnerColor.A < 0.999f || paint.OuterColor.A < 0.999f;
@@ -239,6 +245,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _stencilFuncMask = unchecked((int)0xffffffff);
         _blendFunc = new GLNVGBlend { SrcRGB = 0, SrcAlpha = 0, DstRGB = 0, DstAlpha = 0 };
 
+        // Captured once here instead of per coverage call (FillWithCoverage/StrokeWithCoverage
+        // used to re-query the bound framebuffer on every call and never restored the caller's
+        // actual viewport, only the coverage-sized one).
+        _flushMainFbo = GL.GetInteger(GetPName.FramebufferBinding);
+        GL.GetViewport(out _flushViewportX, out _flushViewportY, out _flushViewportWidth, out _flushViewportHeight);
+
         // Upload vertex data
         var vertexSize = Marshal.SizeOf<NVGvertex>();
         GL.BindVertexArray(_vao);
@@ -303,6 +315,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _pathCount = 0;
         _callCount = 0;
         _uniformCount = 0;
+
+        CheckError("flush");
     }
 
     void INVGRenderer.BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio) => BeginFrame(windowWidth, windowHeight, devicePixelRatio);
@@ -777,6 +791,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         BindTexture(0);
+        CheckError("create texture");
         return tex.Id;
     }
 
@@ -1204,6 +1219,26 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             // Fallback: depth24+stencil8 combo
             GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer, RenderbufferStorage.Depth24Stencil8, width, height);
             GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, _coverageStencilRb);
+
+            status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
+            if (status != FramebufferErrorCode.FramebufferComplete)
+            {
+                GL.BindFramebuffer(FramebufferTarget.Framebuffer, defaultFbo);
+                GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, 0);
+                GL.BindTexture(TextureTarget.Texture2D, 0);
+                _boundTexture = 0;
+
+                GL.DeleteTexture(_coverageTex);
+                GL.DeleteRenderbuffer(_coverageStencilRb);
+                GL.DeleteFramebuffer(_coverageFbo);
+                _coverageTex = 0;
+                _coverageStencilRb = 0;
+                _coverageFbo = 0;
+                _coverageTexWidth = 0;
+                _coverageTexHeight = 0;
+
+                throw new InvalidOperationException($"MewVG.GL: coverage framebuffer incomplete (status={status}).");
+            }
         }
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, defaultFbo);
@@ -1258,14 +1293,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private void FillWithCoverage(in GLNVGCall call)
     {
-
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
 
-        var coverageW = (int)(_view[0] * _devicePixelRatio);
-        var coverageH = (int)(_view[1] * _devicePixelRatio);
+        var coverageW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
+        var coverageH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
         EnsureCoverageTexture(coverageW, coverageH);
 
-        var mainFbo = GL.GetInteger(GetPName.FramebufferBinding);
+        var mainFbo = _flushMainFbo;
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
         GL.Viewport(0, 0, coverageW, coverageH);
@@ -1346,7 +1380,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, mainFbo);
-        GL.Viewport(0, 0, coverageW, coverageH);
+        GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(call.BlendFunc);
 
@@ -1368,11 +1402,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private void StrokeWithCoverage(in GLNVGCall call)
     {
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
-        var coverageW = (int)(_view[0] * _devicePixelRatio);
-        var coverageH = (int)(_view[1] * _devicePixelRatio);
+        var coverageW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
+        var coverageH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
         EnsureCoverageTexture(coverageW, coverageH);
 
-        var mainFbo = GL.GetInteger(GetPName.FramebufferBinding);
+        var mainFbo = _flushMainFbo;
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
         GL.Viewport(0, 0, coverageW, coverageH);
@@ -1396,7 +1430,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, mainFbo);
-        GL.Viewport(0, 0, coverageW, coverageH);
+        GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(call.BlendFunc);
         SetUniforms(call.UniformOffset, call.Image);
@@ -1406,7 +1440,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             EnableClipStencilTest();
         }
         // Composite via the bounds quad (4 verts as TriangleStrip), not the stroke
-        // geometry itself — see RenderStroke for the rationale (avoid SrcOver double-
+        // geometry itself - see RenderStroke for the rationale (avoid SrcOver double-
         // blend at sharp corners where segment quads/joins overlap).
         if (call.TriangleCount > 0)
             GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
@@ -1442,6 +1476,21 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         SetUniformValue(frag, 12, 1, -1.0f); // strokeThr
         SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.Simple);
+    }
+
+    // Ported from nanovg_gl.h glnvg__checkError: no-op unless NVGcreateFlags.Debug is set.
+    private void CheckError(string label)
+    {
+        if ((_flags & NVGcreateFlags.Debug) == 0)
+        {
+            return;
+        }
+
+        var error = GL.GetError();
+        if (error != 0)
+        {
+            Console.Error.WriteLine($"[MewVG.GL] GL error 0x{error:X} after {label}");
+        }
     }
 
     private void BindTexture(int tex)
@@ -1507,6 +1556,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         BindTexture(index >= 0 ? _textures[index].Tex : 0);
+
+        CheckError("set uniforms");
     }
 
     private static void SetUniformValue(float[] data, int vecIndex, int component, float value) => data[vecIndex * 4 + component] = value;
@@ -1968,6 +2019,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         _dummyTex = CreateTexture(NVGtextureType.Alpha, 1, 1, 0, ReadOnlySpan<byte>.Empty);
 
+        CheckError("create done");
         GL.Finish();
     }
 
