@@ -716,6 +716,21 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         tex.Type = type;
         tex.Flags = flags;
 
+        // Mipmapped colour textures must be premultiplied. glGenerateMipmap averages texels, and averaging
+        // straight (non-premultiplied) alpha bleeds transparent-pixel RGB into lower mip levels, which shows
+        // as fuzzy / haloed edges when the image is minified (the base level at 100% looks fine). Premultiply
+        // here and flag the texture premultiplied so the shader samples the already-correct texels.
+        ReadOnlySpan<byte> uploadData = data;
+        if ((flags & NVGimageFlags.GenerateMipmaps) != 0
+            && (flags & NVGimageFlags.Premultiplied) == 0
+            && (type == NVGtextureType.RGBA || type == NVGtextureType.BGRA)
+            && data.Length >= width * height * 4)
+        {
+            uploadData = PremultiplyCopy(data, width, height);
+            flags |= NVGimageFlags.Premultiplied;
+            tex.Flags = flags;
+        }
+
         BindTexture(glTex);
 
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
@@ -726,16 +741,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (type == NVGtextureType.RGBA)
         {
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0,
-                PixelFormat.Rgba, PixelType.UnsignedByte, data);
+                PixelFormat.Rgba, PixelType.UnsignedByte, uploadData);
         }
         else if (type == NVGtextureType.BGRA)
         {
             // Internal format is GL_RGBA8 (driver swizzles for shader sampling). The
             // BGRA + UnsignedInt_8_8_8_8_Rev pair tells the driver "the source is BGRA
-            // little-endian bytes" — on desktop NV/AMD/Intel this is the native upload
+            // little-endian bytes" - on desktop NV/AMD/Intel this is the native upload
             // path, faster than RGBA because no CPU/driver swizzle is needed.
             GL.TexImage2D(TextureTarget.Texture2D, 0, PixelInternalFormat.Rgba, width, height, 0,
-                PixelFormat.Bgra, PixelType.UnsignedInt_8_8_8_8_Rev, data);
+                PixelFormat.Bgra, PixelType.UnsignedInt_8_8_8_8_Rev, uploadData);
         }
         else
         {
@@ -793,6 +808,34 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         BindTexture(0);
         CheckError("create texture");
         return tex.Id;
+    }
+
+    // Returns a premultiplied (straight RGB * alpha) copy of a tight width*height*4 BGRA/RGBA buffer.
+    // Byte order is irrelevant: indices 0..2 are colour channels, index 3 is alpha for both layouts.
+    private static byte[] PremultiplyCopy(ReadOnlySpan<byte> src, int width, int height)
+    {
+        int count = width * height;
+        var dst = new byte[count * 4];
+        for (int i = 0; i < count; i++)
+        {
+            int offset = i * 4;
+            byte alpha = src[offset + 3];
+            if (alpha == 255)
+            {
+                dst[offset] = src[offset];
+                dst[offset + 1] = src[offset + 1];
+                dst[offset + 2] = src[offset + 2];
+            }
+            else if (alpha != 0)
+            {
+                dst[offset] = (byte)(src[offset] * alpha / 255);
+                dst[offset + 1] = (byte)(src[offset + 1] * alpha / 255);
+                dst[offset + 2] = (byte)(src[offset + 2] * alpha / 255);
+            }
+            // alpha == 0 leaves colour channels at 0 (clean transparent texel for mip averaging).
+            dst[offset + 3] = alpha;
+        }
+        return dst;
     }
 
     public void DeleteTexture(int id)
