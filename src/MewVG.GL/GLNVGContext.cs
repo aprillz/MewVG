@@ -1,17 +1,12 @@
 // NanoVG OpenGL backend (GL3 core profile)
 // Ported from nanovg_gl.h
 
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-
-using Aprillz.MewVG.Diagnostics;
+using System.Runtime.CompilerServices;
 
 namespace Aprillz.MewVG;
 
 internal sealed class GLNVGContext : IDisposable, INVGRenderer
 {
-    private static readonly EnvDebugLogger Logger = new("MEWVG_GL_DEBUG", "[MewVG.GL]");
-
     private const int UniformArraySize = 13;
     private const int UniformFloatCount = UniformArraySize * 4;
     private const int ClipStencilRef = 0x80;
@@ -414,10 +409,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         maxVerts += call.TriangleCount;
         var vertOffset = AllocVerts(maxVerts);
 
-        float fringeMinU = float.PositiveInfinity;
-        float fringeMaxU = float.NegativeInfinity;
-        int fringeVertCount = 0;
-
         // Pass 1: fill vertices (contiguous)
         for (var i = 0; i < paths.Length; i++)
         {
@@ -450,13 +441,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             if (path.NStroke > 0)
             {
                 var strokeSrc = verts.Slice(path.StrokeOffset, path.NStroke);
-                for (var s = 0; s < strokeSrc.Length; s++)
-                {
-                    var u = strokeSrc[s].U;
-                    if (u < fringeMinU) fringeMinU = u;
-                    if (u > fringeMaxU) fringeMaxU = u;
-                }
-                fringeVertCount += strokeSrc.Length;
 
                 copy.StrokeOffset = vertOffset;
                 if (singleFringePath)
@@ -475,90 +459,78 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         call.MergedFringeCount = vertOffset - call.MergedFringeOffset;
 
-        if (call.Type == GLNVGCallType.Fill)
+        call.TriangleOffset = vertOffset;
+        var quad = _verts.AsSpan(call.TriangleOffset, 4);
+        quad[0] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
+        quad[1] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
+        quad[2] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
+        quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
+
+        // Check convexity based on fill paths only; fringe-only paths (NFill==0) don't affect fill overlap.
+        var isConvexFill = false;
         {
-            call.TriangleOffset = vertOffset;
-            var quad = _verts.AsSpan(call.TriangleOffset, 4);
-            quad[0] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
-            quad[1] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
-            quad[2] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
-            quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
-
-            // Check convexity based on fill paths only; fringe-only paths (NFill==0) don't affect fill overlap.
-            var isConvexFill = false;
+            int fillPathCount = 0;
+            int fillPathIndex = -1;
+            for (var i = 0; i < paths.Length; i++)
             {
-                int fillPathCount = 0;
-                int fillPathIndex = -1;
-                for (var i = 0; i < paths.Length; i++)
+                if (paths[i].NFill > 0)
                 {
-                    if (paths[i].NFill > 0)
-                    {
-                        fillPathCount++;
-                        fillPathIndex = i;
-                    }
+                    fillPathCount++;
+                    fillPathIndex = i;
                 }
-                if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
-                    isConvexFill = true;
             }
-            // Coverage AA triggers when the fill path was flagged non-convex by the core
-            // tessellator — this happens for transparent paints (to avoid double-blending
-            // in the fringe overlay) AND for self-intersecting sources like a pentagram.
-            // The coverage buffer's Max-blended accumulation collapses overlapping fringe
-            // strips to a clean boundary, where the stencil-fill + fringe-overlay path
-            // would leave visible seams cutting across the fill interior.
-            call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0;
-
-            if (call.HasTransparency)
-            {
-                // Coverage buffer path: 3 uniform sets
-                call.UniformOffset = AllocUniforms(3);
-
-                // uniformOffset+0: Simple (stencil pass + interior coverage = 1.0)
-                var simple = _uniforms[call.UniformOffset].Data;
-                Array.Clear(simple);
-                SetUniformVec4(simple, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
-                SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
-                SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
-
-                // uniformOffset+1: Paint for composite (type = CoverageComposite)
-                if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
-                {
-                    return;
-                }
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 3, (float)GLNVGShaderType.CoverageComposite);
-
-                // uniformOffset+2: Coverage output (type = CoverageOutput)
-                var coverageOut = _uniforms[call.UniformOffset + 2].Data;
-                Array.Clear(coverageOut);
-                SetUniformVec4(coverageOut, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
-                SetUniformValue(coverageOut, 12, 0, -1.0f); // strokeMult (analytical fill)
-                SetUniformValue(coverageOut, 12, 1, -1.0f); // strokeThr (no discard)
-                SetUniformValue(coverageOut, 12, 3, (float)GLNVGShaderType.CoverageOutput);
-            }
-            else
-            {
-                call.UniformOffset = AllocUniforms(2);
-                var simple = _uniforms[call.UniformOffset].Data;
-                Array.Clear(simple);
-                SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
-                SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
-
-                if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
-                {
-                    return;
-                }
-                SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
-            }
+            if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
+                isConvexFill = true;
         }
-        else
+        // Coverage AA triggers when the fill path was flagged non-convex by the core
+        // tessellator - this happens for transparent paints (to avoid double-blending
+        // in the fringe overlay) AND for self-intersecting sources like a pentagram.
+        // The coverage buffer's Max-blended accumulation collapses overlapping fringe
+        // strips to a clean boundary, where the stencil-fill + fringe-overlay path
+        // would leave visible seams cutting across the fill interior.
+        call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0;
+
+        if (call.HasTransparency)
         {
-            call.UniformOffset = AllocUniforms(1);
-            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+            // Coverage buffer path: 3 uniform sets
+            call.UniformOffset = AllocUniforms(3);
+
+            // uniformOffset+0: Simple (stencil pass + interior coverage = 1.0)
+            var simple = _uniforms[call.UniformOffset].Data;
+            Array.Clear(simple);
+            SetUniformVec4(simple, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
+            SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
+            SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
+
+            // uniformOffset+1: Paint for composite (type = CoverageComposite)
+            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
             {
                 return;
             }
-            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+            SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult
+            SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 3, (float)GLNVGShaderType.CoverageComposite);
+
+            // uniformOffset+2: Coverage output (type = CoverageOutput)
+            var coverageOut = _uniforms[call.UniformOffset + 2].Data;
+            Array.Clear(coverageOut);
+            SetUniformVec4(coverageOut, 8, 1.0f, 1.0f, 1.0f, 1.0f); // no scissor
+            SetUniformValue(coverageOut, 12, 0, -1.0f); // strokeMult (analytical fill)
+            SetUniformValue(coverageOut, 12, 1, -1.0f); // strokeThr (no discard)
+            SetUniformValue(coverageOut, 12, 3, (float)GLNVGShaderType.CoverageOutput);
+        }
+        else
+        {
+            call.UniformOffset = AllocUniforms(2);
+            var simple = _uniforms[call.UniformOffset].Data;
+            Array.Clear(simple);
+            SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
+            SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
+
+            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+            {
+                return;
+            }
+            SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
         }
     }
 
@@ -630,7 +602,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         // Bounds quad (TriangleStrip) for the coverage-composite pass. Drawing the
         // stroke geometry itself for composite would re-rasterize overlapping segment
-        // quads at sharp corners and SrcOver-blend the same pixel multiple times —
+        // quads at sharp corners and SrcOver-blend the same pixel multiple times -
         // visible as darker spikes at every join with transparent strokes (issue 224-01).
         // The quad covers each pixel exactly once; the coverage texture (built earlier
         // with MAX blending) provides the real per-pixel alpha.
@@ -638,7 +610,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         call.TriangleCount = 4;
         if (float.IsPositiveInfinity(minX))
         {
-            // No stroke verts — use a degenerate quad. Composite pass becomes a no-op.
+            // No stroke verts - use a degenerate quad. Composite pass becomes a no-op.
             minX = minY = 0f;
             maxX = maxY = 0f;
         }
@@ -981,13 +953,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         if (_clipActiveInRender)
         {
-            // Fill quad first — draw where winding != 0, clear winding bits.
+            // Fill quad first - draw where winding != 0, clear winding bits.
             StencilFunc(StencilFunction.Notequal, 0x0, NanoVgStencilMask);
             GL.StencilOp(StencilOp.Zero, StencilOp.Zero, StencilOp.Zero);
             StencilMask(NanoVgStencilMask);
             GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
 
-            // AA fringe on top — test only clip bit, ignore winding.
+            // AA fringe on top - test only clip bit, ignore winding.
             if (call.MergedFringeCount > 0)
             {
                 StencilMask(0x00);
@@ -1639,7 +1611,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
 
             SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.FillImg);
-            // BGRA textures sample to (R,G,B,A) the same as RGBA — the GL_BGRA + REV upload
+            // BGRA textures sample to (R,G,B,A) the same as RGBA - the GL_BGRA + REV upload
             // already swizzled at upload time. So texType is colour (0/1) for both formats;
             // only ALPHA textures take texType=2 (replicate red to alpha).
             if (tex.Type == NVGtextureType.RGBA || tex.Type == NVGtextureType.BGRA)
@@ -1823,14 +1795,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             _uniformCapacity = newCapacity;
         }
 
-        for (var i = _uniformCount; i < _uniformCount + n; i++)
-        {
-            if (_uniforms[i].Data == null || _uniforms[i].Data.Length != UniformFloatCount)
-            {
-                _uniforms[i].Data = new float[UniformFloatCount];
-            }
-        }
-
         var offset = _uniformCount;
         _uniformCount += n;
         return offset;
@@ -1839,17 +1803,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private void CreateResources()
     {
         const string header = "#version 140\n" +
-                        "#define NANOVG_GL3 1\n" +
                         "#define UNIFORMARRAY_SIZE 13\n\n";
 
         const string fillVertShader =
-            "#ifdef NANOVG_GL3\n" +
             "\tuniform vec2 viewSize;\n" +
             "\tin vec2 vertex;\n" +
             "\tin vec2 tcoord;\n" +
             "\tout vec2 ftcoord;\n" +
             "\tout vec2 fpos;\n" +
-            "#endif\n" +
             "void main(void) {\n" +
             "\tftcoord = tcoord;\n" +
             "\tfpos = vertex;\n" +
@@ -1857,20 +1818,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "}\n";
 
         const string fillFragShader =
-            "#ifdef GL_ES\n" +
-            "#if defined(GL_FRAGMENT_PRECISION_HIGH) || defined(NANOVG_GL3)\n" +
-            " precision highp float;\n" +
-            "#else\n" +
-            " precision mediump float;\n" +
-            "#endif\n" +
-            "#endif\n" +
-            "#ifdef NANOVG_GL3\n" +
             "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
             "\tuniform sampler2D tex;\n" +
             "\tin vec2 ftcoord;\n" +
             "\tin vec2 fpos;\n" +
             "\tout vec4 outColor;\n" +
-            "#endif\n" +
             "\t#define scissorMat mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz)\n" +
             "\t#define paintMat mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz)\n" +
             "\t#define innerCol frag[6]\n" +
@@ -1993,11 +1945,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\t\tcolor *= coverage * scissor;\n" +
             "\t\tresult = color;\n" +
             "\t}\n" +
-            "#ifdef NANOVG_GL3\n" +
             "\toutColor = result;\n" +
-            "#else\n" +
-            "\tgl_FragColor = result;\n" +
-            "#endif\n" +
             "}\n";
 
         var opts = "#define EDGE_AA 1\n";
