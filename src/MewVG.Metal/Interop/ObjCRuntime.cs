@@ -140,6 +140,12 @@ public static unsafe partial class ObjCRuntime
     [LibraryImport(LibObjC, EntryPoint = "objc_autorelease")]
     public static partial nint Autorelease(nint obj);
 
+    [LibraryImport(LibObjC, EntryPoint = "objc_autoreleasePoolPush")]
+    public static partial nint AutoreleasePoolPush();
+
+    [LibraryImport(LibObjC, EntryPoint = "objc_autoreleasePoolPop")]
+    public static partial void AutoreleasePoolPop(nint context);
+
     /// <summary>
     /// Creates an Objective-C string (NSString) from a .NET string.
     /// </summary>
@@ -207,15 +213,22 @@ public static class Selectors
 }
 
 /// <summary>
-/// Cached Objective-C class references.
+/// Scopes an NSAutoreleasePool (objc_autoreleasePoolPush/Pop) around Objective-C
+/// calls that hand back autoreleased objects (e.g. new*WithDescriptor:error:'s NSError,
+/// or -description/-commandBuffer/-blitCommandEncoder). Without an active pool on the
+/// calling thread, autoreleased objects just leak. Only use this around initialization
+/// or rarely-repeated paths: per-frame render encoding already has its resources kept
+/// alive by the encoder/command buffer, so pooling there would add overhead with no
+/// correctness upside.
 /// </summary>
-public static class ObjCClasses
+public readonly ref struct AutoreleasePool
 {
-    public static readonly nint NSObject = ObjCRuntime.GetClass("NSObject");
-    public static readonly nint NSString = ObjCRuntime.GetClass("NSString");
-    public static readonly nint NSData = ObjCRuntime.GetClass("NSData");
-    public static readonly nint NSError = ObjCRuntime.GetClass("NSError");
-    public static readonly nint NSArray = ObjCRuntime.GetClass("NSArray");
-    public static readonly nint NSMutableArray = ObjCRuntime.GetClass("NSMutableArray");
-    public static readonly nint NSDictionary = ObjCRuntime.GetClass("NSDictionary");
+    private readonly nint _context;
+
+    public AutoreleasePool()
+    {
+        _context = ObjCRuntime.AutoreleasePoolPush();
+    }
+
+    public void Dispose() => ObjCRuntime.AutoreleasePoolPop(_context);
 }
