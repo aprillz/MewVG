@@ -2,8 +2,6 @@
 // Metal NanoVG .NET by Olli Wang
 // Original: https://github.com/niclasolofsson/MetalNanoVG
 
-using System.Runtime.InteropServices;
-
 using Aprillz.MewVG.Interop;
 
 namespace Aprillz.MewVG;
@@ -89,7 +87,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <summary>
     /// Creates an image from BGRA byte-order data. The Metal backend uses
     /// <c>MTLPixelFormat.BGRA8Unorm</c> for the texture so the GPU interprets the storage
-    /// as BGRA bytes and returns RGBA-ordered float4 to the shader on sample — no CPU swap.
+    /// as BGRA bytes and returns RGBA-ordered float4 to the shader on sample - no CPU swap.
     /// </summary>
     public override int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.BGRA, width, height, (int)imageFlags, data);
 
@@ -139,11 +137,14 @@ public sealed class NanoVGMetal : NanoVG
 
     /// <summary>
     /// Wraps an externally-owned MTLTexture as an NVG image without copying. Caller
-    /// MUST set <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/> — the
+    /// MUST set <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/> - the
     /// texture is retained by its owner and DeleteImage must only drop NVG's
     /// bookkeeping, not release the MTL resource.
     /// </summary>
     /// <param name="mtlTexture">Pointer to a live MTLTexture (must outlive the returned image id).</param>
+    /// <param name="width">Texture width in pixels.</param>
+    /// <param name="height">Texture height in pixels.</param>
+    /// <param name="flags">Image flags; must include <see cref="NVGimageFlags.NoDelete"/>.</param>
     public int CreateImageFromMtlTexture(nint mtlTexture, int width, int height, NVGimageFlags flags)
         => _context.CreateTextureFromHandle(mtlTexture, width, height, (int)flags);
 
@@ -227,13 +228,10 @@ public sealed class NanoVGMetal : NanoVG
 /// <summary>
 /// Extension methods for Metal device creation
 /// </summary>
-public static partial class MetalDevice
+public static class MetalDevice
 {
-    [LibraryImport("/System/Library/Frameworks/Metal.framework/Metal", EntryPoint = "MTLCreateSystemDefaultDevice")]
-    private static partial IntPtr MTLCreateSystemDefaultDevice();
-
     /// <summary>
     /// Creates the system default Metal device
     /// </summary>
-    public static IntPtr CreateSystemDefaultDevice() => MTLCreateSystemDefaultDevice();
+    public static IntPtr CreateSystemDefaultDevice() => Metal.CreateSystemDefaultDevice();
 }

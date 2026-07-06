@@ -59,7 +59,7 @@ public enum MNVGcallType
 
 /// <summary>
 /// Uniform data structure matching Metal shader uniforms
-/// Size must be 176 bytes to match the shader's expectations
+/// Size must be 208 bytes to match the shader's expectations
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MNVGfragUniforms
@@ -97,8 +97,6 @@ public struct MNVGcall
     public int pathCount;
     public int triangleOffset;
     public int triangleCount;
-    public int indexOffset;
-    public int indexCount;
     public int uniformOffset;
     public int cpuResolvedFill;
     public NVGcompositeOperationState blendFunc;
@@ -126,9 +124,6 @@ public struct MNVGpath
 [StructLayout(LayoutKind.Sequential)]
 public unsafe struct MNVGbuffers
 {
-    public IntPtr stencilTexture;  // id<MTLTexture>
-    public IntPtr indexBuffer;     // id<MTLBuffer>
-    public int nindexes;
     public IntPtr vertBuffer;      // id<MTLBuffer>
     public int nverts;
     public IntPtr uniformBuffer;   // id<MTLBuffer>
@@ -160,7 +155,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     public const int MNVG_INIT_BUFFER_COUNT = 4;
     public const int MNVG_UNIFORM_ALIGN = 256;
 
-    // Embedded Metal shader source (matches GL backend's strokeMask analytical fill coverage)
+    // Embedded Metal shader source (matches GL backend's strokeMask analytical fill coverage).
+    // This MSL string is the only source for the current Metal shaders - there is no
+    // precompiled bitcode or .metallib shipped alongside it.
     private const string ShaderSource = """
         #include <metal_stdlib>
         #include <simd/simd.h>
@@ -315,7 +312,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           if (scissor == 0)
             return float4(0);
 
-          if (uniforms.type == 3) {  // MNVG_SHADER_IMG — no strokeAlpha
+          if (uniforms.type == 3) {  // MNVG_SHADER_IMG - no strokeAlpha
             float4 color = texture.sample(sampler, in.ftcoord);
             if (uniforms.texType == 1)
               color = float4(color.xyz * color.w, color.w);
@@ -381,7 +378,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Coverage build: rasterize stroke / fill geometry once with MAX blending
         // on color[1]. Each pixel ends up holding max(strokeAlpha) across all
-        // overlapping fragments — i.e. a true coverage value, not an SrcOver
+        // overlapping fragments - i.e. a true coverage value, not an SrcOver
         // accumulation. color[0] is masked off via the pipeline's writeMask so
         // this pass leaves the main framebuffer alone.
         fragment CoverageOut fragmentCoverageBuild(RasterizerData in [[stage_in]],
@@ -393,7 +390,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           }
           CoverageOut o;
           o.main = float4(0);                          // ignored by writeMask
-          // Coverage texture is R8Unorm — only the red channel is stored. Write
+          // Coverage texture is R8Unorm - only the red channel is stored. Write
           // the same value to all channels so MAX blend with the destination's
           // single channel still picks up the largest contribution; reads happen
           // via .r in the composite shader.
@@ -403,7 +400,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Coverage composite: a bounds quad with SrcOver on color[0]. Reads the
         // per-pixel coverage that the build pass wrote to color[1] using
-        // framebuffer fetch (`[[color(1)]]`) — no encoder switch, no tile flush.
+        // framebuffer fetch (`[[color(1)]]`) - no encoder switch, no tile flush.
         // Outputs `paint × coverage` in premultiplied space; standard SrcOver
         // blends that against the existing framebuffer exactly once per pixel.
         // Also writes 0 back to color[1] so the next coverage pass on this frame
@@ -519,8 +516,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private byte[] _uniforms;
     private int _uniformCount;
     private int _uniformCapacity;
-    private uint[] _indexes;
-    private int _indexCount;
 
     // Frame state
     private IntPtr _renderEncoder;       // id<MTLRenderCommandEncoder>
@@ -593,8 +588,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         _uniforms = new byte[MNVG_UNIFORM_ALIGN * 128];
         _uniformCapacity = 128;
-
-        _indexes = new uint[4096];
 
         // Create semaphore for buffer synchronization
         _semaphore = new DispatchSemaphore(MNVG_INIT_BUFFER_COUNT);
@@ -939,7 +932,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(color0, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
 
         // color[1]: REPLACE blending (srcFactor=One, dstFactor=Zero, Add) so the
-        // composite shader's `o.cov = 0` actually overwrites coverage to 0 — this
+        // composite shader's `o.cov = 0` actually overwrites coverage to 0 - this
         // is the self-clear that lets back-to-back coverage AA calls reuse the
         // single coverage attachment without an explicit clear pass.
         var color1 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)1);
@@ -965,7 +958,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     /// <summary>
     /// Returns true when paint composition would visibly differ between single-blend
-    /// and overlapping multi-blend — i.e. when the inner/outer color carries less
+    /// and overlapping multi-blend - i.e. when the inner/outer color carries less
     /// than full alpha. Mirrors the threshold used by the GL backend's
     /// <c>HasTransparency(paint)</c>. Image paints are excluded (they have a separate
     /// fragment path that doesn't produce the same overlap artifact).
@@ -1337,7 +1330,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pathCount = 0;
         _vertCount = 0;
         _uniformCount = 0;
-        _indexCount = 0;
         _recordingClipActive = false;
     }
 
@@ -1371,7 +1363,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private void UpdateBuffers(ref MNVGbuffers buffers)
     {
         // Apple Silicon (unified memory): StorageModeShared means CPU and GPU share
-        // the same allocation — no staging copies, no didModifyRange calls needed.
+        // the same allocation - no staging copies, no didModifyRange calls needed.
         // StorageModeManaged was designed for discrete GPUs with separate VRAM and
         // causes per-frame IOAccelerator staging allocations that are never reclaimed
         // at high frame rates.
@@ -1427,33 +1419,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             fixed (byte* ptr = _uniforms)
             {
                 Buffer.MemoryCopy(ptr, (void*)contents, uniformSize, uniformSize);
-            }
-        }
-
-        // Update index buffer
-        var indexSize = _indexCount * sizeof(uint);
-        if (buffers.indexBuffer == IntPtr.Zero || buffers.nindexes < _indexCount)
-        {
-            if (buffers.indexBuffer != IntPtr.Zero)
-            {
-                ObjCRuntime.SendMessage(buffers.indexBuffer, ObjCRuntime.Selectors.release);
-            }
-
-            buffers.indexBuffer = ObjCRuntime.SendMessage(
-                _device,
-                MetalSelectors.newBufferWithLength_options,
-                (nuint)indexSize,
-                (ulong)MTLResourceOptions.StorageModeShared
-            );
-            buffers.nindexes = _indexCount;
-        }
-
-        if (_indexCount > 0)
-        {
-            var contents = ObjCRuntime.SendMessage(buffers.indexBuffer, MetalSelectors.contents);
-            fixed (uint* ptr = _indexes)
-            {
-                Buffer.MemoryCopy(ptr, (void*)contents, indexSize, indexSize);
             }
         }
     }
@@ -2166,26 +2131,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         frag->type = (int)MNVGshaderType.MNVG_SHADER_SIMPLE;
     }
 
-    private int AppendTriangleFan(ReadOnlySpan<NVGvertex> fan)
-    {
-        if (fan.Length < 3)
-        {
-            return 0;
-        }
-
-        var triCount = (fan.Length - 2) * 3;
-        EnsureVerts(_vertCount + triCount);
-        var v0 = fan[0];
-        for (var i = 1; i < fan.Length - 1; i++)
-        {
-            _verts[_vertCount++] = v0;
-            _verts[_vertCount++] = fan[i];
-            _verts[_vertCount++] = fan[i + 1];
-        }
-
-        return triCount;
-    }
-
     private ref MNVGtexture FindTexture(int id)
     {
         for (var i = 0; i < _textureCount; i++)
@@ -2303,7 +2248,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
         {
             ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMipFilter, (ulong)MTLSamplerMipFilter.Linear);
-            // Use explicit float P/Invoke — LibraryImport float overload appears to
+            // Use explicit float P/Invoke - LibraryImport float overload appears to
             // mishandle the ARM64 ABI here, breaking subsequent text sampler creation.
             ObjCRuntime.SendMessageFloat(samplerDescriptor, Metal.Sel.SetLodMaxClamp, 2.0f);
         }
@@ -2332,7 +2277,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <summary>
     /// Deletes a texture. Honors <see cref="NVGimageFlags.NoDelete"/>: when set, the
     /// MTLTexture is externally owned (e.g. wrapped via <c>CreateTextureFromHandle</c>)
-    /// and only the slot + sampler are released here — the texture pointer is dropped
+    /// and only the slot + sampler are released here - the texture pointer is dropped
     /// without sending <c>release</c>.
     /// </summary>
     public void DeleteTexture(int id)
@@ -2370,7 +2315,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <summary>
     /// Allocates an NVG texture slot wrapping an externally-owned MTLTexture. The
     /// texture pointer is stored as-is (no retain) and is NOT released on
-    /// <see cref="DeleteTexture"/> — caller must include <see cref="NVGimageFlags.NoDelete"/>
+    /// <see cref="DeleteTexture"/> - caller must include <see cref="NVGimageFlags.NoDelete"/>
     /// in <paramref name="imageFlags"/>. Sampler is allocated based on flags, just like
     /// <see cref="CreateTexture"/>. Returned id can be used with <c>nvgImagePattern</c> /
     /// <c>nvgFillPaint</c> exactly like a normal NVG image.
@@ -2405,12 +2350,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         tex.width = width;
         tex.height = height;
         tex.type = (int)NVGtexture.RGBA;
-        // Force NoDelete — caller should have set it but enforce here so an accidental
+        // Force NoDelete - caller should have set it but enforce here so an accidental
         // miss doesn't leak into a release of an externally-owned texture.
         tex.flags = imageFlags | (int)NVGimageFlags.NoDelete;
         tex.tex = mtlTexture;
 
-        // Sampler — mirror CreateTexture's logic without uploading data.
+        // Sampler - mirror CreateTexture's logic without uploading data.
         var samplerDescriptorClass = ObjCRuntime.GetClass("MTLSamplerDescriptor");
         var samplerDescriptor = ObjCRuntime.New(samplerDescriptorClass);
 
@@ -2575,7 +2520,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage,
             (ulong)(MTLTextureUsage.RenderTarget | MTLTextureUsage.ShaderRead));
-        // Try Memoryless first — on Apple Silicon TBDR this keeps the attachment in
+        // Try Memoryless first - on Apple Silicon TBDR this keeps the attachment in
         // tile cache only (zero DRAM, zero memory traffic). If the device doesn't
         // support Memoryless (Intel/AMD Macs lack it; newTextureWithDescriptor
         // returns nil), fall back to Private storage which still keeps the texture
@@ -2621,7 +2566,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pathCount = 0;
         _vertCount = 0;
         _uniformCount = 0;
-        _indexCount = 0;
         _recordingClipActive = false;
     }
 
@@ -2733,7 +2677,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             && PaintHasTransparency(paint);
 
         // Always allocate 2 uniforms (simple at +0, fill paint at +1)
-        // to match GL layout — CpuResolvedFill uses +1 directly.
+        // to match GL layout - CpuResolvedFill uses +1 directly.
         call.uniformOffset = AllocUniforms(2);
 
         // Simple shader at +0 (used by stencil path for non-convex)
@@ -2817,7 +2761,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.blendFunc = compositeOperation;
 
         // Coverage AA path: transparent stroke (any concave/non-convex) goes
-        // through build + composite passes that share color[1] via FB fetch — no
+        // through build + composite passes that share color[1] via FB fetch - no
         // encoder switch, single SrcOver per pixel even at sharp join overlaps.
         var isConvexStroke = paths.Length == 1 && paths[0].Convex;
         call.hasCoverageAA = !isConvexStroke && _coverageTexture != IntPtr.Zero
@@ -2864,7 +2808,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
             if (float.IsPositiveInfinity(minX))
             {
-                // No verts collected — disable coverage path; falls back to normal stroke.
+                // No verts collected - disable coverage path; falls back to normal stroke.
                 call.hasCoverageAA = false;
             }
             else
@@ -3113,7 +3057,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
 
                 frag->type = (int)MNVGshaderType.MNVG_SHADER_FILLIMG;
-                // BGRA8Unorm textures sample to (R,G,B,A) the same as RGBA8Unorm — the GPU
+                // BGRA8Unorm textures sample to (R,G,B,A) the same as RGBA8Unorm - the GPU
                 // does the swizzle on read, so the shader sees colour data in either case.
                 // Only Alpha textures need texType=2 (replicate red channel to all).
                 if (tex.type == (int)NVGtexture.RGBA || tex.type == (int)NVGtexture.BGRA)
@@ -3407,16 +3351,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             if (_buffers[i].uniformBuffer != IntPtr.Zero)
             {
                 ObjCRuntime.SendMessage(_buffers[i].uniformBuffer, ObjCRuntime.Selectors.release);
-            }
-
-            if (_buffers[i].indexBuffer != IntPtr.Zero)
-            {
-                ObjCRuntime.SendMessage(_buffers[i].indexBuffer, ObjCRuntime.Selectors.release);
-            }
-
-            if (_buffers[i].stencilTexture != IntPtr.Zero)
-            {
-                ObjCRuntime.SendMessage(_buffers[i].stencilTexture, ObjCRuntime.Selectors.release);
             }
         }
 
