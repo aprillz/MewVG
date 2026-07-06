@@ -183,7 +183,6 @@ internal sealed class NVGContext
     private readonly INVGRenderer _renderer;
 
     private readonly bool _edgeAntiAlias;
-    private readonly bool _forceCoverageAaFringe = false;
 
     // Commands
     private float[] _commands;
@@ -1521,7 +1520,7 @@ internal sealed class NVGContext
         ApplyPathTolerances(in state, forStroke: false);
         FlattenPaths(enforceWinding: false);
 
-        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias);
         // miterLimit 4.0 (SVG default) keeps ~36° tips on miter instead of beveling.
         // Bevel at a sharp convex tip emits outside-normal vertices that poke past
         // the tip along both edge normals, producing visible 1–2px spikes at the
@@ -1725,7 +1724,7 @@ internal sealed class NVGContext
         RestoreAndTransformContours(cache, state.Xform);
 
         // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
-        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias) || _forceCoverageAaFringe;
+        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias);
         const float fillFringeMiterLimit = 4.0f;
         if (useFringeAa)
         {
