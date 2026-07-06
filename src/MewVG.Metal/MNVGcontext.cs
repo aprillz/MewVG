@@ -2599,15 +2599,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ReadOnlySpan<NVGvertex> verts)
     {
         var pathOffset = _pathCount;
+        EnsurePaths(_pathCount + paths.Length);
+        for (var i = 0; i < paths.Length; i++)
+        {
+            _paths[pathOffset + i] = default;
+        }
+        _pathCount += paths.Length;
 
+        // Pass 1: fill vertices for all paths, copied contiguously (as-is; Core
+        // outputs a triangle list, not a fan) so the merged fill draw below can
+        // span every path's fill in a single vertexStart/vertexCount range.
         for (var i = 0; i < paths.Length; i++)
         {
             ref readonly var path = ref paths[i];
-            EnsurePaths(_pathCount + 1);
-            ref var dstPath = ref _paths[_pathCount++];
-            dstPath = default;
-
-            // Fill: MewVG Core outputs triangle list (not fan). Copy as-is.
+            ref var dstPath = ref _paths[pathOffset + i];
             dstPath.fillOffset = _vertCount;
             dstPath.fillCount = path.NFill;
             if (path.NFill > 0)
@@ -2616,8 +2621,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(_vertCount));
                 _vertCount += path.NFill;
             }
+        }
 
-            // Stroke: copy as-is.
+        // Pass 2: stroke (fringe) vertices for all paths, copied contiguously.
+        for (var i = 0; i < paths.Length; i++)
+        {
+            ref readonly var path = ref paths[i];
+            ref var dstPath = ref _paths[pathOffset + i];
             dstPath.strokeOffset = _vertCount;
             dstPath.strokeCount = path.NStroke;
             if (path.NStroke > 0)
