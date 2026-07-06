@@ -188,9 +188,17 @@ public abstract class NanoVG : IDisposable
             return CreateImageRGBA(width, height, imageFlags, data);
         }
 
-        var rgba = new byte[data.Length];
-        SwapBgraRgba(data, rgba);
-        return CreateImageRGBA(width, height, imageFlags, rgba);
+        var rgba = System.Buffers.ArrayPool<byte>.Shared.Rent(data.Length);
+        try
+        {
+            var rgbaSpan = rgba.AsSpan(0, data.Length);
+            SwapBgraRgba(data, rgbaSpan);
+            return CreateImageRGBA(width, height, imageFlags, rgbaSpan);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(rgba);
+        }
     }
 
     /// <summary>
@@ -204,9 +212,17 @@ public abstract class NanoVG : IDisposable
             return UpdateImage(image, data);
         }
 
-        var rgba = new byte[data.Length];
-        SwapBgraRgba(data, rgba);
-        return UpdateImage(image, rgba);
+        var rgba = System.Buffers.ArrayPool<byte>.Shared.Rent(data.Length);
+        try
+        {
+            var rgbaSpan = rgba.AsSpan(0, data.Length);
+            SwapBgraRgba(data, rgbaSpan);
+            return UpdateImage(image, rgbaSpan);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(rgba);
+        }
     }
 
     private static void SwapBgraRgba(ReadOnlySpan<byte> src, Span<byte> dst)
