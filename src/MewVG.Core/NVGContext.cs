@@ -204,6 +204,12 @@ internal sealed class NVGContext
 
     private readonly List<NVGClipPath> _clipStack = new();
 
+    // Grow-only buffer pool indexed by clip depth. _clipStack is always a prefix of
+    // this pool (_clipStack[i] is the same instance as _clipBufferPool[i]), so a
+    // buffer popped off _clipStack (Restore's RemoveRange) stays alive here for
+    // reuse the next time that depth is captured again - no per-Clip() allocation.
+    private readonly List<NVGClipPath> _clipBufferPool = new();
+
     // Tolerances
     private float _tessTol;
 
@@ -221,26 +227,17 @@ internal sealed class NVGContext
     public int StrokeTriCount;
     public int TextTriCount;
 
-    private readonly struct NVGClipPath
+    // Mutable, reference type on purpose: instances are reused across Clip() calls
+    // (grow-only Paths/Verts arrays) instead of being reallocated every time.
+    private sealed class NVGClipPath
     {
-        public NVGClipPath(NVGscissorState scissor, float fringe, float[] bounds, NVGpathData[] paths, NVGvertex[] verts)
-        {
-            Scissor = scissor;
-            Fringe = fringe;
-            Bounds = bounds;
-            Paths = paths;
-            Verts = verts;
-        }
-
-        public NVGscissorState Scissor { get; }
-
-        public float Fringe { get; }
-
-        public float[] Bounds { get; }
-
-        public NVGpathData[] Paths { get; }
-
-        public NVGvertex[] Verts { get; }
+        public NVGscissorState Scissor;
+        public float Fringe;
+        public readonly float[] Bounds = new float[4];
+        public NVGpathData[] Paths = Array.Empty<NVGpathData>();
+        public NVGvertex[] Verts = Array.Empty<NVGvertex>();
+        public int PathCount;
+        public int VertCount;
     }
 
     public NVGContext(INVGRenderer renderer, bool edgeAntiAlias)
@@ -322,7 +319,8 @@ internal sealed class NVGContext
             {
                 var clip = _clipStack[i];
                 var scissor = clip.Scissor;
-                _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds, clip.Paths, clip.Verts);
+                _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds,
+                    clip.Paths.AsSpan(0, clip.PathCount), clip.Verts.AsSpan(0, clip.VertCount));
             }
         }
     }
@@ -712,12 +710,14 @@ internal sealed class NVGContext
         // triangles stay at geometric boundary (no inset that would shrink clip).
         ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
 
-        var clip = CaptureClipSnapshot(state.Scissor, fillFringe);
+        var clip = RentClipBuffer(_clipStack.Count);
+        CaptureClipSnapshot(clip, state.Scissor, fillFringe);
         _clipStack.Add(clip);
         state.ClipDepth = _clipStack.Count;
 
         var scissor = clip.Scissor;
-        _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds, clip.Paths, clip.Verts);
+        _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds,
+            clip.Paths.AsSpan(0, clip.PathCount), clip.Verts.AsSpan(0, clip.VertCount));
 
         // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
         // in-place point edits), so a following Stroke() must re-flatten from commands.
@@ -732,16 +732,40 @@ internal sealed class NVGContext
         _renderer.ResetClip();
     }
 
-    private NVGClipPath CaptureClipSnapshot(NVGscissorState scissor, float fringe)
+    // _clipStack[depth] and _clipBufferPool[depth] are always the same instance
+    // while depth < _clipStack.Count, so a slot beyond the current stack depth
+    // (either never used, or vacated by Restore()'s RemoveRange) is safe to reuse.
+    private NVGClipPath RentClipBuffer(int depth)
     {
+        if (depth < _clipBufferPool.Count)
+        {
+            return _clipBufferPool[depth];
+        }
+
+        var buffer = new NVGClipPath();
+        _clipBufferPool.Add(buffer);
+        return buffer;
+    }
+
+    private void CaptureClipSnapshot(NVGClipPath clip, NVGscissorState scissor, float fringe)
+    {
+        clip.Scissor = scissor;
+        clip.Fringe = fringe;
+
         int totalFillVerts = 0;
         for (var i = 0; i < _cache.NPaths; i++)
         {
             totalFillVerts += _cache.Paths[i].NFill;
         }
 
-        var verts = totalFillVerts > 0 ? new NVGvertex[totalFillVerts] : Array.Empty<NVGvertex>();
-        var paths = _cache.NPaths > 0 ? new NVGpathData[_cache.NPaths] : Array.Empty<NVGpathData>();
+        if (clip.Verts.Length < totalFillVerts)
+        {
+            clip.Verts = new NVGvertex[totalFillVerts];
+        }
+        if (clip.Paths.Length < _cache.NPaths)
+        {
+            clip.Paths = new NVGpathData[_cache.NPaths];
+        }
 
         int vertOffset = 0;
         for (var i = 0; i < _cache.NPaths; i++)
@@ -755,17 +779,17 @@ internal sealed class NVGContext
             if (srcPath.NFill > 0)
             {
                 _cache.Verts.AsSpan(srcPath.FillOffset, srcPath.NFill)
-                    .CopyTo(verts.AsSpan(vertOffset));
+                    .CopyTo(clip.Verts.AsSpan(vertOffset));
                 vertOffset += srcPath.NFill;
             }
 
-            paths[i] = dstPath;
+            clip.Paths[i] = dstPath;
         }
 
-        var bounds = new float[4];
-        Array.Copy(_cache.Bounds, bounds, 4);
+        clip.PathCount = _cache.NPaths;
+        clip.VertCount = totalFillVerts;
 
-        return new NVGClipPath(scissor, fringe, bounds, paths, verts);
+        Array.Copy(_cache.Bounds, clip.Bounds, 4);
     }
 
     #endregion
