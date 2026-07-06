@@ -121,14 +121,7 @@ public abstract class NanoVG : IDisposable
 
     public void PathWinding(NVGwinding dir) => _nvg.PathWinding(dir);
 
-    public void Rect(float x, float y, float w, float h)
-    {
-        MoveTo(x, y);
-        LineTo(x + w, y);
-        LineTo(x + w, y + h);
-        LineTo(x, y + h);
-        ClosePath();
-    }
+    public void Rect(float x, float y, float w, float h) => _nvg.Rect(x, y, w, h);
 
     public void RoundedRect(float x, float y, float w, float h, float r) => _nvg.RoundedRect(x, y, w, h, r);
 
