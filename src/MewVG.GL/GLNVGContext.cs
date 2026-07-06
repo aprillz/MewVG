@@ -1318,6 +1318,48 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private static int StripToTriangleCount(int stripVertCount)
         => stripVertCount < 3 ? 0 : (stripVertCount - 2) * 3;
 
+    // Bounds quad vertices are in NanoVG space (y-down, CSS pixels). The coverage
+    // texture is device pixels, and GL's scissor rect is y-up with origin at the
+    // bottom-left, so the y range must be flipped using the coverage buffer height.
+    private void GetCoverageScissor(
+        int triangleOffset,
+        int triangleCount,
+        int coverageWidth,
+        int coverageHeight,
+        out int scissorX,
+        out int scissorY,
+        out int scissorWidth,
+        out int scissorHeight)
+    {
+        const int scissorMargin = 2; // extra room for the AA fringe
+
+        var quad = _verts.AsSpan(triangleOffset, triangleCount);
+        var minX = float.PositiveInfinity;
+        var minY = float.PositiveInfinity;
+        var maxX = float.NegativeInfinity;
+        var maxY = float.NegativeInfinity;
+        for (var i = 0; i < quad.Length; i++)
+        {
+            if (quad[i].X < minX) minX = quad[i].X;
+            if (quad[i].X > maxX) maxX = quad[i].X;
+            if (quad[i].Y < minY) minY = quad[i].Y;
+            if (quad[i].Y > maxY) maxY = quad[i].Y;
+        }
+
+        var left = (int)MathF.Floor(minX * _devicePixelRatio) - scissorMargin;
+        var right = (int)MathF.Ceiling(maxX * _devicePixelRatio) + scissorMargin;
+        var top = (int)MathF.Floor(minY * _devicePixelRatio) - scissorMargin;
+        var bottom = (int)MathF.Ceiling(maxY * _devicePixelRatio) + scissorMargin;
+
+        scissorX = Math.Clamp(left, 0, coverageWidth);
+        var clampedRight = Math.Clamp(right, 0, coverageWidth);
+        scissorWidth = Math.Max(0, clampedRight - scissorX);
+
+        scissorY = Math.Clamp(coverageHeight - bottom, 0, coverageHeight);
+        var clampedTop = Math.Clamp(coverageHeight - top, 0, coverageHeight);
+        scissorHeight = Math.Max(0, clampedTop - scissorY);
+    }
+
     private void FillWithCoverage(in GLNVGCall call)
     {
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
@@ -1328,8 +1370,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         var mainFbo = _flushMainFbo;
 
+        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, coverageW, coverageH,
+            out var scissorX, out var scissorY, out var scissorWidth, out var scissorHeight);
+
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
         GL.Viewport(0, 0, coverageW, coverageH);
+        GL.Enable(EnableCap.ScissorTest);
+        GL.Scissor(scissorX, scissorY, scissorWidth, scissorHeight);
         GL.ClearColor(0, 0, 0, 0);
         GL.ClearStencil(0);
         GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.StencilBufferBit);
@@ -1406,6 +1453,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             GL.DrawArrays(fringeMode, call.MergedFringeOffset, call.MergedFringeCount);
         }
 
+        GL.Disable(EnableCap.ScissorTest);
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, mainFbo);
         GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
@@ -1435,8 +1483,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         var mainFbo = _flushMainFbo;
 
+        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, coverageW, coverageH,
+            out var scissorX, out var scissorY, out var scissorWidth, out var scissorHeight);
+
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
         GL.Viewport(0, 0, coverageW, coverageH);
+        GL.Enable(EnableCap.ScissorTest);
+        GL.Scissor(scissorX, scissorY, scissorWidth, scissorHeight);
         GL.ClearColor(0, 0, 0, 0);
         GL.Clear(ClearBufferMask.ColorBufferBit);
         GL.Disable(EnableCap.StencilTest);
@@ -1456,6 +1509,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (call.MergedStrokeCount > 0)
             GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
 
+        GL.Disable(EnableCap.ScissorTest);
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, mainFbo);
         GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
