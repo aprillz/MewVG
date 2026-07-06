@@ -457,6 +457,18 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private const ulong ClipTempMask = 0x01;
     private const ulong NanoVgStencilMask = 0x7F;
 
+    // SrcOver: NanoVG's default composite operation. Also used for clip calls'
+    // blendFunc - clip calls don't write color, but SetBlendState runs for every
+    // call type, so an explicit value here avoids depending on the fallback branch
+    // in ResolveBlendFactors for an all-zero (invalid) blend state.
+    private static readonly NVGcompositeOperationState _defaultSrcOverBlend = new()
+    {
+        SrcRGB = (int)NVGblendFactor.One,
+        DstRGB = (int)NVGblendFactor.OneMinusSrcAlpha,
+        SrcAlpha = (int)NVGblendFactor.One,
+        DstAlpha = (int)NVGblendFactor.OneMinusSrcAlpha
+    };
+
     // Metal objects
     private IntPtr _device;              // id<MTLDevice>
     private IntPtr _commandQueue;        // id<MTLCommandQueue>
@@ -467,16 +479,31 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _fragmentCoverageBuildFn;     // id<MTLFunction>
     private IntPtr _fragmentCoverageCompositeFn; // id<MTLFunction>
 
-    // Pipeline states
-    private IntPtr _pipelineState;           // id<MTLRenderPipelineState>
+    /// <summary>
+    /// Cached PSO pair for a given (blend factors, pixel format, stencil format) key:
+    /// the normal draw pipeline and its stencil-only (color write masked) counterpart.
+    /// </summary>
+    private readonly struct MNVGpipelinePair
+    {
+        public readonly IntPtr Pipeline;
+        public readonly IntPtr StencilOnlyPipeline;
+
+        public MNVGpipelinePair(IntPtr pipeline, IntPtr stencilOnlyPipeline)
+        {
+            Pipeline = pipeline;
+            StencilOnlyPipeline = stencilOnlyPipeline;
+        }
+    }
+
+    // Pipeline states. Cached per (blend factors, pixel format, stencil format) so
+    // frames that alternate composite operations don't pay
+    // newRenderPipelineStateWithDescriptor:error: (a multi-millisecond synchronous
+    // call) on every draw call.
+    private IntPtr _pipelineState;           // id<MTLRenderPipelineState> for the call being rendered
     private IntPtr _stencilOnlyPipelineState;
     private IntPtr _pseudoSampler;           // id<MTLSamplerState>
     private IntPtr _pseudoTexture;           // id<MTLTexture>
-    private MTLPixelFormat _pipelinePixelFormat;
-    private MTLBlendFactor _blendSrcRgb;
-    private MTLBlendFactor _blendDstRgb;
-    private MTLBlendFactor _blendSrcAlpha;
-    private MTLBlendFactor _blendDstAlpha;
+    private readonly Dictionary<ulong, MNVGpipelinePair> _pipelineCache = new();
 
     // Depth stencil states
     private IntPtr _defaultStencilState;
@@ -530,8 +557,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _coverageTexture;            // R8Unorm, attached as color[1] of host's main pass
     private int _coverageWidth;
     private int _coverageHeight;
-    private IntPtr _coverageBuildPipeline;      // 2-attachment PSO: writeMask color[0]=None, color[1] MAX blend
-    private IntPtr _coverageCompositePipeline;  // 2-attachment PSO: writeMask color[0]=All SrcOver, color[1] cleared via shader
+    // Keyed by (pixel format, stencil format); the composite cache also bakes in blend factors.
+    private readonly Dictionary<ulong, IntPtr> _coverageBuildPipelineCache = new();      // 2-attachment PSO: writeMask color[0]=None, color[1] MAX blend
+    private readonly Dictionary<ulong, IntPtr> _coverageCompositePipelineCache = new();  // 2-attachment PSO: writeMask color[0]=All SrcOver, color[1] cleared via shader
 
     // Settings
     private NVGcreateFlags _flags;
@@ -699,73 +727,43 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void CreatePipelineStates()
     {
-        var defaultBlend = new NVGcompositeOperationState
-        {
-            SrcRGB = (int)NVGblendFactor.One,
-            DstRGB = (int)NVGblendFactor.OneMinusSrcAlpha,
-            SrcAlpha = (int)NVGblendFactor.One,
-            DstAlpha = (int)NVGblendFactor.OneMinusSrcAlpha
-        };
-        UpdatePipelineStatesForBlend(defaultBlend);
+        var pair = GetOrCreatePipelinePair(_defaultSrcOverBlend);
+        _pipelineState = pair.Pipeline;
+        _stencilOnlyPipelineState = pair.StencilOnlyPipeline;
     }
 
-    private void UpdatePipelineStatesForBlend(NVGcompositeOperationState blend)
+    /// <summary>
+    /// Resolves the composite operation to Metal blend factors and returns the cached
+    /// PSO pair for (blend factors, pixel format, stencil format), creating and
+    /// caching it on a miss. Keyed so frames that alternate composite operations
+    /// reuse pipelines instead of recreating one on every draw call.
+    /// </summary>
+    private MNVGpipelinePair GetOrCreatePipelinePair(NVGcompositeOperationState blend)
     {
-        var ok = true;
-        var srcRgb = ConvertBlendFactor(blend.SrcRGB, ref ok);
-        var dstRgb = ConvertBlendFactor(blend.DstRGB, ref ok);
-        var srcAlpha = ConvertBlendFactor(blend.SrcAlpha, ref ok);
-        var dstAlpha = ConvertBlendFactor(blend.DstAlpha, ref ok);
+        ResolveBlendFactors(blend, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
 
-        if (!ok)
+        var key = PackPipelineKey(srcRgb, dstRgb, srcAlpha, dstAlpha, _pixelFormat, _stencilFormat);
+        if (_pipelineCache.TryGetValue(key, out var cached))
         {
-            srcRgb = MTLBlendFactor.One;
-            dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
-            srcAlpha = MTLBlendFactor.One;
-            dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
+            return cached;
         }
 
-        if (_pipelineState != IntPtr.Zero &&
-            _stencilOnlyPipelineState != IntPtr.Zero &&
-            _pipelinePixelFormat == _pixelFormat &&
-            _blendSrcRgb == srcRgb &&
-            _blendDstRgb == dstRgb &&
-            _blendSrcAlpha == srcAlpha &&
-            _blendDstAlpha == dstAlpha)
-        {
-            return;
-        }
-
-        var newPipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: false);
-        if (newPipeline == IntPtr.Zero)
+        var pipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: false);
+        if (pipeline == IntPtr.Zero)
         {
             throw new InvalidOperationException("Failed to create render pipeline state");
         }
 
-        var newStencilPipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: true);
-        if (newStencilPipeline == IntPtr.Zero)
+        var stencilPipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, stencilOnly: true);
+        if (stencilPipeline == IntPtr.Zero)
         {
-            ObjCRuntime.SendMessage(newPipeline, ObjCRuntime.Selectors.release);
+            ObjCRuntime.SendMessage(pipeline, ObjCRuntime.Selectors.release);
             throw new InvalidOperationException("Failed to create stencil-only pipeline state");
         }
 
-        if (_pipelineState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_pipelineState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_stencilOnlyPipelineState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_stencilOnlyPipelineState, ObjCRuntime.Selectors.release);
-        }
-
-        _pipelineState = newPipeline;
-        _stencilOnlyPipelineState = newStencilPipeline;
-        _pipelinePixelFormat = _pixelFormat;
-        _blendSrcRgb = srcRgb;
-        _blendDstRgb = dstRgb;
-        _blendSrcAlpha = srcAlpha;
-        _blendDstAlpha = dstAlpha;
+        var pair = new MNVGpipelinePair(pipeline, stencilPipeline);
+        _pipelineCache[key] = pair;
+        return pair;
     }
 
     private IntPtr CreatePipelineState(
@@ -971,50 +969,94 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Lazily creates and caches the coverage-build pipeline. Re-created if the
-    /// pixel format or blend state changed since last call.
+    /// Lazily creates and caches the coverage-build pipeline for the current
+    /// (pixel format, stencil format), keyed so a format change doesn't evict the
+    /// pipeline for a format used earlier in the same run.
     /// </summary>
     private IntPtr GetCoverageBuildPipeline()
     {
-        if (_coverageBuildPipeline == IntPtr.Zero)
+        var key = PackFormatKey(_pixelFormat, _stencilFormat);
+        if (_coverageBuildPipelineCache.TryGetValue(key, out var cached))
         {
-            _coverageBuildPipeline = CreateCoverageBuildPipeline(CoveragePixelFormat);
+            return cached;
         }
-        return _coverageBuildPipeline;
+
+        var pipeline = CreateCoverageBuildPipeline(CoveragePixelFormat);
+        if (pipeline != IntPtr.Zero)
+        {
+            _coverageBuildPipelineCache[key] = pipeline;
+        }
+        return pipeline;
     }
 
     /// <summary>
-    /// Lazily creates and caches the coverage-composite pipeline using the given
-    /// blend factors (so callers can match the call's compositeOperation).
+    /// Lazily creates and caches the coverage-composite pipeline for the given
+    /// blend factors (so callers can match the call's compositeOperation) and the
+    /// current (pixel format, stencil format).
     /// </summary>
     private IntPtr GetCoverageCompositePipeline(MTLBlendFactor srcRgb, MTLBlendFactor dstRgb,
                                                  MTLBlendFactor srcAlpha, MTLBlendFactor dstAlpha)
     {
-        // Cache shape: store factors used and recreate on mismatch. Most calls
-        // use the same SrcOver blend, so churn is rare.
-        if (_coverageCompositePipeline != IntPtr.Zero
-            && _coverageCompSrcRgb == srcRgb && _coverageCompDstRgb == dstRgb
-            && _coverageCompSrcAlpha == srcAlpha && _coverageCompDstAlpha == dstAlpha)
+        var key = PackPipelineKey(srcRgb, dstRgb, srcAlpha, dstAlpha, _pixelFormat, _stencilFormat);
+        if (_coverageCompositePipelineCache.TryGetValue(key, out var cached))
         {
-            return _coverageCompositePipeline;
+            return cached;
         }
-        if (_coverageCompositePipeline != IntPtr.Zero)
+
+        var pipeline = CreateCoverageCompositePipeline(CoveragePixelFormat, srcRgb, dstRgb, srcAlpha, dstAlpha);
+        if (pipeline != IntPtr.Zero)
         {
-            ObjCRuntime.SendMessage(_coverageCompositePipeline, ObjCRuntime.Selectors.release);
+            _coverageCompositePipelineCache[key] = pipeline;
         }
-        _coverageCompositePipeline = CreateCoverageCompositePipeline(
-            CoveragePixelFormat, srcRgb, dstRgb, srcAlpha, dstAlpha);
-        _coverageCompSrcRgb = srcRgb;
-        _coverageCompDstRgb = dstRgb;
-        _coverageCompSrcAlpha = srcAlpha;
-        _coverageCompDstAlpha = dstAlpha;
-        return _coverageCompositePipeline;
+        return pipeline;
     }
 
-    private MTLBlendFactor _coverageCompSrcRgb;
-    private MTLBlendFactor _coverageCompDstRgb;
-    private MTLBlendFactor _coverageCompSrcAlpha;
-    private MTLBlendFactor _coverageCompDstAlpha;
+    /// <summary>
+    /// Packs (pixel format, stencil format) into the high 32 bits of a pipeline
+    /// cache key; both formats fit comfortably in 16 bits each.
+    /// </summary>
+    private static ulong PackFormatKey(MTLPixelFormat pixelFormat, MTLPixelFormat stencilFormat)
+        => ((ulong)pixelFormat << 32) | ((ulong)stencilFormat << 48);
+
+    /// <summary>
+    /// Packs (blend factors, pixel format, stencil format) into a single cache key.
+    /// Each blend factor gets 8 bits (values 0-14 today); formats get 16 bits each
+    /// via <see cref="PackFormatKey"/>.
+    /// </summary>
+    private static ulong PackPipelineKey(
+        MTLBlendFactor srcRgb, MTLBlendFactor dstRgb, MTLBlendFactor srcAlpha, MTLBlendFactor dstAlpha,
+        MTLPixelFormat pixelFormat, MTLPixelFormat stencilFormat)
+        => (ulong)srcRgb
+            | ((ulong)dstRgb << 8)
+            | ((ulong)srcAlpha << 16)
+            | ((ulong)dstAlpha << 24)
+            | PackFormatKey(pixelFormat, stencilFormat);
+
+    /// <summary>
+    /// Converts a composite operation's blend factors to Metal, falling back to
+    /// SrcOver as a whole if any component isn't a recognized NVGblendFactor value.
+    /// Centralizes conversion previously duplicated in pipeline creation and both
+    /// coverage-AA composite passes.
+    /// </summary>
+    private static void ResolveBlendFactors(
+        NVGcompositeOperationState blend,
+        out MTLBlendFactor srcRgb, out MTLBlendFactor dstRgb,
+        out MTLBlendFactor srcAlpha, out MTLBlendFactor dstAlpha)
+    {
+        var ok = true;
+        srcRgb = ConvertBlendFactor(blend.SrcRGB, ref ok);
+        dstRgb = ConvertBlendFactor(blend.DstRGB, ref ok);
+        srcAlpha = ConvertBlendFactor(blend.SrcAlpha, ref ok);
+        dstAlpha = ConvertBlendFactor(blend.DstAlpha, ref ok);
+
+        if (!ok)
+        {
+            srcRgb = MTLBlendFactor.One;
+            dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
+            srcAlpha = MTLBlendFactor.One;
+            dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
+        }
+    }
 
     private static MTLBlendFactor ConvertBlendFactor(int factor, ref bool ok) => factor switch
     {
@@ -1545,7 +1587,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void SetBlendState(NVGcompositeOperationState blend)
     {
-        UpdatePipelineStatesForBlend(blend);
+        var pair = GetOrCreatePipelinePair(blend);
+        _pipelineState = pair.Pipeline;
+        _stencilOnlyPipelineState = pair.StencilOnlyPipeline;
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _pipelineState);
     }
 
@@ -1761,19 +1805,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // ── Pass C: composite ─────────────────────────────────────────────────
-        var ok = true;
-        var srcRgb = ConvertBlendFactor(call.blendFunc.SrcRGB, ref ok);
-        var dstRgb = ConvertBlendFactor(call.blendFunc.DstRGB, ref ok);
-        var srcAlpha = ConvertBlendFactor(call.blendFunc.SrcAlpha, ref ok);
-        var dstAlpha = ConvertBlendFactor(call.blendFunc.DstAlpha, ref ok);
-        if (!ok)
-        {
-            srcRgb = MTLBlendFactor.One; dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
-            srcAlpha = MTLBlendFactor.One; dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
-        }
+        ResolveBlendFactors(call.blendFunc, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
             GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
-        // Same paint uniform — composite shader switches on type for paint color.
+        // Same paint uniform - composite shader switches on type for paint color.
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
             buffers.uniformBuffer,
             (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN), (nuint)0);
@@ -1821,16 +1856,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // ── Pass C: composite ─────────────────────────────────────────────────
-        var ok = true;
-        var srcRgb = ConvertBlendFactor(call.blendFunc.SrcRGB, ref ok);
-        var dstRgb = ConvertBlendFactor(call.blendFunc.DstRGB, ref ok);
-        var srcAlpha = ConvertBlendFactor(call.blendFunc.SrcAlpha, ref ok);
-        var dstAlpha = ConvertBlendFactor(call.blendFunc.DstAlpha, ref ok);
-        if (!ok)
-        {
-            srcRgb = MTLBlendFactor.One; dstRgb = MTLBlendFactor.OneMinusSourceAlpha;
-            srcAlpha = MTLBlendFactor.One; dstAlpha = MTLBlendFactor.OneMinusSourceAlpha;
-        }
+        ResolveBlendFactors(call.blendFunc, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
             GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
@@ -2905,7 +2931,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.type = MNVGcallType.MNVG_CLIP;
         call.pathOffset = pathOffset;
         call.pathCount = paths.Length;
-        call.blendFunc = default;
+        call.blendFunc = _defaultSrcOverBlend;
 
         // Allocate a safe "simple" uniform so stencil-only passes don't get clipped away by garbage scissor state.
         call.uniformOffset = AllocUniforms(1);
@@ -2934,7 +2960,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.type = MNVGcallType.MNVG_CLIP_RESET;
         call.pathOffset = 0;
         call.pathCount = 0;
-        call.blendFunc = default;
+        call.blendFunc = _defaultSrcOverBlend;
 
         call.uniformOffset = AllocUniforms(1);
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
@@ -3195,15 +3221,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         _disposed = true;
 
-        // Release Metal resources
-        if (_pipelineState != IntPtr.Zero)
+        // Release Metal resources. _pipelineState/_stencilOnlyPipelineState only alias
+        // the last-selected entry of _pipelineCache, so release through the cache to
+        // cover every (blend, format) pipeline pair ever created.
+        foreach (var pair in _pipelineCache.Values)
         {
-            ObjCRuntime.SendMessage(_pipelineState, ObjCRuntime.Selectors.release);
-        }
+            if (pair.Pipeline != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(pair.Pipeline, ObjCRuntime.Selectors.release);
+            }
 
-        if (_stencilOnlyPipelineState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_stencilOnlyPipelineState, ObjCRuntime.Selectors.release);
+            if (pair.StencilOnlyPipeline != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(pair.StencilOnlyPipeline, ObjCRuntime.Selectors.release);
+            }
         }
 
         if (_defaultStencilState != IntPtr.Zero)
@@ -3306,14 +3337,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ObjCRuntime.SendMessage(_fragmentCoverageCompositeFn, ObjCRuntime.Selectors.release);
         }
 
-        if (_coverageBuildPipeline != IntPtr.Zero)
+        foreach (var pipeline in _coverageBuildPipelineCache.Values)
         {
-            ObjCRuntime.SendMessage(_coverageBuildPipeline, ObjCRuntime.Selectors.release);
+            if (pipeline != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(pipeline, ObjCRuntime.Selectors.release);
+            }
         }
 
-        if (_coverageCompositePipeline != IntPtr.Zero)
+        foreach (var pipeline in _coverageCompositePipelineCache.Values)
         {
-            ObjCRuntime.SendMessage(_coverageCompositePipeline, ObjCRuntime.Selectors.release);
+            if (pipeline != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(pipeline, ObjCRuntime.Selectors.release);
+            }
         }
 
         if (_coverageTexture != IntPtr.Zero)
