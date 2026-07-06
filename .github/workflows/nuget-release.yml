@@ -26,9 +26,9 @@ jobs:
       - name: Pack
         run: |
           VERSION=${GITHUB_REF_NAME#v}
-          dotnet pack src/MewVG.Core/MewVG.Core.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:PackageVersion=$VERSION
-          dotnet pack src/MewVG.GL/MewVG.GL.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:PackageVersion=$VERSION
-          dotnet pack src/MewVG.Metal/MewVG.Metal.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:PackageVersion=$VERSION
+          dotnet pack src/MewVG.Core/MewVG.Core.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:Version=$VERSION
+          dotnet pack src/MewVG.GL/MewVG.GL.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:Version=$VERSION
+          dotnet pack src/MewVG.Metal/MewVG.Metal.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:Version=$VERSION
 
       - name: Publish NuGet
         run: |
