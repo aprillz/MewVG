@@ -147,7 +147,15 @@ public struct MNVGtexture
 }
 
 /// <summary>
-/// Main Metal NanoVG context
+/// Main Metal NanoVG context. Contract with the host application:
+/// <list type="bullet">
+/// <item><see cref="SetRenderEncoder"/> must be called with a live encoder/command buffer
+/// before every <see cref="Flush"/> (i.e. before <c>EndFrame</c> runs); if the encoder is
+/// nil, rendering cannot record any commands.</item>
+/// <item><see cref="FrameCompleted"/> must be called from the command buffer's completion
+/// handler once the GPU finishes with the frame's buffer set, or the internal buffer
+/// semaphore starves after <see cref="MNVG_INIT_BUFFER_COUNT"/> frames in flight.</item>
+/// </list>
 /// </summary>
 public unsafe class MNVGcontext : IDisposable, INVGRenderer
 {
@@ -683,6 +691,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void LoadShaderLibrary()
     {
+        // Runs once at context creation, not per frame: pool the call so the NSError
+        // (on failure) and its -description/UTF8String are released instead of
+        // leaking with no autorelease pool in place.
+        using var pool = new AutoreleasePool();
         using var source = new NSString(ShaderSource);
         var error = IntPtr.Zero;
         _library = ObjCRuntime.SendMessage(
@@ -773,6 +785,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         MTLBlendFactor dstAlpha,
         bool stencilOnly)
     {
+        // Only reached on a _pipelineCache miss (see GetOrCreatePipelinePair), not on
+        // every draw call, so pooling the NSError from
+        // newRenderPipelineStateWithDescriptor:error: is safe here.
+        using var pool = new AutoreleasePool();
         var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
         var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
         if (pipelineDescriptor == IntPtr.Zero)
@@ -844,6 +860,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// </summary>
     private IntPtr CreateCoverageBuildPipeline(MTLPixelFormat coveragePixelFormat)
     {
+        // Only reached from GetCoverageBuildPipeline's cache miss (init or format
+        // change), not every frame, so pooling the creation NSError is safe here.
+        using var pool = new AutoreleasePool();
         var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
         var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
         if (pipelineDescriptor == IntPtr.Zero) return IntPtr.Zero;
@@ -901,6 +920,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         MTLBlendFactor srcRgb, MTLBlendFactor dstRgb,
         MTLBlendFactor srcAlpha, MTLBlendFactor dstAlpha)
     {
+        // Only reached from GetCoverageCompositePipeline's cache miss (init, blend
+        // change, or format change), not every frame, so pooling the creation
+        // NSError is safe here.
+        using var pool = new AutoreleasePool();
         var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
         var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
         if (pipelineDescriptor == IntPtr.Zero) return IntPtr.Zero;
@@ -1470,6 +1493,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_callCount == 0)
         {
             return;
+        }
+
+        if (_renderEncoder == IntPtr.Zero)
+        {
+            // Without a live encoder every objc_msgSend below silently no-ops (nil
+            // receiver), so nothing gets drawn and the caller sees no failure - only the
+            // buffer semaphore taken by EndFrame() stays unsignaled. Give that permit back
+            // before failing loudly so a single missed SetRenderEncoder call doesn't also
+            // starve the next MNVG_INIT_BUFFER_COUNT frames.
+            _semaphore.Signal();
+            throw new InvalidOperationException(
+                "MNVGcontext.Render: no render encoder set. SetRenderEncoder(...) must be " +
+                "called before every Flush()/EndFrame(), and FrameCompleted() must be called " +
+                "from the command buffer's completion handler - see MNVGcontext's class remarks.");
         }
 
         // Set viewport
@@ -2453,6 +2490,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return;
         }
 
+        // Runs on texture creation, not per frame: commandBuffer/blitCommandEncoder are
+        // both autoreleased by convention, so pool this call to avoid leaking them.
+        using var pool = new AutoreleasePool();
         var commandBuffer = ObjCRuntime.SendMessage(_commandQueue, MetalSelectors.commandBuffer);
         if (commandBuffer == IntPtr.Zero)
         {
