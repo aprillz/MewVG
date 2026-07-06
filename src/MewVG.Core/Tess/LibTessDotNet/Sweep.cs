@@ -677,7 +677,6 @@ namespace LibTessDotNet
             eUp._Org._s = isect._s;
             eUp._Org._t = isect._t;
             _pool.Return(ref isect);
-            isect = null;
             eUp._Org._pqHandle = _pq.Insert(eUp._Org);
             if (eUp._Org._pqHandle._handle == PQHandle.Invalid)
             {
@@ -1086,7 +1085,8 @@ namespace LibTessDotNet
                 if (!reg._sentinel)
                 {
                     Debug.Assert(reg._fixUpperEdge);
-                    Debug.Assert(++fixedEdges == 1);
+                    fixedEdges++;
+                    Debug.Assert(fixedEdges == 1);
                 }
                 Debug.Assert(reg._windingNumber == 0);
                 DeleteRegion(reg);

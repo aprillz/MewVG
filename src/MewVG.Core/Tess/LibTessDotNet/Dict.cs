@@ -41,8 +41,6 @@ namespace LibTessDotNet
             internal Node? _prev, _next;
 
             public TValue? Key => _key;
-            public Node? Prev => _prev;
-            public Node? Next => _next;
 
             public void Init(IPool pool)
             {
