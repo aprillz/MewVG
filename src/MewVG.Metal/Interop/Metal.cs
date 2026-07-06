@@ -72,7 +72,6 @@ public static unsafe partial class Metal
         public static readonly nint SetFragmentTexture = ObjCRuntime.RegisterSelector("setFragmentTexture:atIndex:");
         public static readonly nint SetFragmentSamplerState = ObjCRuntime.RegisterSelector("setFragmentSamplerState:atIndex:");
         public static readonly nint DrawPrimitives = ObjCRuntime.RegisterSelector("drawPrimitives:vertexStart:vertexCount:");
-        public static readonly nint DrawIndexedPrimitives = ObjCRuntime.RegisterSelector("drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:");
 
         // BlitCommandEncoder
         public static readonly nint CopyFromBufferToTexture = ObjCRuntime.RegisterSelector("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:");
@@ -167,9 +166,6 @@ public static unsafe partial class Metal
         public static readonly nint NextDrawable = ObjCRuntime.RegisterSelector("nextDrawable");
         public static readonly nint SetOpaque = ObjCRuntime.RegisterSelector("setOpaque:");
         public static readonly nint PresentsWithTransaction = ObjCRuntime.RegisterSelector("presentsWithTransaction");
-
-        // dispatch
-        public static readonly nint DispatchDataCreate = ObjCRuntime.RegisterSelector("dispatch_data_create");
     }
 }
 
