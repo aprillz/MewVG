@@ -173,7 +173,25 @@ namespace LibTessDotNet
     {
         private static class TypePoolCache<T> where T : class, Pooled<T>, new()
         {
+            // Per-thread: DefaultTypePool<T> has no synchronization, so a Pool shared across
+            // threads lets two meshes corrupt the same Vertex/Edge objects. Sharing across
+            // multiple Tess instances on the *same* thread is fine (no reentrancy).
+            [ThreadStatic]
             internal static ITypePool Pool;
+        }
+
+        // [ThreadStatic] fields only run their initializer on the first thread that touches
+        // the type, so every other thread sees null here; create the pool for it on demand.
+        private static ITypePool GetOrCreateTypePool<T>() where T : class, Pooled<T>, new()
+        {
+            var typePool = TypePoolCache<T>.Pool;
+            if (typePool == null)
+            {
+                typePool = new DefaultTypePool<T>();
+                TypePoolCache<T>.Pool = typePool;
+            }
+
+            return typePool;
         }
 
         public override void Register<T>(ITypePool typePool)
@@ -183,13 +201,13 @@ namespace LibTessDotNet
 
         public override T Get<T>()
         {
-            var typePool = TypePoolCache<T>.Pool;
+            var typePool = GetOrCreateTypePool<T>();
             T obj = null;
             if (typePool is DefaultTypePool<T> defaultPool)
             {
                 obj = defaultPool.GetTyped();
             }
-            else if (typePool != null)
+            else
             {
                 obj = typePool.Get() as T;
             }
@@ -208,12 +226,12 @@ namespace LibTessDotNet
                 return;
             }
             obj.Reset(this);
-            var typePool = TypePoolCache<T>.Pool;
+            var typePool = GetOrCreateTypePool<T>();
             if (typePool is DefaultTypePool<T> defaultPool)
             {
                 defaultPool.ReturnTyped(obj);
             }
-            else if (typePool != null)
+            else
             {
                 typePool.Return(obj);
             }
