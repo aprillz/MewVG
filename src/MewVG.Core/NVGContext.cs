@@ -1901,7 +1901,11 @@ internal sealed class NVGContext
             if (onlyPath.Count >= 3)
             {
                 var pts = _cache.Points.AsSpan(onlyPath.First, onlyPath.Count);
-                if (IsConvexContour(pts))
+                // Convexity is affine-invariant, so a cached tessCache verdict (computed
+                // in BuildFillCache from the same object-space contour) is still valid
+                // here after the render-time transform - no need to re-run the atan2 sweep.
+                var isConvex = tessCache != null ? tessCache.IsDirectConvex : IsConvexContour(pts);
+                if (isConvex)
                 {
                     // Keep original flattened contour as SSOT for the common UI case
                     // (single convex shape), skipping normalization+tessellation work.
@@ -1935,7 +1939,17 @@ internal sealed class NVGContext
         int triangleCount;
         bool tessNeedsTransform = false;
 
-        if (sourcePathCount == 1)
+        if (fastSingleConvex)
+        {
+            // Same single contour already confirmed convex above (normalization is
+            // skipped whenever fastSingleConvex is set, so sourcePathCount is still 1
+            // and the data is unchanged) - reuse that verdict instead of re-testing it.
+            ref readonly var onlyPath = ref _cache.Paths[0];
+            directConvexFill = true;
+            directFirst = onlyPath.First;
+            directCount = onlyPath.Count;
+        }
+        else if (sourcePathCount == 1)
         {
             ref readonly var onlyPath = ref _cache.Paths[0];
             if (onlyPath.Count >= 3)
@@ -2093,7 +2107,7 @@ internal sealed class NVGContext
 
         // Flag fills that need the coverage-AA pipeline instead of the stencil-
         // fill + fringe-overlay pipeline. A self-intersecting source contour
-        // (pentagram) — its fringe strip crosses itself at inner vertices and
+        // (pentagram) - its fringe strip crosses itself at inner vertices and
         // leaves seams across the fill; coverage AA's MAX-blended accumulation
         // collapses those overlaps to a clean boundary.
         bool sourceHasNonSimple = false;
@@ -2108,7 +2122,11 @@ internal sealed class NVGContext
                 }
 
                 var pts = _cache.Points.AsSpan(srcPath.First, srcPath.Count);
-                if (!IsSimpleContour(pts))
+                // A convex contour is always simple (single revolution, consistent turn
+                // direction is a strictly stronger condition), and directConvexFill implies
+                // sourcePathCount == 1 so this is the same contour tested above - skip the
+                // redundant atan2 sweep instead of re-deriving a result we already know.
+                if (!directConvexFill && !IsSimpleContour(pts))
                 {
                     sourceHasNonSimple = true;
                 }
