@@ -36,13 +36,8 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 
-#if DOUBLE
-using Real = System.Double;
-namespace LibTessDotNet.Double
-#else
 using Real = System.Single;
 namespace LibTessDotNet
-#endif
 {
     /// <summary>
     /// The winding rule determines how the different contours are combined together.
@@ -160,11 +155,7 @@ namespace LibTessDotNet
 
         public Real SUnitX = 1;
         public Real SUnitY = 0;
-#if DOUBLE
-        public Real SentinelCoord = 4e150;
-#else
         public Real SentinelCoord = 4e30f;
-#endif
 
         /// <summary>
         /// If true, will remove empty (zero area) polygons.
