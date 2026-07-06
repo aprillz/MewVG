@@ -171,6 +171,15 @@ internal sealed class NVGContext
     private const int NVG_INIT_COMMANDS_SIZE = 256;
     private const float EDGE_AA_FRINGE_PX = 1f;
 
+    // miterLimit 4.0 (SVG default) keeps ~36 degree tips on miter instead of beveling.
+    // Bevel at a sharp convex tip emits outside-normal vertices that poke past
+    // the tip along both edge normals, producing visible 1-2px spikes at the
+    // corner in the fringe strip. Miter collapses those two vertices to a
+    // single point on the bisector, inside the fill body's coverage. Used
+    // consistently by Clip/Fill/BuildFillCache/FillFromCache so cached and
+    // live fill tessellation make the same join decisions.
+    private const float FillExpandMiterLimit = 4.0f;
+
     // Render backend
     private readonly INVGRenderer _renderer;
 
@@ -699,9 +708,9 @@ internal sealed class NVGContext
 
         var fillFringe = _fringeWidth;
 
-        // Clip uses stencil (binary inside/outside) — pass fringe=0 so fill
+        // Clip uses stencil (binary inside/outside) - pass fringe=0 so fill
         // triangles stay at geometric boundary (no inset that would shrink clip).
-        ExpandFill(0.0f, NVGlineJoin.Miter, 2.4f, MapFillRuleToTess(state.FillRule));
+        ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
 
         var clip = CaptureClipSnapshot(state.Scissor, fillFringe);
         _clipStack.Add(clip);
@@ -1379,7 +1388,7 @@ internal sealed class NVGContext
 
         // Skia-style convex test: consecutive turns must have the same sign AND
         // the total signed turn angle must equal ±2π (exactly one revolution).
-        // The first condition alone is necessary but not sufficient — a self-
+        // The first condition alone is necessary but not sufficient - a self-
         // intersecting pentagram has all turns in one direction but winds ±4π.
         float sign = 0f;
         float turnSum = 0f;
@@ -1425,7 +1434,7 @@ internal sealed class NVGContext
 
     // Simple (non-self-intersecting) polygon test: sign of turn may flip (concave
     // ok), but total turn angle must equal ±2π. Self-intersecting contours wind
-    // ±4π or more. Used to decide whether per-contour fringe AA is safe — the
+    // ±4π or more. Used to decide whether per-contour fringe AA is safe - the
     // NanoVG-style fringe strip assumes a simple boundary; along a pentagram's
     // self-intersecting edges the strip would cross itself at inner vertices
     // and leave visible seams across the fill interior.
@@ -1485,21 +1494,15 @@ internal sealed class NVGContext
         ApplyPathTolerances();
         FlattenPaths(enforceWinding: false);
 
-        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias);
-        // miterLimit 4.0 (SVG default) keeps ~36° tips on miter instead of beveling.
-        // Bevel at a sharp convex tip emits outside-normal vertices that poke past
-        // the tip along both edge normals, producing visible 1–2px spikes at the
-        // corner in the fringe strip. Miter collapses those two vertices to a
-        // single point on the bisector, inside the fill body's coverage.
-        const float fillFringeMiterLimit = 4.0f;
+        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
         if (useFringeAa)
         {
             var fillFringe = _fringeWidth;
-            ExpandFill(fillFringe, NVGlineJoin.Miter, fillFringeMiterLimit, MapFillRuleToTess(state.FillRule));
+            ExpandFill(fillFringe, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, fillFringeMiterLimit, MapFillRuleToTess(state.FillRule));
+            ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
         }
 
         // Apply global alpha
@@ -1595,7 +1598,7 @@ internal sealed class NVGContext
         {
             // Compute joins + fringe signs in object-space for inset tessellation.
             // fringeSigns are topology-dependent (inside/outside), transform-invariant.
-            CalculateJoins(fringeWidthObj, NVGlineJoin.Miter, 2.4f);
+            CalculateJoins(fringeWidthObj, NVGlineJoin.Miter, FillExpandMiterLimit);
 
             var sourcePathCount = _cache.NPaths;
             Span<float> fringeSigns = sourcePathCount <= 128
@@ -1606,7 +1609,7 @@ internal sealed class NVGContext
             ComputeFillFringeSigns(fringeSigns, sourcePathCount, windingRule);
             _fringeWidth = savedFringeWidth;
 
-            // Snapshot contour data (after CalculateJoins — DM vectors included)
+            // Snapshot contour data (after CalculateJoins - DM vectors included)
             cache.NContourPaths = _cache.NPaths;
             cache.ContourPaths = _cache.Paths.AsSpan(0, _cache.NPaths).ToArray();
             cache.NContourPoints = _cache.NPoints;
@@ -1689,15 +1692,14 @@ internal sealed class NVGContext
         RestoreAndTransformContours(cache, state.Xform);
 
         // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
-        var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias);
-        const float fillFringeMiterLimit = 4.0f;
+        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
         if (useFringeAa)
         {
-            ExpandFill(_fringeWidth, NVGlineJoin.Miter, fillFringeMiterLimit, windingRule, tessCache: cache);
+            ExpandFill(_fringeWidth, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, fillFringeMiterLimit, windingRule, tessCache: cache);
+            ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
         }
 
         // Submit to renderer
