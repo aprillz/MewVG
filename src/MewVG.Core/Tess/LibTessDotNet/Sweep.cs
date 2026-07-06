@@ -1151,12 +1151,17 @@ namespace LibTessDotNet
             {
                 vertexCount++;
             }
-            // Make sure there is enough space for sentinels.
+            // Make sure there is enough space for sentinels (4 sentinel vertices added
+            // by two AddSentinel() calls in InitEdgeDict; 8 is a small safety margin).
             vertexCount += 8;
 
             if (_pq == null)
             {
                 _pq = new PriorityQueue<MeshUtils.Vertex>(vertexCount, Geom.VertLeq);
+            }
+            else
+            {
+                _pq.Reset();
             }
 
             vHead = _mesh._vHead;
