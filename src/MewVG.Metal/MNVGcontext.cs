@@ -554,8 +554,24 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     // Frame state
     private IntPtr _renderEncoder;       // id<MTLRenderCommandEncoder>
-    private IntPtr _commandBuffer;       // id<MTLCommandBuffer>
     private DispatchSemaphore _semaphore;
+
+    // Encoder-scoped state cache: skips the objc_msgSend for setRenderPipelineState/
+    // setDepthStencilState/setCullMode/setStencilReferenceValue/setFragmentTexture/
+    // setFragmentSamplerState/setFragmentBuffer when consecutive draw calls request a
+    // value already bound on the encoder. IntPtr sentinels use Zero since every real
+    // Metal object handle used here is non-null; nullable value types mark "unset" for
+    // enums/integers whose valid range includes 0. Every field is reset in
+    // ResetEncoderStateCache, called from SetRenderEncoder, because each frame's
+    // encoder is a fresh object with no state assumed bound.
+    private IntPtr _cachedPipelineState;
+    private IntPtr _cachedDepthStencilState;
+    private MTLCullMode? _cachedCullMode;
+    private uint? _cachedStencilReferenceValue;
+    private IntPtr _cachedFragmentTexture;
+    private IntPtr _cachedFragmentSampler;
+    private IntPtr _cachedFragmentUniformBuffer;
+    private nuint? _cachedFragmentUniformOffset;
 
     // Coverage AA infrastructure. Transparent stroke/fill calls take a build +
     // composite path inside the same render encoder: build writes strokeAlpha to
@@ -1529,7 +1545,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setViewport, viewport);
 
         // Set pipeline state
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _pipelineState);
+        SetPipelineState(_pipelineState);
 
         // Set vertex buffer
         ObjCRuntime.SendMessage(
@@ -1579,19 +1595,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
             }
 
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentTexture_atIndex,
-                texture,
-                (nuint)0
-            );
-
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentSamplerState_atIndex,
-                sampler,
-                (nuint)0
-            );
+            SetFragmentTexture(texture);
+            SetFragmentSampler(sampler);
 
             // Process call based on type
             switch (call.type)
@@ -1633,27 +1638,91 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         var pair = GetOrCreatePipelinePair(blend);
         _pipelineState = pair.Pipeline;
         _stencilOnlyPipelineState = pair.StencilOnlyPipeline;
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _pipelineState);
+        SetPipelineState(_pipelineState);
+    }
+
+    /// <summary>Sends setRenderPipelineState only if it differs from the cached value.</summary>
+    private void SetPipelineState(IntPtr pipelineState)
+    {
+        if (_cachedPipelineState == pipelineState) return;
+        _cachedPipelineState = pipelineState;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, pipelineState);
+    }
+
+    /// <summary>Sends setDepthStencilState only if it differs from the cached value.</summary>
+    private void SetDepthStencilState(IntPtr depthStencilState)
+    {
+        if (_cachedDepthStencilState == depthStencilState) return;
+        _cachedDepthStencilState = depthStencilState;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, depthStencilState);
+    }
+
+    /// <summary>Sends setCullMode only if it differs from the cached value.</summary>
+    private void SetCullMode(MTLCullMode cullMode)
+    {
+        if (_cachedCullMode == cullMode) return;
+        _cachedCullMode = cullMode;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)cullMode);
+    }
+
+    /// <summary>Sends setStencilReferenceValue only if it differs from the cached value.</summary>
+    private void SetStencilReferenceValue(uint value)
+    {
+        if (_cachedStencilReferenceValue == value) return;
+        _cachedStencilReferenceValue = value;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, value);
+    }
+
+    /// <summary>Sends setFragmentTexture:atIndex:0 only if it differs from the cached value.</summary>
+    private void SetFragmentTexture(IntPtr texture)
+    {
+        if (_cachedFragmentTexture == texture) return;
+        _cachedFragmentTexture = texture;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, texture, (nuint)0);
+    }
+
+    /// <summary>Sends setFragmentSamplerState:atIndex:0 only if it differs from the cached value.</summary>
+    private void SetFragmentSampler(IntPtr sampler)
+    {
+        if (_cachedFragmentSampler == sampler) return;
+        _cachedFragmentSampler = sampler;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentSamplerState_atIndex, sampler, (nuint)0);
+    }
+
+    /// <summary>
+    /// Binds the fragment uniform buffer at the given byte offset (index 0). The
+    /// uniform buffer handle is constant for the whole frame (one ring-buffer slot
+    /// per Render call), so once it has been bound once, later calls with the same
+    /// handle only need the lightweight setFragmentBufferOffset:atIndex: selector
+    /// instead of re-binding the whole buffer resource.
+    /// </summary>
+    private void SetFragmentUniformOffset(IntPtr buffer, nuint offset)
+    {
+        if (_cachedFragmentUniformBuffer == buffer)
+        {
+            if (_cachedFragmentUniformOffset == offset) return;
+            _cachedFragmentUniformOffset = offset;
+            ObjCRuntime.SendMessage(_renderEncoder, Metal.Sel.SetFragmentBufferOffset, offset, (ulong)0);
+            return;
+        }
+
+        _cachedFragmentUniformBuffer = buffer;
+        _cachedFragmentUniformOffset = offset;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex, buffer, offset, (nuint)0);
     }
 
     private void RenderFill(ref MNVGbuffers buffers, ref MNVGcall call)
     {
         if (call.cpuResolvedFill != 0)
         {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetCullMode(MTLCullMode.None);
             if (_clipActiveInRender)
             {
-                ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+                SetStencilReferenceValue(ClipStencilRef);
             }
 
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentBuffer_offset_atIndex,
-                buffers.uniformBuffer,
-                (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN),
-                (nuint)0
-            );
+            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
             var fillStart = -1;
             var fillCount = 0;
@@ -1704,21 +1773,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // Draw shapes using stencil
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _stencilOnlyPipelineState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _fillShapeStencilStateClipped : _fillShapeStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue,
-            _clipActiveInRender ? ClipStencilRef : (uint)0);
+        SetPipelineState(_stencilOnlyPipelineState);
+        SetDepthStencilState(_clipActiveInRender ? _fillShapeStencilStateClipped : _fillShapeStencilState);
+        SetCullMode(MTLCullMode.None);
+        SetStencilReferenceValue(_clipActiveInRender ? ClipStencilRef : (uint)0);
 
         // Set uniform for shape drawing
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
         // Draw fill shapes
         for (var i = 0; i < call.pathCount; i++)
@@ -1737,17 +1798,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // Draw anti-aliased edges
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _pipelineState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _fillAntiAliasStencilStateClipped : _fillAntiAliasStencilState);
+        SetPipelineState(_pipelineState);
+        SetDepthStencilState(_clipActiveInRender ? _fillAntiAliasStencilStateClipped : _fillAntiAliasStencilState);
 
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
         if (UseGeometryAA)
         {
@@ -1768,7 +1822,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         // Draw fill
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _fillStencilState);
+        SetDepthStencilState(_fillStencilState);
 
         ObjCRuntime.SendMessage(
             _renderEncoder,
@@ -1779,10 +1833,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         );
 
         // Reset stencil state
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
         if (_clipActiveInRender)
         {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            SetStencilReferenceValue(ClipStencilRef);
         }
     }
 
@@ -1793,27 +1847,23 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// the first call of the frame the attachment is already 0 from clear action.
     /// Pass B (build) rasterizes fill triangles with MAX blend on color[1]. Pass
     /// C (composite) draws the bounds quad with FB fetch on color[1] and SrcOver
-    /// on color[0]. All three within the same render encoder — no tile flush.
+    /// on color[0]. All three within the same render encoder - no tile flush.
     /// </summary>
     private void RenderFillWithCoverage(ref MNVGbuffers buffers, ref MNVGcall call)
     {
         if (call.triangleCount < 4) return;  // need a bounds quad
 
         // ── Pass B: build coverage ────────────────────────────────────────────
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
-            GetCoverageBuildPipeline());
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+        SetPipelineState(GetCoverageBuildPipeline());
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetCullMode(MTLCullMode.None);
         if (_clipActiveInRender)
         {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            SetStencilReferenceValue(ClipStencilRef);
         }
-        // Use the +1 paint uniform — strokeMult=-1 so strokeMask gives analytical
+        // Use the +1 paint uniform - strokeMult=-1 so strokeMask gives analytical
         // fill coverage. fragmentCoverageBuild ignores the type field.
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN), (nuint)0);
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
         var fillStart = -1;
         var fillCount = 0;
@@ -1849,19 +1899,15 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // ── Pass C: composite ─────────────────────────────────────────────────
         ResolveBlendFactors(call.blendFunc, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
-            GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
+        SetPipelineState(GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
         // Same paint uniform - composite shader switches on type for paint color.
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN), (nuint)0);
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
             (ulong)MTLPrimitiveType.TriangleStrip,
             (nuint)call.triangleOffset, (nuint)call.triangleCount);
 
         // Restore default stencil state for following calls (matches non-coverage path).
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
     }
 
     /// <summary>
@@ -1874,19 +1920,15 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (call.triangleCount < 4) return;
 
         // ── Pass B: build coverage from stroke geometry ───────────────────────
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
-            GetCoverageBuildPipeline());
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+        SetPipelineState(GetCoverageBuildPipeline());
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetCullMode(MTLCullMode.None);
         if (_clipActiveInRender)
         {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            SetStencilReferenceValue(ClipStencilRef);
         }
         // Stroke uses uniform[+0] (the original stroke paint with proper strokeMult).
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN), (nuint)0);
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
         for (var i = 0; i < call.pathCount; i++)
         {
@@ -1900,17 +1942,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // ── Pass C: composite ─────────────────────────────────────────────────
         ResolveBlendFactors(call.blendFunc, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState,
-            GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN), (nuint)0);
+        SetPipelineState(GetCoverageCompositePipeline(srcRgb, dstRgb, srcAlpha, dstAlpha));
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
             (ulong)MTLPrimitiveType.TriangleStrip,
             (nuint)call.triangleOffset, (nuint)call.triangleCount);
 
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState,
-            _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
     }
 
     private void RenderStroke(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -1918,17 +1956,11 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if ((_flags & NVGcreateFlags.StencilStrokes) != 0 && !_clipActiveInRender)
         {
             // Stencil stroke
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _strokeShapeStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)0);
+            SetCullMode(MTLCullMode.None);
+            SetDepthStencilState(_strokeShapeStencilState);
+            SetStencilReferenceValue((uint)0);
 
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentBuffer_offset_atIndex,
-                buffers.uniformBuffer,
-                (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN),
-                (nuint)0
-            );
+            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -1946,15 +1978,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
 
             // Anti-alias
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _strokeAntiAliasStencilState);
+            SetDepthStencilState(_strokeAntiAliasStencilState);
 
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentBuffer_offset_atIndex,
-                buffers.uniformBuffer,
-                (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-                (nuint)0
-            );
+            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -1972,7 +1998,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
 
             // Clear stencil
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _strokeClearStencilState);
+            SetDepthStencilState(_strokeClearStencilState);
 
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -1989,25 +2015,19 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
             }
 
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
         }
         else
         {
             // Simple stroke
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetCullMode(MTLCullMode.None);
             if (_clipActiveInRender)
             {
-                ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+                SetStencilReferenceValue(ClipStencilRef);
             }
 
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.setFragmentBuffer_offset_atIndex,
-                buffers.uniformBuffer,
-                (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-                (nuint)0
-            );
+            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
             for (var i = 0; i < call.pathCount; i++)
             {
@@ -2028,20 +2048,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void RenderTriangles(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.Back);
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetCullMode(MTLCullMode.Back);
         if (_clipActiveInRender)
         {
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            SetStencilReferenceValue(ClipStencilRef);
         }
 
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
         ObjCRuntime.SendMessage(
             _renderEncoder,
@@ -2055,16 +2069,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private void RenderClip(ref MNVGbuffers buffers, ref MNVGcall call)
     {
         // Ensure fragments are generated (scissor disabled) so depth/stencil ops actually run.
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _stencilOnlyPipelineState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
+        SetPipelineState(_stencilOnlyPipelineState);
+        SetCullMode(MTLCullMode.None);
 
         if (_clipActiveInRender)
         {
@@ -2074,8 +2082,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             // - ref=0x81: (ref & 0x01)=1 for tempBit compare, (ref & 0x80)=0x80 for clipBit write.
 
             // 1) tempBit = 1 where old clipBit == 1.
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipCopyToTempStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)(ClipStencilRef | (uint)ClipTempMask));
+            SetDepthStencilState(_clipCopyToTempStencilState);
+            SetStencilReferenceValue((uint)(ClipStencilRef | (uint)ClipTempMask));
             ObjCRuntime.SendMessage(
                 _renderEncoder,
                 MetalSelectors.drawPrimitives_vertexStart_vertexCount,
@@ -2085,8 +2093,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             );
 
             // 2) Clear clipBit everywhere.
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipClearStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)0);
+            SetDepthStencilState(_clipClearStencilState);
+            SetStencilReferenceValue((uint)0);
             ObjCRuntime.SendMessage(
                 _renderEncoder,
                 MetalSelectors.drawPrimitives_vertexStart_vertexCount,
@@ -2096,8 +2104,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             );
 
             // 3) Write new clipBit where tempBit == 1 and the new path covers.
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipWriteIntersectStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)(ClipStencilRef | (uint)ClipTempMask));
+            SetDepthStencilState(_clipWriteIntersectStencilState);
+            SetStencilReferenceValue((uint)(ClipStencilRef | (uint)ClipTempMask));
             for (var i = 0; i < call.pathCount; i++)
             {
                 ref var path = ref _paths[call.pathOffset + i];
@@ -2114,8 +2122,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
 
             // 4) Clear tempBit everywhere.
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipClearTempStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)0);
+            SetDepthStencilState(_clipClearTempStencilState);
+            SetStencilReferenceValue((uint)0);
             ObjCRuntime.SendMessage(
                 _renderEncoder,
                 MetalSelectors.drawPrimitives_vertexStart_vertexCount,
@@ -2127,8 +2135,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         else
         {
             // Fresh clip: clear clipBit then write it for the new path.
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipClearStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)0);
+            SetDepthStencilState(_clipClearStencilState);
+            SetStencilReferenceValue((uint)0);
             ObjCRuntime.SendMessage(
                 _renderEncoder,
                 MetalSelectors.drawPrimitives_vertexStart_vertexCount,
@@ -2137,8 +2145,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 (nuint)call.triangleCount
             );
 
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipWriteStencilState);
-            ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+            SetDepthStencilState(_clipWriteStencilState);
+            SetStencilReferenceValue(ClipStencilRef);
             for (var i = 0; i < call.pathCount; i++)
             {
                 ref var path = ref _paths[call.pathOffset + i];
@@ -2155,8 +2163,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
         }
 
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipTestStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, ClipStencilRef);
+        SetDepthStencilState(_clipTestStencilState);
+        SetStencilReferenceValue(ClipStencilRef);
     }
 
     private void RenderClipReset(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -2166,18 +2174,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return;
         }
 
-        ObjCRuntime.SendMessage(
-            _renderEncoder,
-            MetalSelectors.setFragmentBuffer_offset_atIndex,
-            buffers.uniformBuffer,
-            (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN),
-            (nuint)0
-        );
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setRenderPipelineState, _stencilOnlyPipelineState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setDepthStencilState, _clipClearStencilState);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setCullMode, (ulong)MTLCullMode.None);
-        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setStencilReferenceValue, (uint)0);
+        SetPipelineState(_stencilOnlyPipelineState);
+        SetDepthStencilState(_clipClearStencilState);
+        SetCullMode(MTLCullMode.None);
+        SetStencilReferenceValue((uint)0);
 
         ObjCRuntime.SendMessage(
             _renderEncoder,
@@ -2547,12 +2549,31 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer)
     {
         _renderEncoder = renderEncoder;
-        _commandBuffer = commandBuffer;
+        // New encoder has no state bound yet - a stale cache would make the first
+        // draw call on it skip a setter it actually needs, so always invalidate here.
+        ResetEncoderStateCache();
+    }
+
+    /// <summary>
+    /// Invalidates the encoder state cache. Must run whenever <see cref="_renderEncoder"/>
+    /// changes, since a freshly obtained encoder starts with no pipeline/depth-stencil/
+    /// cull-mode/texture/sampler/buffer state bound.
+    /// </summary>
+    private void ResetEncoderStateCache()
+    {
+        _cachedPipelineState = IntPtr.Zero;
+        _cachedDepthStencilState = IntPtr.Zero;
+        _cachedCullMode = null;
+        _cachedStencilReferenceValue = null;
+        _cachedFragmentTexture = IntPtr.Zero;
+        _cachedFragmentSampler = IntPtr.Zero;
+        _cachedFragmentUniformBuffer = IntPtr.Zero;
+        _cachedFragmentUniformOffset = null;
     }
 
     /// <summary>
     /// The pixel format used for the coverage AA scratch attachment (color[1]).
-    /// R8Unorm — single-channel, 8-bit unsigned. The shaders only use the alpha
+    /// R8Unorm - single-channel, 8-bit unsigned. The shaders only use the alpha
     /// channel of the float4 read via <c>[[color(1)]]</c>, but Metal interprets a
     /// single-channel texture as red; both endpoints (build write &amp; composite
     /// fetch) treat the channel consistently.
