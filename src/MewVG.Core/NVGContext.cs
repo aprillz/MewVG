@@ -2325,6 +2325,13 @@ internal sealed class NVGContext
 
     private void ComputeFillFringeSigns(Span<float> signs, int sourcePathCount, TessWindingRule windingRule)
     {
+        // Per-contour probe bounds, computed once and reused by every IsPointInsideFill
+        // call below so each probe can reject whole contours without walking their points.
+        Span<float> pathMinY = sourcePathCount <= 128 ? stackalloc float[sourcePathCount] : new float[sourcePathCount];
+        Span<float> pathMaxY = sourcePathCount <= 128 ? stackalloc float[sourcePathCount] : new float[sourcePathCount];
+        Span<float> pathMaxX = sourcePathCount <= 128 ? stackalloc float[sourcePathCount] : new float[sourcePathCount];
+        ComputeFillProbeBounds(pathMinY, pathMaxY, pathMaxX, sourcePathCount);
+
         for (var i = 0; i < sourcePathCount; i++)
         {
             signs[i] = 1f;
@@ -2337,26 +2344,59 @@ internal sealed class NVGContext
             var pts = _cache.Points.AsSpan(path.First, path.Count);
             var probe = Maxf(_fringeWidth * 0.75f, _distTol * 4.0f);
 
-            if (TryProbeFringeSign(pts, 0, probe, sourcePathCount, windingRule, out var sign))
+            if (TryProbeFringeSign(pts, 0, probe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out var sign))
             {
                 signs[i] = sign;
             }
             else if (path.Count > 2 &&
-                     TryProbeFringeSign(pts, path.Count / 2, probe, sourcePathCount, windingRule, out sign))
+                     TryProbeFringeSign(pts, path.Count / 2, probe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out sign))
             {
                 // Retry at a different vertex (midpoint of contour).
                 signs[i] = sign;
             }
             else
             {
-                // Ambiguous — fall back to signed-area winding.
+                // Ambiguous - fall back to signed-area winding.
                 signs[i] = path.Winding == NVGwinding.CW ? 1f : -1f;
             }
         }
     }
 
+    private void ComputeFillProbeBounds(Span<float> pathMinY, Span<float> pathMaxY, Span<float> pathMaxX, int sourcePathCount)
+    {
+        for (var i = 0; i < sourcePathCount; i++)
+        {
+            ref readonly var path = ref _cache.Paths[i];
+            if (path.Count < 1)
+            {
+                // Empty range - the y/x reject in IsPointInsideFill always skips it.
+                pathMinY[i] = 1f;
+                pathMaxY[i] = 0f;
+                pathMaxX[i] = -1f;
+                continue;
+            }
+
+            var pts = _cache.Points.AsSpan(path.First, path.Count);
+            var minY = pts[0].Y;
+            var maxY = pts[0].Y;
+            var maxX = pts[0].X;
+            for (var j = 1; j < pts.Length; j++)
+            {
+                ref readonly var point = ref pts[j];
+                minY = Minf(minY, point.Y);
+                maxY = Maxf(maxY, point.Y);
+                maxX = Maxf(maxX, point.X);
+            }
+
+            pathMinY[i] = minY;
+            pathMaxY[i] = maxY;
+            pathMaxX[i] = maxX;
+        }
+    }
+
     private bool TryProbeFringeSign(ReadOnlySpan<NVGpoint> pts, int vertexIndex,
-        float probe, int sourcePathCount, TessWindingRule windingRule, out float sign)
+        float probe, int sourcePathCount, TessWindingRule windingRule,
+        ReadOnlySpan<float> pathMinY, ReadOnlySpan<float> pathMaxY, ReadOnlySpan<float> pathMaxX, out float sign)
     {
         ref readonly var p = ref pts[vertexIndex];
 
@@ -2374,7 +2414,7 @@ internal sealed class NVGContext
         }
         else
         {
-            // DM degenerate — fall back to edge normal (DL)
+            // DM degenerate - fall back to edge normal (DL)
             pdx = p.DY;
             pdy = -p.DX;
         }
@@ -2384,8 +2424,8 @@ internal sealed class NVGContext
         var minusX = p.X - pdx * probe;
         var minusY = p.Y - pdy * probe;
 
-        var plusInside = IsPointInsideFill(plusX, plusY, sourcePathCount, windingRule);
-        var minusInside = IsPointInsideFill(minusX, minusY, sourcePathCount, windingRule);
+        var plusInside = IsPointInsideFill(plusX, plusY, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX);
+        var minusInside = IsPointInsideFill(minusX, minusY, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX);
 
         if (plusInside && !minusInside)
         {
@@ -2405,13 +2445,22 @@ internal sealed class NVGContext
         return false;
     }
 
-    private bool IsPointInsideFill(float x, float y, int sourcePathCount, TessWindingRule windingRule)
+    private bool IsPointInsideFill(float x, float y, int sourcePathCount, TessWindingRule windingRule,
+        ReadOnlySpan<float> pathMinY, ReadOnlySpan<float> pathMaxY, ReadOnlySpan<float> pathMaxX)
     {
         var winding = 0;
         var crossings = 0;
 
         for (var i = 0; i < sourcePathCount; i++)
         {
+            // +x ray-cast: a contour whose y-range misses this probe, or whose
+            // rightmost point is at or left of it, can never register a crossing.
+            // (The left side can't be rejected this way - a hit only needs xHit > x.)
+            if (y < pathMinY[i] || y > pathMaxY[i] || x > pathMaxX[i])
+            {
+                continue;
+            }
+
             ref readonly var path = ref _cache.Paths[i];
             if (path.Count < 2)
             {
