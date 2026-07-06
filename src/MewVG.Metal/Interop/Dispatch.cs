@@ -31,10 +31,6 @@ public static unsafe partial class Dispatch
     public const ulong TimeNow = 0;
 
     public static readonly nint DataDestructorDefault = nint.Zero;
-    public static readonly nint MainQueue = GetMainQueue();
-
-    [LibraryImport(LibDispatch, EntryPoint = "dispatch_get_main_queue")]
-    private static partial nint GetMainQueue();
 }
 
 /// <summary>
