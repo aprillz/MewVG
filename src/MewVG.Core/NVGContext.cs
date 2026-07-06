@@ -1519,12 +1519,20 @@ internal sealed class NVGContext
             _cache.Paths.AsSpan(0, _cache.NPaths),
             _cache.Verts);
 
-        // Count triangles
+        // Count triangles. Fill body is a triangle list (NFill/3); fringe is a
+        // triangle strip (NStroke-2). A given path row carries exactly one of
+        // the two, so skip the zero side to avoid an erroneous -2.
         for (var i = 0; i < _cache.NPaths; i++)
         {
             ref var path = ref _cache.Paths[i];
-            FillTriCount += path.NFill - 2;
-            FillTriCount += path.NStroke - 2;
+            if (path.NFill > 0)
+            {
+                FillTriCount += path.NFill / 3;
+            }
+            if (path.NStroke > 0)
+            {
+                FillTriCount += path.NStroke - 2;
+            }
             DrawCallCount += 2;
         }
     }
@@ -1715,11 +1723,18 @@ internal sealed class NVGContext
             _cache.Paths.AsSpan(0, _cache.NPaths),
             _cache.Verts);
 
+        // See Fill() for why NFill uses /3 and NStroke uses -2, each guarded on > 0.
         for (var i = 0; i < _cache.NPaths; i++)
         {
             ref var path = ref _cache.Paths[i];
-            FillTriCount += path.NFill - 2;
-            FillTriCount += path.NStroke - 2;
+            if (path.NFill > 0)
+            {
+                FillTriCount += path.NFill / 3;
+            }
+            if (path.NStroke > 0)
+            {
+                FillTriCount += path.NStroke - 2;
+            }
             DrawCallCount += 2;
         }
     }
