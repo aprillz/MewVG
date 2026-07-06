@@ -118,7 +118,7 @@ public sealed class NanoVGMetal : NanoVG
     {
         // The texture's MTLPixelFormat (set at creation) decides the upload format. As long
         // as the image was created via CreateImageBGRA, the Metal replaceRegion path writes
-        // straight bytes to a BGRA8Unorm texture — no swap needed.
+        // straight bytes to a BGRA8Unorm texture - no swap needed.
         return UpdateImage(image, data);
     }
 
