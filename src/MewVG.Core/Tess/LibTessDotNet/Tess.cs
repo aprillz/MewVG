@@ -806,5 +806,24 @@ namespace LibTessDotNet
 
             _pool.Return(ref _mesh);
         }
+
+        /// <summary>
+        /// Discards buffered contours and any half-swept sweep state without completing
+        /// tessellation. Mirrors the mesh-return that a completed Tessellate() performs
+        /// at its end, plus a defensive drop of _pq/_dict for runs aborted mid-sweep.
+        /// No-op if _mesh is already null (already clean, or already Reset).
+        /// </summary>
+        internal void Reset()
+        {
+            if (_mesh == null)
+            {
+                return;
+            }
+
+            _pool.Return(ref _mesh);
+            _pq = null;
+            _dict = null;
+            _event = null;
+        }
     }
 }
