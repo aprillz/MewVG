@@ -106,6 +106,8 @@ namespace LibTessDotNet
                 _order[i] = piv;
             }
 
+            // 64 covers the worst-case recursion depth of quicksort partitioning below;
+            // Push() grows it via ArrayPool if a pathological input needs more.
             Span<StackItem> stack = stackalloc StackItem[64];
             StackItem[] rentedStack = null;
             int stackCount = 0;
@@ -119,6 +121,8 @@ namespace LibTessDotNet
                     p = top.p;
                     r = top.r;
 
+                    // Below this span size, insertion sort (the loop after this while)
+                    // outperforms another quicksort partition.
                     while (r > p + 10)
                     {
                         seed = seed * 1539415821 + 1;
@@ -176,6 +180,18 @@ namespace LibTessDotNet
             _max = _size;
             _initialized = true;
             _heap.Init();
+        }
+
+        /// <summary>
+        /// Clears state for reuse across tessellation runs, dropping stale key
+        /// references and re-enabling the bulk-sort Init() path.
+        /// </summary>
+        public void Reset()
+        {
+            Array.Clear(_keys, 0, _keys.Length);
+            _max = _keys.Length;
+            _size = 0;
+            _initialized = false;
         }
 
         public PQHandle Insert(TValue value)
