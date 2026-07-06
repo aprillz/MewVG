@@ -54,7 +54,7 @@ internal struct NVGpoint
 /// <summary>
 /// Internal state structure
 /// </summary>
-internal unsafe struct NVGstate
+internal struct NVGstate
 {
     public NVGcompositeOperationState CompositeOperation;
     public bool ShapeAntiAlias;
@@ -68,12 +68,6 @@ internal unsafe struct NVGstate
     public float Alpha;
     public Buffer6<float> Xform; // [6]
     public NVGscissorState Scissor;
-    public float FontSize;
-    public float LetterSpacing;
-    public float LineHeight;
-    public float FontBlur;
-    public NVGalign TextAlign;
-    public int FontId;
     public int ClipDepth;
 }
 
@@ -88,8 +82,6 @@ public struct Buffer2<T>
 {
     private T _element0;
 }
-
-/// <summary>
 
 [InlineArray(6)]
 public struct Buffer6<T>
@@ -268,11 +260,16 @@ internal sealed class NVGContext
 
     #region Device Pixel Ratio
 
-    private void SetDevicePixelRatio(float ratio)
+    private void RefreshTolerances(float ratio)
     {
         _tessTol = 0.25f / ratio;
         _distTol = 0.01f / ratio;
         _fringeWidth = EDGE_AA_FRINGE_PX / ratio;
+    }
+
+    private void SetDevicePixelRatio(float ratio)
+    {
+        RefreshTolerances(ratio);
         _devicePxRatio = ratio;
     }
 
@@ -291,14 +288,9 @@ internal sealed class NVGContext
 
         if (_nstates > 0)
         {
-            // Copy current state
+            // NVGstate is a plain value type (InlineArray fields included), so this
+            // struct assignment already copies Xform/Scissor/Fill/Stroke/ClipDepth.
             _states[_nstates] = _states[_nstates - 1];
-            _states[_nstates].Xform = _states[_nstates - 1].Xform;
-            _states[_nstates].Scissor.Xform = _states[_nstates - 1].Scissor.Xform;
-            _states[_nstates].Scissor.Extent = _states[_nstates - 1].Scissor.Extent;
-            ClonePaint(ref _states[_nstates].Fill, in _states[_nstates - 1].Fill);
-            ClonePaint(ref _states[_nstates].Stroke, in _states[_nstates - 1].Stroke);
-            _states[_nstates].ClipDepth = _states[_nstates - 1].ClipDepth;
         }
         _nstates++;
     }
@@ -350,12 +342,6 @@ internal sealed class NVGContext
         state.Scissor.Extent[0] = -1.0f;
         state.Scissor.Extent[1] = -1.0f;
 
-        state.FontSize = 16.0f;
-        state.LetterSpacing = 0.0f;
-        state.LineHeight = 1.0f;
-        state.FontBlur = 0.0f;
-        state.TextAlign = NVGalign.Left | NVGalign.Baseline;
-        state.FontId = 0;
         state.ClipDepth = 0;
 
         if (_clipStack.Count > 0)
@@ -373,13 +359,6 @@ internal sealed class NVGContext
         p.Feather = 1.0f;
         p.InnerColor = color;
         p.OuterColor = color;
-    }
-
-    private static void ClonePaint(ref NVGpaint dst, in NVGpaint src)
-    {
-        dst = src;
-        dst.Xform = src.Xform;
-        dst.Extent = src.Extent;
     }
 
     private static NVGcompositeOperationState CompositeOperationState(NVGcompositeOperation op)
@@ -711,7 +690,7 @@ internal sealed class NVGContext
     {
         ref var state = ref GetState();
 
-        ApplyPathTolerances(in state, forStroke: false);
+        ApplyPathTolerances();
         FlattenPaths(enforceWinding: false);
         if (_cache.NPaths == 0)
         {
@@ -1016,7 +995,9 @@ internal sealed class NVGContext
             kappa = -kappa;
         }
 
-        Span<float> vals = stackalloc float[3 + 5 * 7 + 100];
+        // ndivs is clamped to 5 above: 1 MoveTo/LineTo triple + up to 5 BezierTo septuples.
+        const int maxArcVals = 3 + 5 * 7;
+        Span<float> vals = stackalloc float[maxArcVals];
         var nvals = 0;
 
         var move = _ncommands > 0 ? (int)NVGcommands.LineTo : (int)NVGcommands.MoveTo;
@@ -1132,16 +1113,6 @@ internal sealed class NVGContext
     {
         _cache.NPoints = 0;
         _cache.NPaths = 0;
-    }
-
-    private ref NVGpathData LastPath()
-    {
-        if (_cache.NPaths > 0)
-        {
-            return ref _cache.Paths[_cache.NPaths - 1];
-        }
-
-        throw new InvalidOperationException("No paths in cache");
     }
 
     private void AddPath()
@@ -1500,13 +1471,7 @@ internal sealed class NVGContext
 
     #region Fill & Stroke Rendering
 
-    private void ApplyPathTolerances(in NVGstate state, bool forStroke = false)
-    {
-        var ratio = Maxf(_devicePxRatio, 0.0001f);
-        _tessTol = 0.25f / ratio;
-        _distTol = 0.01f / ratio;
-        _fringeWidth = EDGE_AA_FRINGE_PX / ratio;
-    }
+    private void ApplyPathTolerances() => RefreshTolerances(Maxf(_devicePxRatio, 0.0001f));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static TessWindingRule MapFillRuleToTess(NVGfillRule rule)
@@ -1517,7 +1482,7 @@ internal sealed class NVGContext
         ref var state = ref GetState();
         var fillPaint = state.Fill;
 
-        ApplyPathTolerances(in state, forStroke: false);
+        ApplyPathTolerances();
         FlattenPaths(enforceWinding: false);
 
         var useFringeAa = (_edgeAntiAlias && state.ShapeAntiAlias);
@@ -1569,7 +1534,7 @@ internal sealed class NVGContext
     public FrozenFillCache BuildFillCache(TessWindingRule windingRule)
     {
         ref var state = ref GetState();
-        ApplyPathTolerances(in state, forStroke: false);
+        ApplyPathTolerances();
 
         var cache = new FrozenFillCache();
         cache.TessTol = _tessTol;
@@ -1718,7 +1683,7 @@ internal sealed class NVGContext
 
         ref var state = ref GetState();
         var fillPaint = state.Fill;
-        ApplyPathTolerances(in state, forStroke: false);
+        ApplyPathTolerances();
 
         // Restore contour points and transform to screen-space
         RestoreAndTransformContours(cache, state.Xform);
@@ -1832,7 +1797,7 @@ internal sealed class NVGContext
         strokePaint.InnerColor.A *= state.Alpha;
         strokePaint.OuterColor.A *= state.Alpha;
 
-        ApplyPathTolerances(in state, forStroke: true);
+        ApplyPathTolerances();
         FlattenPaths();
 
         if (_edgeAntiAlias && state.ShapeAntiAlias)
@@ -2122,7 +2087,7 @@ internal sealed class NVGContext
                     var joinFlags = p1.Flags & ~NVGpointFlags.InnerBevel;
                     if ((joinFlags & NVGpointFlags.Bevel) != 0)
                     {
-                        BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru, aa);
+                        BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru);
                     }
                     else
                     {
@@ -2505,7 +2470,7 @@ internal sealed class NVGContext
                 }
                 else if (lineCap == NVGlineCap.Round)
                 {
-                    RoundCapStart(ref vertOffset, ref p0, dx, dy, w, ncap, aa, u0, u1);
+                    RoundCapStart(ref vertOffset, ref p0, dx, dy, w, ncap, u0, u1);
                 }
             }
 
@@ -2518,11 +2483,11 @@ internal sealed class NVGContext
                 {
                     if (lineJoin == NVGlineJoin.Round)
                     {
-                        RoundJoin(ref vertOffset, ref p0, ref p1, w, w, u0, u1, ncap, aa);
+                        RoundJoin(ref vertOffset, ref p0, ref p1, w, w, u0, u1, ncap);
                     }
                     else
                     {
-                        BevelJoin(ref vertOffset, ref p0, ref p1, w, w, u0, u1, aa);
+                        BevelJoin(ref vertOffset, ref p0, ref p1, w, w, u0, u1);
                     }
                 }
                 else
@@ -2557,7 +2522,7 @@ internal sealed class NVGContext
                 }
                 else if (lineCap == NVGlineCap.Round)
                 {
-                    RoundCapEnd(ref vertOffset, ref p1, dx, dy, w, ncap, aa, u0, u1);
+                    RoundCapEnd(ref vertOffset, ref p1, dx, dy, w, ncap, u0, u1);
                 }
             }
 
@@ -2902,7 +2867,7 @@ internal sealed class NVGContext
         dst = new Vector2(pt.X + dmx * woff, pt.Y + dmy * woff);
     }
 
-    private void BevelJoin(ref int dst, ref NVGpoint p0, ref NVGpoint p1, float lw, float rw, float lu, float ru, float fringe)
+    private void BevelJoin(ref int dst, ref NVGpoint p0, ref NVGpoint p1, float lw, float rw, float lu, float ru)
     {
         var dlx0 = p0.DY;
         var dly0 = -p0.DX;
@@ -2973,7 +2938,7 @@ internal sealed class NVGContext
         }
     }
 
-    private void RoundJoin(ref int dst, ref NVGpoint p0, ref NVGpoint p1, float lw, float rw, float lu, float ru, int ncap, float fringe)
+    private void RoundJoin(ref int dst, ref NVGpoint p0, ref NVGpoint p1, float lw, float rw, float lu, float ru, int ncap)
     {
         var dlx0 = p0.DY;
         var dly0 = -p0.DX;
@@ -3080,7 +3045,7 @@ internal sealed class NVGContext
         SetVert(ref _cache.Verts[dst++], px - dlx * w + dx * aa, py - dly * w + dy * aa, u1, 0);
     }
 
-    private void RoundCapStart(ref int dst, ref NVGpoint p, float dx, float dy, float w, int ncap, float aa, float u0, float u1)
+    private void RoundCapStart(ref int dst, ref NVGpoint p, float dx, float dy, float w, int ncap, float u0, float u1)
     {
         var px = p.X;
         var py = p.Y;
@@ -3098,7 +3063,7 @@ internal sealed class NVGContext
         SetVert(ref _cache.Verts[dst++], px - dlx * w, py - dly * w, u1, 1);
     }
 
-    private void RoundCapEnd(ref int dst, ref NVGpoint p, float dx, float dy, float w, int ncap, float aa, float u0, float u1)
+    private void RoundCapEnd(ref int dst, ref NVGpoint p, float dx, float dy, float w, int ncap, float u0, float u1)
     {
         var px = p.X;
         var py = p.Y;
