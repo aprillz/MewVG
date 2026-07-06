@@ -64,7 +64,7 @@ public sealed class NanoVGGL : NanoVG
         // Creating the GL backend requires that:
         // 1) NanoVGGL.Initialize(...) has already been called, and
         // 2) a current OpenGL context exists on the calling thread.
-        // Without these, Silk.NET will throw (often surfacing as 0xe0434352).
+        // Without these, GLNative's loaded function pointers are unset and calls will crash.
         try
         {
             GL.EnsureLoaded();

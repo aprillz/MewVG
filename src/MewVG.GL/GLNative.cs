@@ -92,7 +92,7 @@ internal enum PixelFormat : int
 {
     Rgba = 0x1908,
     Red = 0x1903,
-    // GL_BGRA — desktop GL ≥ 1.2 (and macOS GL3.2). Combined with PixelType.UnsignedInt_8_8_8_8_Rev
+    // GL_BGRA - desktop GL ≥ 1.2 (and macOS GL3.2). Combined with PixelType.UnsignedInt_8_8_8_8_Rev
     // this matches the BGRA byte layout used by Direct2D / GDI / WIC sources, so the upload
     // is a straight DMA with no CPU swap.
     Bgra = 0x80E1,
@@ -101,7 +101,7 @@ internal enum PixelFormat : int
 internal enum PixelType : int
 {
     UnsignedByte = 0x1401,
-    // 32-bit packed reverse — interprets each 4-byte unit as little-endian, so the source
+    // 32-bit packed reverse - interprets each 4-byte unit as little-endian, so the source
     // byte order BGRA in memory becomes the texel components R=B, G=G, B=R, A=A. Pair with
     // PixelFormat.Bgra; the texture's internal format stays GL_RGBA8 and shaders sample
     // `.rgba` to get (R, G, B, A) correctly.
