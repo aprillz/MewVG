@@ -718,6 +718,10 @@ internal sealed class NVGContext
 
         var scissor = clip.Scissor;
         _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds, clip.Paths, clip.Verts);
+
+        // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
+        // in-place point edits), so a following Stroke() must re-flatten from commands.
+        ClearPathCache();
     }
 
     public void ResetClip()
@@ -1535,6 +1539,10 @@ internal sealed class NVGContext
             }
             DrawCallCount += 2;
         }
+
+        // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
+        // in-place point edits), so a following Stroke() must re-flatten from commands.
+        ClearPathCache();
     }
 
     /// <summary>
@@ -1743,6 +1751,10 @@ internal sealed class NVGContext
             }
             DrawCallCount += 2;
         }
+
+        // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
+        // in-place point edits), so a following Stroke() must re-flatten from commands.
+        ClearPathCache();
     }
 
     private void RestoreAndTransformContours(FrozenFillCache cache, Buffer6<float> xform)
