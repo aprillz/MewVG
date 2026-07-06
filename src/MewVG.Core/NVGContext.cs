@@ -1549,6 +1549,7 @@ internal sealed class NVGContext
 
         var cache = new FrozenFillCache();
         cache.TessTol = _tessTol;
+        cache.WindingRule = windingRule;
 
         // Commands are in object-space (identity transform) but tolerances are
         // calibrated for screen-space. Compensate by the current transform's
@@ -1558,6 +1559,11 @@ internal sealed class NVGContext
         var sy = MathF.Sqrt(xf[2] * xf[2] + xf[3] * xf[3]);
         var scale = Maxf(Maxf(sx, sy), 0.0001f);
         var fringeWidthObj = _fringeWidth / scale;
+
+        // The tessellation/inset baked into this cache is calibrated for this scale;
+        // FillFromCache at a larger scale would reuse bezier flattening that's too
+        // coarse for the finer screen-space tessellation tolerance (see IsStale).
+        cache.BuildScale = scale;
 
         var savedTessTol = _tessTol;
         var savedDistTol = _distTol;
