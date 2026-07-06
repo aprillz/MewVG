@@ -20,7 +20,9 @@ public sealed class Tessellator
 
     public void Clear()
     {
-        // Tess can be reused; each Tessellate() clears mesh state internally.
+        // Reset() drops any mesh/sweep state left over from a run that never
+        // reached Tessellate()'s normal completion (e.g. invalid input, exception).
+        _tess.Reset();
         _hasContours = false;
         _inputValid = true;
     }
@@ -118,6 +120,9 @@ public sealed class Tessellator
 
         if (!_inputValid)
         {
+            // Contours already added to _tess (before the invalid point was hit) must
+            // not linger in its mesh, or they would be tessellated into the next run.
+            _tess.Reset();
             return TessStatus.InvalidInput;
         }
 
@@ -130,6 +135,8 @@ public sealed class Tessellator
         }
         catch
         {
+            // Sweep may have aborted mid-way, leaving mesh/_pq/_dict half-processed.
+            _tess.Reset();
             return TessStatus.InvalidInput;
         }
 
