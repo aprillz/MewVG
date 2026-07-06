@@ -4,7 +4,7 @@ namespace Aprillz.MewVG;
 
 public sealed class GLNVGFramebuffer : IDisposable
 {
-    private static int _defaultFbo = -1;
+    private int _defaultFbo = -1;
 
     private readonly NanoVGGL _ctx;
     private bool _disposed;
@@ -95,7 +95,7 @@ public sealed class GLNVGFramebuffer : IDisposable
             GL.DeleteRenderbuffer(Renderbuffer);
         }
 
-        if (Image >= 0)
+        if (Image > 0)
         {
             _ctx.DeleteImage(Image);
         }
