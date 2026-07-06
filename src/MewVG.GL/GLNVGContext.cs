@@ -252,7 +252,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.GetViewport(out _flushViewportX, out _flushViewportY, out _flushViewportWidth, out _flushViewportHeight);
 
         // Upload vertex data
-        var vertexSize = Marshal.SizeOf<NVGvertex>();
+        var vertexSize = Unsafe.SizeOf<NVGvertex>();
         GL.BindVertexArray(_vao);
         GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
         GL.BufferData(BufferTarget.ArrayBuffer, _vertCount * vertexSize, _verts, BufferUsageHint.StreamDraw);
@@ -872,7 +872,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         ref var tex = ref _textures[index];
-
         BindTexture(tex.Tex);
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
         GL.PixelStore(PixelStoreParameter.UnpackRowLength, tex.Width);
@@ -1459,7 +1458,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(call.BlendFunc);
 
-        SetUniforms(call.UniformOffset + 1, call.Image);
+        SetUniforms(call.UniformOffset + 1, call.Image, bindTexture: false);
         BindTexture(_coverageTex);
         if (_clipActiveInRender)
         {
@@ -1514,7 +1513,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(call.BlendFunc);
-        SetUniforms(call.UniformOffset, call.Image);
+        SetUniforms(call.UniformOffset, call.Image, bindTexture: false);
         BindTexture(_coverageTex);
         if (_clipActiveInRender)
         {
@@ -1621,22 +1620,25 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BlendFuncSeparate(blend.SrcRGB, blend.DstRGB, blend.SrcAlpha, blend.DstAlpha);
     }
 
-    private void SetUniforms(int uniformOffset, int image)
+    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true)
     {
         GL.Uniform4(_shader.LocFrag, UniformArraySize, _uniforms[uniformOffset].Data);
 
-        var index = -1;
-        if (image != 0)
+        if (bindTexture)
         {
-            TryFindTexture(image, out index);
-        }
+            var index = -1;
+            if (image != 0)
+            {
+                TryFindTexture(image, out index);
+            }
 
-        if (index < 0)
-        {
-            TryFindTexture(_dummyTex, out index);
-        }
+            if (index < 0)
+            {
+                TryFindTexture(_dummyTex, out index);
+            }
 
-        BindTexture(index >= 0 ? _textures[index].Tex : 0);
+            BindTexture(index >= 0 ? _textures[index].Tex : 0);
+        }
 
         CheckError("set uniforms");
     }
