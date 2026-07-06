@@ -2499,9 +2499,12 @@ internal sealed class NVGContext
                 }
             }
 
-            if (loop)
+            if (loop && path.Count > 0)
             {
-                // Loop it
+                // Loop it. Guarded on Count > 0: with no points the join loop above
+                // never ran, so StrokeOffset still holds whatever was last written
+                // there (a previous path this frame, or a stale value from the
+                // previous frame) rather than this path's own start vertex.
                 SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[path.StrokeOffset].X, _cache.Verts[path.StrokeOffset].Y, u0, 1);
                 SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[path.StrokeOffset + 1].X, _cache.Verts[path.StrokeOffset + 1].Y, u1, 1);
             }
