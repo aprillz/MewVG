@@ -180,8 +180,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     public int GetImageHandle(int image)
     {
-        ref var tex = ref FindTexture(image);
-        return tex.Id != 0 ? tex.Tex : 0;
+        if (!TryFindTexture(image, out var index))
+        {
+            return 0;
+        }
+
+        return _textures[index].Tex;
     }
 
     public void BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio)
@@ -804,11 +808,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     public bool UpdateTexture(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data)
     {
-        ref var tex = ref FindTexture(image);
-        if (tex.Id == 0)
+        if (!TryFindTexture(image, out var index))
         {
             return false;
         }
+
+        ref var tex = ref _textures[index];
 
         BindTexture(tex.Tex);
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
@@ -844,14 +849,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     public bool GetTextureSize(int image, out int width, out int height)
     {
-        ref var tex = ref FindTexture(image);
-        if (tex.Id == 0)
+        if (!TryFindTexture(image, out var index))
         {
             width = 0;
             height = 0;
             return false;
         }
 
+        ref var tex = ref _textures[index];
         width = tex.Width;
         height = tex.Height;
         return true;
@@ -1490,13 +1495,18 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         GL.Uniform4(_shader.LocFrag, UniformArraySize, _uniforms[uniformOffset].Data);
 
-        ref var tex = ref FindTexture(image != 0 ? image : _dummyTex);
-        if (tex.Id == 0)
+        var index = -1;
+        if (image != 0)
         {
-            tex = ref FindTexture(_dummyTex);
+            TryFindTexture(image, out index);
         }
 
-        BindTexture(tex.Tex);
+        if (index < 0)
+        {
+            TryFindTexture(_dummyTex, out index);
+        }
+
+        BindTexture(index >= 0 ? _textures[index].Tex : 0);
     }
 
     private static void SetUniformValue(float[] data, int vecIndex, int component, float value) => data[vecIndex * 4 + component] = value;
@@ -1556,8 +1566,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         if (paint.PaintKind == (int)NVGpaintKind.GradientRadial)
         {
-            ref var tex = ref FindTexture(paint.Image);
-            if (tex.Id == 0)
+            if (!TryFindTexture(paint.Image, out _))
             {
                 return false;
             }
@@ -1570,8 +1579,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         else if (paint.PaintKind == (int)NVGpaintKind.GradientLinear)
         {
-            ref var tex = ref FindTexture(paint.Image);
-            if (tex.Id == 0)
+            if (!TryFindTexture(paint.Image, out _))
             {
                 return false;
             }
@@ -1584,12 +1592,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         else if (paint.Image != 0)
         {
-            ref var tex = ref FindTexture(paint.Image);
-            if (tex.Id == 0)
+            if (!TryFindTexture(paint.Image, out var index))
             {
                 return false;
             }
 
+            ref var tex = ref _textures[index];
             if ((tex.Flags & NVGimageFlags.FlipY) != 0)
             {
                 Span<float> m1 = stackalloc float[6];
@@ -1699,17 +1707,19 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         return BlendingFactorDest.One;
     }
 
-    private ref GLNVGTexture FindTexture(int id)
+    private bool TryFindTexture(int id, out int index)
     {
         for (var i = 0; i < _textureCount; i++)
         {
             if (_textures[i].Id == id)
             {
-                return ref _textures[i];
+                index = i;
+                return true;
             }
         }
 
-        return ref _textures[0];
+        index = -1;
+        return false;
     }
 
     private int? AllocTexture()
