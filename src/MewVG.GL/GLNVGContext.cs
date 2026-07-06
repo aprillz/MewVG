@@ -343,7 +343,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var maxVerts = 4; // viewport quad (used for clip intersection/reset operations)
         for (var i = 0; i < paths.Length; i++)
         {
-            maxVerts += FanToTriangleCount(paths[i].NFill);
+            maxVerts += paths[i].NFill;
         }
 
         var vertOffset = AllocVerts(maxVerts);
@@ -357,10 +357,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             if (path.NFill > 0)
             {
                 copy.FillOffset = vertOffset;
-                var fanSrc = verts.Slice(path.FillOffset, path.NFill);
-                var written = ConvertFanToTriangles(fanSrc, _verts.AsSpan(vertOffset));
-                copy.FillCount = written;
-                vertOffset += written;
+                // Core already emits fill vertices as a triangle list (not a fan), copy as-is.
+                verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(vertOffset));
+                copy.FillCount = path.NFill;
+                vertOffset += path.NFill;
             }
         }
         call.MergedFringeCount = vertOffset - call.MergedFringeOffset;
@@ -1315,24 +1315,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         return written;
     }
 
-    private static int ConvertFanToTriangles(ReadOnlySpan<NVGvertex> fan, Span<NVGvertex> output)
-    {
-        if (fan.Length < 3) return 0;
-        var written = 0;
-        for (var i = 1; i < fan.Length - 1; i++)
-        {
-            output[written++] = fan[0];
-            output[written++] = fan[i];
-            output[written++] = fan[i + 1];
-        }
-        return written;
-    }
-
     private static int StripToTriangleCount(int stripVertCount)
         => stripVertCount < 3 ? 0 : (stripVertCount - 2) * 3;
-
-    private static int FanToTriangleCount(int fanVertCount)
-        => fanVertCount < 3 ? 0 : (fanVertCount - 2) * 3;
 
     private void FillWithCoverage(in GLNVGCall call)
     {
