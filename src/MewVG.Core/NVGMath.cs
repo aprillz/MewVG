@@ -17,9 +17,6 @@ internal static class NVGMath
     public static float Sqrtf(float a) => MathF.Sqrt(a);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static float Modf(float a, float b) => a % b;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static float Sinf(float a) => MathF.Sin(a);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
