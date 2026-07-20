@@ -8,7 +8,14 @@ namespace MewVG.Demo.MacOS;
 
 internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 {
-    private static nint _stencilTexture;
+    // Pool depth matches the color drawable's triple buffering (CAMetalLayer default
+    // maximumDrawableCount = 3). A single shared stencil texture makes Metal's hazard tracker
+    // serialize frame N+1 behind frame N's stencil access; N independent slots let N frames
+    // stay in flight, same as the color drawable.
+    private const int StencilPoolSize = 3;
+
+    private static readonly nint[] _stencilTextures = new nint[StencilPoolSize];
+    private static int _stencilSlotIndex = -1;
     private static int _stencilWidth;
     private static int _stencilHeight;
     private static nint _device;
@@ -113,7 +120,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
             return;
         }
 
-        nint passDesc = CreateRenderPass(drawableTexture, _stencilTexture);
+        nint passDesc = CreateRenderPass(drawableTexture, _stencilTextures[_stencilSlotIndex]);
         nint encoder = ObjCRuntime.SendMessage(commandBuffer, MetalInterop.Sel.RenderCommandEncoderWithDescriptor, passDesc);
         if (encoder == nint.Zero)
         {
@@ -283,6 +290,8 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
         ObjCRuntime.SendMessage(metalLayer, Sel.SetFramebufferOnly, true);
         ObjCRuntime.SendMessage(metalLayer, Sel.SetPresentsWithTransaction, true);
         ObjCRuntime.SendMessage(metalLayer, Sel.SetAllowsNextDrawableTimeout, false);
+        // Vsync off: this demo runs an uncapped render loop to observe raw frame throughput.
+        ObjCRuntime.SendMessage(metalLayer, Sel.SetDisplaySyncEnabled, false);
         ObjCRuntime.SendMessageNoReturn(metalLayer, Sel.SetAutoresizingMask, (ulong)(CALayerAutoresizingMask.WidthSizable | CALayerAutoresizingMask.HeightSizable));
         ObjCRuntime.SendMessage(metalLayer, Sel.SetNeedsDisplayOnBoundsChange, true);
 
@@ -293,22 +302,32 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 
     // ─── Metal Helpers ──────────────────────────────────────────────────────
 
+    // Advances to the next pooled stencil slot; must be called exactly once per frame (from
+    // DisplayLayer, before RenderFrame). RenderFrame's single render pass keeps this slot for
+    // its whole encoder, so rotating here never splits a frame's stencil use across textures.
     private static void EnsureStencilTexture(nint device, int width, int height)
     {
-        if (_stencilTexture != nint.Zero && _stencilWidth == width && _stencilHeight == height)
+        if (_stencilWidth != width || _stencilHeight != height)
         {
-            return;
+            for (int i = 0; i < _stencilTextures.Length; i++)
+            {
+                if (_stencilTextures[i] != nint.Zero)
+                {
+                    ObjCRuntime.SendMessageNoReturn(_stencilTextures[i], ObjCRuntime.Selectors.release);
+                    _stencilTextures[i] = nint.Zero;
+                }
+            }
+
+            _stencilWidth = width;
+            _stencilHeight = height;
         }
 
-        if (_stencilTexture != nint.Zero)
-        {
-            ObjCRuntime.SendMessageNoReturn(_stencilTexture, ObjCRuntime.Selectors.release);
-            _stencilTexture = nint.Zero;
-        }
+        _stencilSlotIndex = (_stencilSlotIndex + 1) % StencilPoolSize;
 
-        _stencilTexture = CreateTexture(device, MTLPixelFormat.Stencil8, width, height, MTLTextureUsage.RenderTarget);
-        _stencilWidth = width;
-        _stencilHeight = height;
+        if (_stencilTextures[_stencilSlotIndex] == nint.Zero)
+        {
+            _stencilTextures[_stencilSlotIndex] = CreateTexture(device, MTLPixelFormat.Stencil8, width, height, MTLTextureUsage.RenderTarget);
+        }
     }
 
     private static nint CreateTexture(nint device, MTLPixelFormat format, int width, int height, MTLTextureUsage usage)
@@ -535,6 +554,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
         public static readonly nint SetNeedsDisplayOnBoundsChange = ObjCRuntime.RegisterSelector("setNeedsDisplayOnBoundsChange:");
         public static readonly nint SetPresentsWithTransaction = ObjCRuntime.RegisterSelector("setPresentsWithTransaction:");
         public static readonly nint SetAllowsNextDrawableTimeout = ObjCRuntime.RegisterSelector("setAllowsNextDrawableTimeout:");
+        public static readonly nint SetDisplaySyncEnabled = ObjCRuntime.RegisterSelector("setDisplaySyncEnabled:");
         public static readonly nint SetDrawableSize = ObjCRuntime.RegisterSelector("setDrawableSize:");
         public static readonly nint SetContentsScale = ObjCRuntime.RegisterSelector("setContentsScale:");
         public static readonly nint Texture = ObjCRuntime.RegisterSelector("texture");
