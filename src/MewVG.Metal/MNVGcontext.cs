@@ -2802,16 +2802,20 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Quad for stencil fill (non-convex only). Coverage AA reuses the same
         // bounds quad as the composite pass, so it must be allocated either way.
+        // Outset by the fringe: the AA fringe extends half a fringe beyond the
+        // path bounds, and the coverage composite paints only quad-covered
+        // pixels, so a tight quad would clip the outermost partial pixels.
         if (!convex)
         {
             call.triangleOffset = _vertCount;
             call.triangleCount = 4;
             EnsureVerts(_vertCount + 4);
 
-            _verts[_vertCount++] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
-            _verts[_vertCount++] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
-            _verts[_vertCount++] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
-            _verts[_vertCount++] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
+            var quadMargin = fringe;
+            _verts[_vertCount++] = new NVGvertex(bounds[2] + quadMargin, bounds[3] + quadMargin, 0.5f, 1.0f);
+            _verts[_vertCount++] = new NVGvertex(bounds[2] + quadMargin, bounds[1] - quadMargin, 0.5f, 1.0f);
+            _verts[_vertCount++] = new NVGvertex(bounds[0] - quadMargin, bounds[3] + quadMargin, 0.5f, 1.0f);
+            _verts[_vertCount++] = new NVGvertex(bounds[0] - quadMargin, bounds[1] - quadMargin, 0.5f, 1.0f);
         }
     }
 

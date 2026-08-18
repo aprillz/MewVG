@@ -201,6 +201,8 @@ internal sealed class NVGContext
     private readonly NVGpathCache _cache;
     private readonly Tessellator _fillTessellator = new();
     private readonly TessResultBuffer _fillTessResultBuffer = new();
+    private readonly Tessellator _fillBoundaryTessellator = new();
+    private readonly TessResultBuffer _fillBoundaryResultBuffer = new();
 
     private readonly List<NVGClipPath> _clipStack = new();
 
@@ -1920,6 +1922,14 @@ internal sealed class NVGContext
         {
             NormalizeContoursForFill(_distTol, 0.0f);
         }
+        var resolvedFillBoundary = false;
+        if (!fastSingleConvex && w > 0.0f && _cache.NPaths > 1)
+        {
+            // Resolve winding and coincident edges before building either the opaque
+            // fill body or its AA fringe. This runs on the current device-space
+            // contours, including contours restored from an object-space cache.
+            resolvedFillBoundary = ResolveFillBoundaryContours(tessWindingRule);
+        }
         if (_cache.NPaths == 0)
         {
             _cache.NVerts = 0;
@@ -1968,14 +1978,22 @@ internal sealed class NVGContext
         Span<float> fringeSigns = sourcePathCount <= 128
             ? stackalloc float[sourcePathCount]
             : new float[sourcePathCount];
+        Span<float> fringeCoverages = _cache.NPoints <= 512
+            ? stackalloc float[_cache.NPoints]
+            : new float[_cache.NPoints];
         if (fringe && !directConvexFill)
         {
             ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+            fringeCoverages.Fill(1f);
+            if (resolvedFillBoundary)
+            {
+                ComputeThinBoundaryCoverages(fringeCoverages, sourcePathCount, aa);
+            }
         }
 
         if (!directConvexFill)
         {
-            if (tessCache is { TessVertices: not null, TessIndices: not null })
+            if (!resolvedFillBoundary && tessCache is { TessVertices: not null, TessIndices: not null })
             {
                 // Use cached object-space tessellation (will be transformed during fill body emit)
                 tessVertices = tessCache.TessVertices;
@@ -2005,7 +2023,17 @@ internal sealed class NVGContext
                             var contour = stackContour.Slice(0, path.Count);
                             for (var j = 0; j < path.Count; j++)
                             {
-                                InsetPoint(ref contour[j], in pts[j], woff);
+                                // Clamp the inset to half the local feature thickness
+                                // (collapse-style): in a sub-fringe band both insets meet
+                                // at the medial line, so the opaque body vanishes there
+                                // and the fringe alone carries the tapering coverage. The
+                                // clamp is per boundary point, so it cannot bleed across
+                                // large tessellation triangles the way a per-vertex
+                                // coverage attribute would.
+                                var pointWoff = resolvedFillBoundary
+                                    ? woff * fringeCoverages[path.First + j]
+                                    : woff;
+                                InsetPoint(ref contour[j], in pts[j], pointWoff);
                             }
 
                             _fillTessellator.AddContour(contour);
@@ -2016,7 +2044,10 @@ internal sealed class NVGContext
                             var contour = rentedContour.AsSpan(0, path.Count);
                             for (var j = 0; j < path.Count; j++)
                             {
-                                InsetPoint(ref contour[j], in pts[j], woff);
+                                var pointWoff = resolvedFillBoundary
+                                    ? woff * fringeCoverages[path.First + j]
+                                    : woff;
+                                InsetPoint(ref contour[j], in pts[j], pointWoff);
                             }
 
                             _fillTessellator.AddContour(contour);
@@ -2137,17 +2168,28 @@ internal sealed class NVGContext
                 outPath.Convex = false;
                 outPath.StrokeOffset = vertOffset;
 
-                var fringeDir = fringeSigns[i];
                 var woff = aa * 0.5f;
-                var lw = woff * fringeDir;
-                var rw = woff * fringeDir;
-                float lu = 0.5f;
                 float ru = -0.5f;
 
                 for (var j = 0; j < srcPath.Count; j++)
                 {
                     ref var p0 = ref pts[(j + srcPath.Count - 1) % srcPath.Count];
                     ref var p1 = ref pts[j];
+
+                    if (resolvedFillBoundary && IsAaBoundaryReversal(in p0, in p1))
+                    {
+                        SetVert(ref _cache.Verts[vertOffset++], p1.X, p1.Y, ru, 1);
+                        SetVert(ref _cache.Verts[vertOffset++], p1.X, p1.Y, ru, 1);
+                        continue;
+                    }
+
+                    var fringeDir = fringeSigns[i];
+                    var coverage = resolvedFillBoundary
+                        ? fringeCoverages[srcPath.First + j]
+                        : 1f;
+                    var lw = woff * fringeDir;
+                    var rw = woff * fringeDir;
+                    var lu = coverage - 0.5f;
 
                     // Ignore InnerBevel for fill fringe. InnerBevel is set in
                     // CalculateJoins to protect strokes from miter overlap at
@@ -2173,8 +2215,10 @@ internal sealed class NVGContext
                     }
                 }
 
-                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[outPath.StrokeOffset].X, _cache.Verts[outPath.StrokeOffset].Y, lu, 1);
-                SetVert(ref _cache.Verts[vertOffset++], _cache.Verts[outPath.StrokeOffset + 1].X, _cache.Verts[outPath.StrokeOffset + 1].Y, ru, 1);
+                ref readonly var firstInner = ref _cache.Verts[outPath.StrokeOffset];
+                ref readonly var firstOuter = ref _cache.Verts[outPath.StrokeOffset + 1];
+                SetVert(ref _cache.Verts[vertOffset++], firstInner.X, firstInner.Y, firstInner.U, firstInner.V);
+                SetVert(ref _cache.Verts[vertOffset++], firstOuter.X, firstOuter.Y, firstOuter.U, firstOuter.V);
 
                 outPath.NStroke = vertOffset - outPath.StrokeOffset;
                 _cache.Paths[pathOffset++] = outPath;
@@ -2188,11 +2232,11 @@ internal sealed class NVGContext
             outPath.FillOffset = vertOffset;
             outPath.StrokeOffset = 0;
             outPath.NStroke = 0;
-            // Non-simple sources produce a tessellated body that is not a single
-            // convex fan; flag it so the GL renderer routes to the coverage AA
-            // path (which handles the self-intersecting fringe correctly via
-            // Max blending) instead of the stencil-fill + fringe-overlay path.
-            outPath.Convex = !sourceHasNonSimple;
+            // A winding-resolved boundary, or a non-simple source, produces a
+            // tessellated body that is not a single convex fan. Route it through
+            // the backend coverage-AA path so overlapping fringe triangles are
+            // accumulated once instead of darkening each other.
+            outPath.Convex = !resolvedFillBoundary && !sourceHasNonSimple;
 
             if (directConvexFill)
             {
@@ -2323,6 +2367,283 @@ internal sealed class NVGContext
         _cache.NVerts = vertOffset;
     }
 
+    private bool ResolveFillBoundaryContours(TessWindingRule windingRule)
+    {
+        _fillBoundaryTessellator.Clear();
+
+        Span<Vector2> stackContour = stackalloc Vector2[128];
+        Vector2[]? rentedContour = null;
+        try
+        {
+            for (var i = 0; i < _cache.NPaths; i++)
+            {
+                ref readonly var path = ref _cache.Paths[i];
+                if (path.Count < 3)
+                {
+                    continue;
+                }
+
+                var points = _cache.Points.AsSpan(path.First, path.Count);
+                var contour = path.Count <= stackContour.Length
+                    ? stackContour.Slice(0, path.Count)
+                    : (rentedContour = System.Buffers.ArrayPool<Vector2>.Shared.Rent(path.Count)).AsSpan(0, path.Count);
+
+                for (var j = 0; j < path.Count; j++)
+                {
+                    contour[j] = new Vector2(points[j].X, points[j].Y);
+                }
+
+                _fillBoundaryTessellator.AddContour(contour);
+                if (rentedContour is not null)
+                {
+                    System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+                    rentedContour = null;
+                }
+            }
+        }
+        finally
+        {
+            if (rentedContour is not null)
+            {
+                System.Buffers.ArrayPool<Vector2>.Shared.Return(rentedContour, clearArray: false);
+            }
+        }
+
+        var result = _fillBoundaryTessellator.Tessellate(
+            windingRule,
+            _fillBoundaryResultBuffer,
+            TessElementType.BoundaryContours,
+            3);
+        if (result.Status != TessStatus.Ok)
+        {
+            return false;
+        }
+
+        var vertices = result.Vertices.Span;
+        var elements = result.Indices.Span;
+        if ((elements.Length & 1) != 0)
+        {
+            return false;
+        }
+
+        EnsurePathCapacity(elements.Length / 2);
+        if (vertices.Length > _cache.CPoints)
+        {
+            var capacity = (vertices.Length + 0x7f) & ~0x7f;
+            Array.Resize(ref _cache.Points, capacity);
+            _cache.CPoints = capacity;
+        }
+
+        var pathCount = 0;
+        var pointCount = 0;
+        for (var i = 0; i < elements.Length; i += 2)
+        {
+            var first = elements[i];
+            var count = elements[i + 1];
+            if (first < 0 || count < 3 || first > vertices.Length - count)
+            {
+                continue;
+            }
+
+            var destinationFirst = pointCount;
+            for (var j = 0; j < count; j++)
+            {
+                var vertex = vertices[first + j];
+                _cache.Points[pointCount++] = new NVGpoint
+                {
+                    X = vertex.X,
+                    Y = vertex.Y,
+                    Flags = NVGpointFlags.Corner,
+                };
+            }
+
+            RecomputePathSegmentData(destinationFirst, count);
+            var signedArea2 = ComputeSignedArea2(destinationFirst, count);
+            _cache.Paths[pathCount++] = new NVGpathData
+            {
+                First = destinationFirst,
+                Count = count,
+                Closed = true,
+                Winding = signedArea2 >= 0.0 ? NVGwinding.CCW : NVGwinding.CW,
+            };
+        }
+
+        if (pathCount == 0)
+        {
+            return false;
+        }
+
+        _cache.NPaths = pathCount;
+        _cache.NPoints = pointCount;
+        RecalculatePathBounds();
+        return true;
+    }
+
+    // Threshold keeps ordinary sharp corners (arrow barbs, chevrons) fringed;
+    // only a near-exact fold-back such as a zero-thickness tangent reversal
+    // collapses the strip, where a join would fold the fringe over itself.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsAaBoundaryReversal(in NVGpoint previous, in NVGpoint current)
+        => previous.DX * current.DX + previous.DY * current.DY < -0.95f;
+
+    private void ComputeThinBoundaryCoverages(
+        Span<float> coverages,
+        int sourcePathCount,
+        float fringeWidth)
+    {
+        if (fringeWidth <= 0f)
+        {
+            return;
+        }
+
+        // Uniform grid over the fill bounds so each point only tests nearby
+        // segments. Every segment registers its fringe-inflated bounding box,
+        // so a single-cell lookup is guaranteed to see all segments within one
+        // fringe of the point. Without this the pairwise scan is quadratic in
+        // boundary points and collapses on many-contour fills (icon sheets,
+        // QR-like paths).
+        var minX = _cache.Bounds[0];
+        var minY = _cache.Bounds[1];
+        var extentX = Maxf(_cache.Bounds[2] - minX, 1e-3f);
+        var extentY = Maxf(_cache.Bounds[3] - minY, 1e-3f);
+        var cellSize = Maxf(fringeWidth * 8f, Maxf(extentX, extentY) / 128f);
+        var cols = Math.Clamp((int)(extentX / cellSize) + 1, 1, 129);
+        var rows = Math.Clamp((int)(extentY / cellSize) + 1, 1, 129);
+        var invCellX = cols / (extentX + 1e-3f);
+        var invCellY = rows / (extentY + 1e-3f);
+        var cellCount = cols * rows;
+
+        var pool = System.Buffers.ArrayPool<int>.Shared;
+        var cellStarts = pool.Rent(cellCount + 1);
+        Array.Clear(cellStarts, 0, cellCount + 1);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        int CellColumn(float x) => Math.Clamp((int)((x - minX) * invCellX), 0, cols - 1);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        int CellRow(float y) => Math.Clamp((int)((y - minY) * invCellY), 0, rows - 1);
+
+        // Pass 1: count segment entries per cell (fringe-inflated segment bbox).
+        for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
+        {
+            ref readonly var path = ref _cache.Paths[pathIndex];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
+            {
+                ref readonly var segmentStart = ref points[segmentIndex];
+                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
+                var col0 = CellColumn(Minf(segmentStart.X, segmentEnd.X) - fringeWidth);
+                var col1 = CellColumn(Maxf(segmentStart.X, segmentEnd.X) + fringeWidth);
+                var row0 = CellRow(Minf(segmentStart.Y, segmentEnd.Y) - fringeWidth);
+                var row1 = CellRow(Maxf(segmentStart.Y, segmentEnd.Y) + fringeWidth);
+                for (var row = row0; row <= row1; row++)
+                {
+                    for (var col = col0; col <= col1; col++)
+                    {
+                        cellStarts[row * cols + col + 1]++;
+                    }
+                }
+            }
+        }
+
+        for (var cell = 0; cell < cellCount; cell++)
+        {
+            cellStarts[cell + 1] += cellStarts[cell];
+        }
+
+        var totalEntries = cellStarts[cellCount];
+        var entryPaths = pool.Rent(totalEntries);
+        var entrySegments = pool.Rent(totalEntries);
+        var cellCursor = pool.Rent(cellCount);
+        Array.Copy(cellStarts, cellCursor, cellCount);
+
+        // Pass 2: fill entries.
+        for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
+        {
+            ref readonly var path = ref _cache.Paths[pathIndex];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
+            {
+                ref readonly var segmentStart = ref points[segmentIndex];
+                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
+                var col0 = CellColumn(Minf(segmentStart.X, segmentEnd.X) - fringeWidth);
+                var col1 = CellColumn(Maxf(segmentStart.X, segmentEnd.X) + fringeWidth);
+                var row0 = CellRow(Minf(segmentStart.Y, segmentEnd.Y) - fringeWidth);
+                var row1 = CellRow(Maxf(segmentStart.Y, segmentEnd.Y) + fringeWidth);
+                for (var row = row0; row <= row1; row++)
+                {
+                    for (var col = col0; col <= col1; col++)
+                    {
+                        var slot = cellCursor[row * cols + col]++;
+                        entryPaths[slot] = pathIndex;
+                        entrySegments[slot] = segmentIndex;
+                    }
+                }
+            }
+        }
+
+        var fringeWidthSquared = fringeWidth * fringeWidth;
+        for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
+        {
+            ref readonly var path = ref _cache.Paths[pathIndex];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var pointIndex = 0; pointIndex < path.Count; pointIndex++)
+            {
+                ref readonly var point = ref points[pointIndex];
+                var minimumDistanceSquared = fringeWidthSquared;
+                var previousIndex = (pointIndex + path.Count - 1) % path.Count;
+
+                var cell = CellRow(point.Y) * cols + CellColumn(point.X);
+                var entryEnd = cellStarts[cell + 1];
+                for (var entry = cellStarts[cell]; entry < entryEnd; entry++)
+                {
+                    var candidatePathIndex = entryPaths[entry];
+                    var segmentIndex = entrySegments[entry];
+                    if (candidatePathIndex == pathIndex &&
+                        (segmentIndex == pointIndex || segmentIndex == previousIndex))
+                    {
+                        continue;
+                    }
+
+                    ref readonly var candidatePath = ref _cache.Paths[candidatePathIndex];
+                    var candidates = _cache.Points.AsSpan(candidatePath.First, candidatePath.Count);
+                    ref readonly var segmentStart = ref candidates[segmentIndex];
+                    // Only the opposite side of a thin feature can collapse
+                    // this point's inner/outer AA partners. Adjacent boundary
+                    // runs and ordinary corners face the same direction.
+                    if (point.DX * segmentStart.DX + point.DY * segmentStart.DY >= -0.5f)
+                    {
+                        continue;
+                    }
+
+                    ref readonly var segmentEnd = ref candidates[(segmentIndex + 1) % candidatePath.Count];
+                    var segmentX = segmentEnd.X - segmentStart.X;
+                    var segmentY = segmentEnd.Y - segmentStart.Y;
+                    var lengthSquared = segmentX * segmentX + segmentY * segmentY;
+                    var t = lengthSquared > 0f
+                        ? ((point.X - segmentStart.X) * segmentX +
+                           (point.Y - segmentStart.Y) * segmentY) / lengthSquared
+                        : 0f;
+                    t = Clampf(t, 0f, 1f);
+                    var closestX = segmentStart.X + segmentX * t;
+                    var closestY = segmentStart.Y + segmentY * t;
+                    var dx = point.X - closestX;
+                    var dy = point.Y - closestY;
+                    var distanceSquared = dx * dx + dy * dy;
+                    minimumDistanceSquared = Minf(minimumDistanceSquared, distanceSquared);
+                }
+
+                coverages[path.First + pointIndex] =
+                    MathF.Sqrt(minimumDistanceSquared) / fringeWidth;
+            }
+        }
+
+        pool.Return(cellCursor, clearArray: false);
+        pool.Return(entrySegments, clearArray: false);
+        pool.Return(entryPaths, clearArray: false);
+        pool.Return(cellStarts, clearArray: false);
+    }
+
     private void ComputeFillFringeSigns(Span<float> signs, int sourcePathCount, TessWindingRule windingRule)
     {
         // Per-contour probe bounds, computed once and reused by every IsPointInsideFill
@@ -2344,17 +2665,25 @@ internal sealed class NVGContext
             var pts = _cache.Points.AsSpan(path.First, path.Count);
             var probe = Maxf(_fringeWidth * 0.75f, _distTol * 4.0f);
 
-            if (TryProbeFringeSign(pts, 0, probe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out var sign))
+            // Retry at half distances before switching vertices: next to a
+            // sub-fringe band the full-distance probe overshoots through the
+            // material onto (or past) the far boundary and reads ambiguous, and
+            // the winding fallback below cannot tell a hole from an outer
+            // contour. A closer probe still lands inside the thin material.
+            var resolved = false;
+            for (var attempt = 0; attempt < 3 && !resolved; attempt++)
             {
-                signs[i] = sign;
+                var attemptProbe = probe / (1 << attempt);
+                if (TryProbeFringeSign(pts, 0, attemptProbe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out var sign) ||
+                    (path.Count > 2 &&
+                     TryProbeFringeSign(pts, path.Count / 2, attemptProbe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out sign)))
+                {
+                    signs[i] = sign;
+                    resolved = true;
+                }
             }
-            else if (path.Count > 2 &&
-                     TryProbeFringeSign(pts, path.Count / 2, probe, sourcePathCount, windingRule, pathMinY, pathMaxY, pathMaxX, out sign))
-            {
-                // Retry at a different vertex (midpoint of contour).
-                signs[i] = sign;
-            }
-            else
+
+            if (!resolved)
             {
                 // Ambiguous - fall back to signed-area winding.
                 signs[i] = path.Winding == NVGwinding.CW ? 1f : -1f;
