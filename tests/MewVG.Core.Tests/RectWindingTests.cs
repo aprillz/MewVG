@@ -80,4 +80,80 @@ public class RectWindingTests
         Assert.True(GeometryTestHelpers.AnyFillTriangleContains(call.Paths, call.Verts, 10, 10));
         Assert.True(GeometryTestHelpers.AnyFillTriangleContains(call.Paths, call.Verts, 90, 90));
     }
+
+    [Theory]
+    [InlineData(1.0f)]
+    [InlineData(1.5f)]
+    public void RoundedBorderWithZeroTop_DoesNotPutOpaqueBodyInTheTaper(float devicePixelRatio)
+    {
+        var renderer = new FakeRenderer();
+        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        context.BeginFrame(220, 120, devicePixelRatio);
+        context.BeginPath();
+
+        AppendRoundedRect(context, 0, 0, 190, 100, 10, 10, 10, 10, clockwise: true);
+        // Thickness (3, 0, 2, 1): the inner and outer top arcs meet at (180, 0).
+        AppendRoundedRect(context, 3, 0, 185, 99, 7, 10, 8, 9, clockwise: false);
+
+        context.FillColor(NVGcolor.RGBA(80, 141, 254, 255));
+        context.FillRule(NVGfillRule.NonZero);
+        context.Fill();
+
+        var call = Assert.Single(renderer.FillCalls);
+        Assert.False(GeometryTestHelpers.AnyFillTriangleContains(call.Paths, call.Verts, 100, 50));
+        Assert.InRange(
+            GeometryTestHelpers.MaxFillCoverageAtPoint(call.Paths, call.Verts, 181.5f, 0.5f),
+            0f,
+            0.75f);
+
+        var taperVertices = call.Paths
+            .Where(static path => path.NStroke > 0)
+            .SelectMany(path => call.Verts.Skip(path.StrokeOffset).Take(path.NStroke))
+            .Where(static vertex => vertex.X is >= 180 and <= 185 && vertex.Y is >= -0.5f and <= 2f)
+            .ToArray();
+        Assert.NotEmpty(taperVertices);
+        Assert.DoesNotContain(taperVertices, static vertex => vertex.U >= 0.499f);
+    }
+
+    private static void AppendRoundedRect(
+        NVGContext context,
+        float x,
+        float y,
+        float width,
+        float height,
+        float leftRadius,
+        float topRadius,
+        float rightRadius,
+        float bottomRadius,
+        bool clockwise)
+    {
+        const float k = 0.55228475f;
+        var right = x + width;
+        var bottom = y + height;
+        if (clockwise)
+        {
+            context.MoveTo(x + leftRadius, y);
+            context.LineTo(right - rightRadius, y);
+            context.BezierTo(right - rightRadius + rightRadius * k, y, right, y + topRadius - topRadius * k, right, y + topRadius);
+            context.LineTo(right, bottom - bottomRadius);
+            context.BezierTo(right, bottom - bottomRadius + bottomRadius * k, right - rightRadius + rightRadius * k, bottom, right - rightRadius, bottom);
+            context.LineTo(x + leftRadius, bottom);
+            context.BezierTo(x + leftRadius - leftRadius * k, bottom, x, bottom - bottomRadius + bottomRadius * k, x, bottom - bottomRadius);
+            context.LineTo(x, y + topRadius);
+            context.BezierTo(x, y + topRadius - topRadius * k, x + leftRadius - leftRadius * k, y, x + leftRadius, y);
+        }
+        else
+        {
+            context.MoveTo(x + leftRadius, y);
+            context.BezierTo(x + leftRadius - leftRadius * k, y, x, y + topRadius - topRadius * k, x, y + topRadius);
+            context.LineTo(x, bottom - bottomRadius);
+            context.BezierTo(x, bottom - bottomRadius + bottomRadius * k, x + leftRadius - leftRadius * k, bottom, x + leftRadius, bottom);
+            context.LineTo(right - rightRadius, bottom);
+            context.BezierTo(right - rightRadius + rightRadius * k, bottom, right, bottom - bottomRadius + bottomRadius * k, right, bottom - bottomRadius);
+            context.LineTo(right, y + topRadius);
+            context.BezierTo(right, y + topRadius - topRadius * k, right - rightRadius + rightRadius * k, y, right - rightRadius, y);
+            context.LineTo(x + leftRadius, y);
+        }
+        context.ClosePath();
+    }
 }

@@ -478,11 +478,17 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         call.MergedFringeCount = vertOffset - call.MergedFringeOffset;
 
         call.TriangleOffset = vertOffset;
+        // The AA fringe extends half a fringe beyond the path bounds. The
+        // coverage pipeline composites only pixels covered by this quad, so an
+        // unexpanded quad would drop the outermost partial-coverage pixels on
+        // the bounds-facing edges (visible as a missing AA column when an edge
+        // lands past a pixel center).
+        var quadMargin = fringe;
         var quad = _verts.AsSpan(call.TriangleOffset, 4);
-        quad[0] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
-        quad[1] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
-        quad[2] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
-        quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
+        quad[0] = new NVGvertex(bounds[2] + quadMargin, bounds[3] + quadMargin, 0.5f, 1.0f);
+        quad[1] = new NVGvertex(bounds[2] + quadMargin, bounds[1] - quadMargin, 0.5f, 1.0f);
+        quad[2] = new NVGvertex(bounds[0] - quadMargin, bounds[3] + quadMargin, 0.5f, 1.0f);
+        quad[3] = new NVGvertex(bounds[0] - quadMargin, bounds[1] - quadMargin, 0.5f, 1.0f);
 
         // Check convexity based on fill paths only; fringe-only paths (NFill==0) don't affect fill overlap.
         var isConvexFill = false;
