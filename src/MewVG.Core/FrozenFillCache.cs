@@ -49,4 +49,18 @@ public sealed class FrozenFillCache
     internal float TessTol;
     internal Tess.TessWindingRule WindingRule;
     internal float BuildScale;
+
+    // Device-space snapshot of the last winding-resolved ExpandFill output.
+    // Boundary resolution runs in device space and bypasses the object-space
+    // tessellation reuse, so repeat draws with an unchanged transform replay
+    // this snapshot instead of resolving and tessellating again.
+    internal bool SnapshotValid;
+    internal float[] SnapshotXform = new float[6];
+    internal float SnapshotFringe;
+    internal Tess.TessWindingRule SnapshotWindingRule;
+    internal NVGpathData[] SnapshotPaths = Array.Empty<NVGpathData>();
+    internal NVGvertex[] SnapshotVerts = Array.Empty<NVGvertex>();
+    internal int SnapshotNPaths;
+    internal int SnapshotNVerts;
+    internal float[] SnapshotBounds = new float[4];
 }

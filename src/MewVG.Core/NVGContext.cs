@@ -204,6 +204,159 @@ internal sealed class NVGContext
     private readonly Tessellator _fillBoundaryTessellator = new();
     private readonly TessResultBuffer _fillBoundaryResultBuffer = new();
 
+    // Set by ExpandFill: whether the last fill went through winding boundary
+    // resolution (used to decide device-snapshot caching in FillFromCache).
+    private bool _lastFillUsedBoundaryResolution;
+
+    // Reusable uniform grid over the current fill contours. Each segment
+    // registers its inflated bounding box, so proximity queries stay linear in
+    // boundary points (see BuildFillSegmentGrid).
+    private sealed class FillSegmentGrid
+    {
+        public int Cols;
+        public int Rows;
+        public int CellCount;
+        public int TotalEntries;
+        public float MinX;
+        public float MinY;
+        public float InvCellX;
+        public float InvCellY;
+        public int[] CellStarts = Array.Empty<int>();
+        public int[] CellCursor = Array.Empty<int>();
+        public int[] EntryPaths = Array.Empty<int>();
+        public int[] EntrySegments = Array.Empty<int>();
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Column(float x) => Math.Clamp((int)((x - MinX) * InvCellX), 0, Cols - 1);
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Row(float y) => Math.Clamp((int)((y - MinY) * InvCellY), 0, Rows - 1);
+    }
+
+    private readonly FillSegmentGrid _fillSegmentGrid = new();
+
+    private void BuildFillSegmentGrid(int pathCount, float inflate)
+    {
+        var grid = _fillSegmentGrid;
+        grid.MinX = _cache.Bounds[0];
+        grid.MinY = _cache.Bounds[1];
+        var extentX = Maxf(_cache.Bounds[2] - grid.MinX, 1e-3f);
+        var extentY = Maxf(_cache.Bounds[3] - grid.MinY, 1e-3f);
+        var cellSize = Maxf(inflate * 8f, Maxf(extentX, extentY) / 128f);
+        grid.Cols = Math.Clamp((int)(extentX / cellSize) + 1, 1, 129);
+        grid.Rows = Math.Clamp((int)(extentY / cellSize) + 1, 1, 129);
+        grid.InvCellX = grid.Cols / (extentX + 1e-3f);
+        grid.InvCellY = grid.Rows / (extentY + 1e-3f);
+        grid.CellCount = grid.Cols * grid.Rows;
+
+        if (grid.CellStarts.Length < grid.CellCount + 1)
+        {
+            grid.CellStarts = new int[grid.CellCount + 1];
+            grid.CellCursor = new int[grid.CellCount];
+        }
+
+        Array.Clear(grid.CellStarts, 0, grid.CellCount + 1);
+
+        // Pass 1: count segment entries per cell (inflated segment bbox).
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            ref readonly var path = ref _cache.Paths[pathIndex];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
+            {
+                ref readonly var segmentStart = ref points[segmentIndex];
+                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
+                var col0 = grid.Column(Minf(segmentStart.X, segmentEnd.X) - inflate);
+                var col1 = grid.Column(Maxf(segmentStart.X, segmentEnd.X) + inflate);
+                var row0 = grid.Row(Minf(segmentStart.Y, segmentEnd.Y) - inflate);
+                var row1 = grid.Row(Maxf(segmentStart.Y, segmentEnd.Y) + inflate);
+                for (var row = row0; row <= row1; row++)
+                {
+                    for (var col = col0; col <= col1; col++)
+                    {
+                        grid.CellStarts[row * grid.Cols + col + 1]++;
+                    }
+                }
+            }
+        }
+
+        for (var cell = 0; cell < grid.CellCount; cell++)
+        {
+            grid.CellStarts[cell + 1] += grid.CellStarts[cell];
+        }
+
+        grid.TotalEntries = grid.CellStarts[grid.CellCount];
+        if (grid.EntryPaths.Length < grid.TotalEntries)
+        {
+            var capacity = (grid.TotalEntries + 0xff) & ~0xff;
+            grid.EntryPaths = new int[capacity];
+            grid.EntrySegments = new int[capacity];
+        }
+
+        Array.Copy(grid.CellStarts, grid.CellCursor, grid.CellCount);
+
+        // Pass 2: fill entries.
+        for (var pathIndex = 0; pathIndex < pathCount; pathIndex++)
+        {
+            ref readonly var path = ref _cache.Paths[pathIndex];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
+            {
+                ref readonly var segmentStart = ref points[segmentIndex];
+                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
+                var col0 = grid.Column(Minf(segmentStart.X, segmentEnd.X) - inflate);
+                var col1 = grid.Column(Maxf(segmentStart.X, segmentEnd.X) + inflate);
+                var row0 = grid.Row(Minf(segmentStart.Y, segmentEnd.Y) - inflate);
+                var row1 = grid.Row(Maxf(segmentStart.Y, segmentEnd.Y) + inflate);
+                for (var row = row0; row <= row1; row++)
+                {
+                    for (var col = col0; col <= col1; col++)
+                    {
+                        var slot = grid.CellCursor[row * grid.Cols + col]++;
+                        grid.EntryPaths[slot] = pathIndex;
+                        grid.EntrySegments[slot] = segmentIndex;
+                    }
+                }
+            }
+        }
+    }
+
+    private static float SegmentSegmentDistanceSquared(
+        float ax, float ay, float bx, float by,
+        float cx, float cy, float dx, float dy)
+    {
+        var d1 = Cross(cx, cy, dx, dy, ax, ay);
+        var d2 = Cross(cx, cy, dx, dy, bx, by);
+        var d3 = Cross(ax, ay, bx, by, cx, cy);
+        var d4 = Cross(ax, ay, bx, by, dx, dy);
+        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+            ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
+        {
+            return 0f;
+        }
+
+        var best = PointSegmentDistanceSq(ax, ay, cx, cy, dx, dy);
+        best = Minf(best, PointSegmentDistanceSq(bx, by, cx, cy, dx, dy));
+        best = Minf(best, PointSegmentDistanceSq(cx, cy, ax, ay, bx, by));
+        return Minf(best, PointSegmentDistanceSq(dx, dy, ax, ay, bx, by));
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static float Cross(float ox, float oy, float px, float py, float qx, float qy)
+            => (px - ox) * (qy - oy) - (py - oy) * (qx - ox);
+
+        static float PointSegmentDistanceSq(float px, float py, float sx, float sy, float ex, float ey)
+        {
+            var segX = ex - sx;
+            var segY = ey - sy;
+            var lengthSq = segX * segX + segY * segY;
+            var t = lengthSq > 0f ? ((px - sx) * segX + (py - sy) * segY) / lengthSq : 0f;
+            t = Clampf(t, 0f, 1f);
+            var distX = px - (sx + segX * t);
+            var distY = py - (sy + segY * t);
+            return distX * distX + distY * distY;
+        }
+    }
+
     private readonly List<NVGClipPath> _clipStack = new();
 
     // Grow-only buffer pool indexed by clip depth. _clipStack is always a prefix of
@@ -1736,11 +1889,18 @@ internal sealed class NVGContext
         var fillPaint = state.Fill;
         ApplyPathTolerances();
 
+        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
+        var fringe = useFringeAa ? _fringeWidth : 0.0f;
+
+        if (TryFillFromDeviceSnapshot(cache, windingRule, fringe, ref state, fillPaint))
+        {
+            return;
+        }
+
         // Restore contour points and transform to screen-space
         RestoreAndTransformContours(cache, state.Xform);
 
         // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
-        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
         if (useFringeAa)
         {
             ExpandFill(_fringeWidth, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
@@ -1748,6 +1908,11 @@ internal sealed class NVGContext
         else
         {
             ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
+        }
+
+        if (_lastFillUsedBoundaryResolution)
+        {
+            StoreDeviceSnapshot(cache, windingRule, fringe, state.Xform);
         }
 
         // Submit to renderer
@@ -1781,6 +1946,89 @@ internal sealed class NVGContext
         // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
         // in-place point edits), so a following Stroke() must re-flatten from commands.
         ClearPathCache();
+    }
+
+    private bool TryFillFromDeviceSnapshot(
+        FrozenFillCache cache,
+        TessWindingRule windingRule,
+        float fringe,
+        ref NVGstate state,
+        NVGpaint fillPaint)
+    {
+        if (!cache.SnapshotValid ||
+            cache.SnapshotFringe != fringe ||
+            cache.SnapshotWindingRule != windingRule)
+        {
+            return false;
+        }
+
+        for (var i = 0; i < 6; i++)
+        {
+            if (cache.SnapshotXform[i] != state.Xform[i])
+            {
+                return false;
+            }
+        }
+
+        fillPaint.InnerColor.A *= state.Alpha;
+        fillPaint.OuterColor.A *= state.Alpha;
+
+        _renderer.RenderFill(
+            ref fillPaint,
+            state.CompositeOperation,
+            ref state.Scissor,
+            fringe,
+            cache.SnapshotBounds,
+            cache.SnapshotPaths.AsSpan(0, cache.SnapshotNPaths),
+            cache.SnapshotVerts);
+
+        for (var i = 0; i < cache.SnapshotNPaths; i++)
+        {
+            ref readonly var path = ref cache.SnapshotPaths[i];
+            if (path.NFill > 0)
+            {
+                FillTriCount += path.NFill / 3;
+            }
+            if (path.NStroke > 0)
+            {
+                FillTriCount += path.NStroke - 2;
+            }
+            DrawCallCount += 2;
+        }
+
+        ClearPathCache();
+        return true;
+    }
+
+    private void StoreDeviceSnapshot(
+        FrozenFillCache cache,
+        TessWindingRule windingRule,
+        float fringe,
+        Buffer6<float> xform)
+    {
+        if (cache.SnapshotPaths.Length < _cache.NPaths)
+        {
+            cache.SnapshotPaths = new NVGpathData[_cache.NPaths];
+        }
+
+        if (cache.SnapshotVerts.Length < _cache.NVerts)
+        {
+            cache.SnapshotVerts = new NVGvertex[_cache.NVerts];
+        }
+
+        _cache.Paths.AsSpan(0, _cache.NPaths).CopyTo(cache.SnapshotPaths);
+        _cache.Verts.AsSpan(0, _cache.NVerts).CopyTo(cache.SnapshotVerts);
+        Array.Copy(_cache.Bounds, cache.SnapshotBounds, 4);
+        for (var i = 0; i < 6; i++)
+        {
+            cache.SnapshotXform[i] = xform[i];
+        }
+
+        cache.SnapshotNPaths = _cache.NPaths;
+        cache.SnapshotNVerts = _cache.NVerts;
+        cache.SnapshotFringe = fringe;
+        cache.SnapshotWindingRule = windingRule;
+        cache.SnapshotValid = true;
     }
 
     private void RestoreAndTransformContours(FrozenFillCache cache, Buffer6<float> xform)
@@ -1923,13 +2171,15 @@ internal sealed class NVGContext
             NormalizeContoursForFill(_distTol, 0.0f);
         }
         var resolvedFillBoundary = false;
-        if (!fastSingleConvex && w > 0.0f && _cache.NPaths > 1)
+        if (!fastSingleConvex && w > 0.0f && _cache.NPaths > 1 &&
+            FillNeedsBoundaryResolution(_fringeWidth))
         {
             // Resolve winding and coincident edges before building either the opaque
             // fill body or its AA fringe. This runs on the current device-space
             // contours, including contours restored from an object-space cache.
             resolvedFillBoundary = ResolveFillBoundaryContours(tessWindingRule);
         }
+        _lastFillUsedBoundaryResolution = resolvedFillBoundary;
         if (_cache.NPaths == 0)
         {
             _cache.NVerts = 0;
@@ -2367,6 +2617,88 @@ internal sealed class NVGContext
         _cache.NVerts = vertOffset;
     }
 
+    private bool FillNeedsBoundaryResolution(float margin)
+    {
+        var pathCount = _cache.NPaths;
+
+        // Winding resolution is only needed where boundary runs interact:
+        // contours of the fill crossing, touching, or sitting within a fringe
+        // of each other, or one contour folding back over itself (an arrow
+        // whose shaft doubles back across its head). Well-separated boundaries
+        // (a uniform-thickness border ring, disjoint shapes) render correctly
+        // through the ordinary cache-friendly fill path.
+        BuildFillSegmentGrid(pathCount, margin);
+        var grid = _fillSegmentGrid;
+
+        // Prefix arc lengths per point: two segments of the same contour that
+        // are close in space but adjacent along the contour (flattened tight
+        // arcs, end caps) are normal geometry, not a fold-over. Only pairs far
+        // apart along the contour count as self-overlap.
+        var pool = System.Buffers.ArrayPool<float>.Shared;
+        var arcPrefix = pool.Rent(_cache.NPoints);
+        var arcTotals = pool.Rent(pathCount);
+        for (var i = 0; i < pathCount; i++)
+        {
+            ref readonly var path = ref _cache.Paths[i];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            var running = 0f;
+            for (var j = 0; j < path.Count; j++)
+            {
+                arcPrefix[path.First + j] = running;
+                running += points[j].Len;
+            }
+
+            arcTotals[i] = running;
+        }
+
+        var interacts = false;
+        var marginSquared = margin * margin;
+        var minimumFoldSeparation = margin * 4f;
+        for (var cell = 0; cell < grid.CellCount && !interacts; cell++)
+        {
+            var first = grid.CellStarts[cell];
+            var last = grid.CellStarts[cell + 1];
+            for (var a = first; a < last && !interacts; a++)
+            {
+                var pathA = grid.EntryPaths[a];
+                ref readonly var contourA = ref _cache.Paths[pathA];
+                var pointsA = _cache.Points.AsSpan(contourA.First, contourA.Count);
+                var segA = grid.EntrySegments[a];
+                ref readonly var a0 = ref pointsA[segA];
+                ref readonly var a1 = ref pointsA[(segA + 1) % contourA.Count];
+                for (var b = a + 1; b < last; b++)
+                {
+                    var pathB = grid.EntryPaths[b];
+                    var segB = grid.EntrySegments[b];
+                    if (pathB == pathA)
+                    {
+                        var arcSeparation = MathF.Abs(arcPrefix[contourA.First + segB] - arcPrefix[contourA.First + segA]);
+                        arcSeparation = Minf(arcSeparation, arcTotals[pathA] - arcSeparation);
+                        if (arcSeparation <= minimumFoldSeparation)
+                        {
+                            continue;
+                        }
+                    }
+
+                    ref readonly var contourB = ref _cache.Paths[pathB];
+                    var pointsB = _cache.Points.AsSpan(contourB.First, contourB.Count);
+                    ref readonly var b0 = ref pointsB[segB];
+                    ref readonly var b1 = ref pointsB[(segB + 1) % contourB.Count];
+                    if (SegmentSegmentDistanceSquared(
+                            a0.X, a0.Y, a1.X, a1.Y, b0.X, b0.Y, b1.X, b1.Y) < marginSquared)
+                    {
+                        interacts = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        pool.Return(arcTotals, clearArray: false);
+        pool.Return(arcPrefix, clearArray: false);
+        return interacts;
+    }
+
     private bool ResolveFillBoundaryContours(TessWindingRule windingRule)
     {
         _fillBoundaryTessellator.Clear();
@@ -2496,91 +2828,10 @@ internal sealed class NVGContext
             return;
         }
 
-        // Uniform grid over the fill bounds so each point only tests nearby
-        // segments. Every segment registers its fringe-inflated bounding box,
-        // so a single-cell lookup is guaranteed to see all segments within one
-        // fringe of the point. Without this the pairwise scan is quadratic in
-        // boundary points and collapses on many-contour fills (icon sheets,
-        // QR-like paths).
-        var minX = _cache.Bounds[0];
-        var minY = _cache.Bounds[1];
-        var extentX = Maxf(_cache.Bounds[2] - minX, 1e-3f);
-        var extentY = Maxf(_cache.Bounds[3] - minY, 1e-3f);
-        var cellSize = Maxf(fringeWidth * 8f, Maxf(extentX, extentY) / 128f);
-        var cols = Math.Clamp((int)(extentX / cellSize) + 1, 1, 129);
-        var rows = Math.Clamp((int)(extentY / cellSize) + 1, 1, 129);
-        var invCellX = cols / (extentX + 1e-3f);
-        var invCellY = rows / (extentY + 1e-3f);
-        var cellCount = cols * rows;
-
-        var pool = System.Buffers.ArrayPool<int>.Shared;
-        var cellStarts = pool.Rent(cellCount + 1);
-        Array.Clear(cellStarts, 0, cellCount + 1);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        int CellColumn(float x) => Math.Clamp((int)((x - minX) * invCellX), 0, cols - 1);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        int CellRow(float y) => Math.Clamp((int)((y - minY) * invCellY), 0, rows - 1);
-
-        // Pass 1: count segment entries per cell (fringe-inflated segment bbox).
-        for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
-        {
-            ref readonly var path = ref _cache.Paths[pathIndex];
-            var points = _cache.Points.AsSpan(path.First, path.Count);
-            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
-            {
-                ref readonly var segmentStart = ref points[segmentIndex];
-                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
-                var col0 = CellColumn(Minf(segmentStart.X, segmentEnd.X) - fringeWidth);
-                var col1 = CellColumn(Maxf(segmentStart.X, segmentEnd.X) + fringeWidth);
-                var row0 = CellRow(Minf(segmentStart.Y, segmentEnd.Y) - fringeWidth);
-                var row1 = CellRow(Maxf(segmentStart.Y, segmentEnd.Y) + fringeWidth);
-                for (var row = row0; row <= row1; row++)
-                {
-                    for (var col = col0; col <= col1; col++)
-                    {
-                        cellStarts[row * cols + col + 1]++;
-                    }
-                }
-            }
-        }
-
-        for (var cell = 0; cell < cellCount; cell++)
-        {
-            cellStarts[cell + 1] += cellStarts[cell];
-        }
-
-        var totalEntries = cellStarts[cellCount];
-        var entryPaths = pool.Rent(totalEntries);
-        var entrySegments = pool.Rent(totalEntries);
-        var cellCursor = pool.Rent(cellCount);
-        Array.Copy(cellStarts, cellCursor, cellCount);
-
-        // Pass 2: fill entries.
-        for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
-        {
-            ref readonly var path = ref _cache.Paths[pathIndex];
-            var points = _cache.Points.AsSpan(path.First, path.Count);
-            for (var segmentIndex = 0; segmentIndex < path.Count; segmentIndex++)
-            {
-                ref readonly var segmentStart = ref points[segmentIndex];
-                ref readonly var segmentEnd = ref points[(segmentIndex + 1) % path.Count];
-                var col0 = CellColumn(Minf(segmentStart.X, segmentEnd.X) - fringeWidth);
-                var col1 = CellColumn(Maxf(segmentStart.X, segmentEnd.X) + fringeWidth);
-                var row0 = CellRow(Minf(segmentStart.Y, segmentEnd.Y) - fringeWidth);
-                var row1 = CellRow(Maxf(segmentStart.Y, segmentEnd.Y) + fringeWidth);
-                for (var row = row0; row <= row1; row++)
-                {
-                    for (var col = col0; col <= col1; col++)
-                    {
-                        var slot = cellCursor[row * cols + col]++;
-                        entryPaths[slot] = pathIndex;
-                        entrySegments[slot] = segmentIndex;
-                    }
-                }
-            }
-        }
+        // A single-cell lookup sees every segment within one fringe of the
+        // point because segments register a fringe-inflated bounding box.
+        BuildFillSegmentGrid(sourcePathCount, fringeWidth);
+        var grid = _fillSegmentGrid;
 
         var fringeWidthSquared = fringeWidth * fringeWidth;
         for (var pathIndex = 0; pathIndex < sourcePathCount; pathIndex++)
@@ -2593,12 +2844,12 @@ internal sealed class NVGContext
                 var minimumDistanceSquared = fringeWidthSquared;
                 var previousIndex = (pointIndex + path.Count - 1) % path.Count;
 
-                var cell = CellRow(point.Y) * cols + CellColumn(point.X);
-                var entryEnd = cellStarts[cell + 1];
-                for (var entry = cellStarts[cell]; entry < entryEnd; entry++)
+                var cell = grid.Row(point.Y) * grid.Cols + grid.Column(point.X);
+                var entryEnd = grid.CellStarts[cell + 1];
+                for (var entry = grid.CellStarts[cell]; entry < entryEnd; entry++)
                 {
-                    var candidatePathIndex = entryPaths[entry];
-                    var segmentIndex = entrySegments[entry];
+                    var candidatePathIndex = grid.EntryPaths[entry];
+                    var segmentIndex = grid.EntrySegments[entry];
                     if (candidatePathIndex == pathIndex &&
                         (segmentIndex == pointIndex || segmentIndex == previousIndex))
                     {
@@ -2637,11 +2888,6 @@ internal sealed class NVGContext
                     MathF.Sqrt(minimumDistanceSquared) / fringeWidth;
             }
         }
-
-        pool.Return(cellCursor, clearArray: false);
-        pool.Return(entrySegments, clearArray: false);
-        pool.Return(entryPaths, clearArray: false);
-        pool.Return(cellStarts, clearArray: false);
     }
 
     private void ComputeFillFringeSigns(Span<float> signs, int sourcePathCount, TessWindingRule windingRule)
