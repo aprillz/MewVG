@@ -2101,10 +2101,13 @@ internal sealed class NVGContext
 
         if (strokeWidth < _fringeWidth)
         {
-            // If the stroke width is less than pixel size, use alpha to emulate coverage.
+            // If the stroke width is less than pixel size, use alpha to emulate
+            // coverage. Linear alpha matches the physical coverage (a 0.3px
+            // stroke covers 30% of the pixel row); the classic quadratic form
+            // made sub-pixel hairlines nearly invisible next to Direct2D.
             var alpha = Clampf(strokeWidth / _fringeWidth, 0.0f, 1.0f);
-            strokePaint.InnerColor.A *= alpha * alpha;
-            strokePaint.OuterColor.A *= alpha * alpha;
+            strokePaint.InnerColor.A *= alpha;
+            strokePaint.OuterColor.A *= alpha;
             strokeWidth = _fringeWidth;
         }
 
