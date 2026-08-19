@@ -2374,7 +2374,7 @@ internal sealed class NVGContext
                 ref var path = ref _cache.Paths[i];
                 if (path.Count > 0)
                 {
-                    cverts += (path.Count + path.NBevel * 5 + 1) * 2;
+                    cverts += (path.Count + path.NBevel * 7 + 1) * 2;
                 }
             }
         }
@@ -2395,6 +2395,15 @@ internal sealed class NVGContext
         // leaves seams across the fill; coverage AA's MAX-blended accumulation
         // collapses those overlaps to a clean boundary.
         bool sourceHasNonSimple = false;
+        var probeCount = resolvedFillBoundary && fringe ? sourcePathCount : 0;
+        Span<float> notchMinY = probeCount <= 128 ? stackalloc float[probeCount] : new float[probeCount];
+        Span<float> notchMaxY = probeCount <= 128 ? stackalloc float[probeCount] : new float[probeCount];
+        Span<float> notchMaxX = probeCount <= 128 ? stackalloc float[probeCount] : new float[probeCount];
+        if (probeCount > 0)
+        {
+            ComputeFillProbeBounds(notchMinY, notchMaxY, notchMaxX, sourcePathCount);
+        }
+
         if (fringe)
         {
             for (var i = 0; i < sourcePathCount; i++)
@@ -2459,7 +2468,56 @@ internal sealed class NVGContext
                     var joinFlags = p1.Flags & ~NVGpointFlags.InnerBevel;
                     if ((joinFlags & NVGpointFlags.Bevel) != 0)
                     {
-                        BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru);
+                        // Reach the fill body first: the body inset uses the
+                        // capped miter direction (InsetPoint), which at an acute
+                        // concave corner sits deeper than the bevel points below.
+                        // Without this pair the strip starts at the bevel points
+                        // and the sliver between them and the body edge is
+                        // covered by neither (a white pixel at a notch apex).
+                        var dmSq = p1.DMX * p1.DMX + p1.DMY * p1.DMY;
+                        var cross = p0.DX * p1.DY - p0.DY * p1.DX;
+                        var isSolidNotch = false;
+                        if (dmSq > 2.0f && cross * fringeDir > 0f)
+                        {
+                            // Distinguish a notch apex (solid interior beyond
+                            // the corner) from a sharp corner of a thin hole
+                            // (background beyond a thin rim): probe a little
+                            // past the miter reach and only cover the sliver
+                            // when the probe stays inside the fill.
+                            var probeInv = 1.0f / MathF.Sqrt(dmSq);
+                            var probeX = p1.X + p1.DMX * probeInv * lw * 3f;
+                            var probeY = p1.Y + p1.DMY * probeInv * lw * 3f;
+                            isSolidNotch = IsPointInsideFill(
+                                probeX, probeY, sourcePathCount, tessWindingRule, notchMinY, notchMaxY, notchMaxX);
+                        }
+
+                        if (isSolidNotch)
+                        {
+                            // A sharp concave corner: the body inset digs to the
+                            // capped miter point, deeper than the bevel points
+                            // the strip uses, and the sliver between them is
+                            // solid interior. Cover it with a full-coverage pair
+                            // regardless of the thin-fade (the fade reacts to
+                            // the opposite notch edge, but the material above a
+                            // notch apex is solid). Ordinary rounded corners and
+                            // convex corners must not emit these pairs, or they
+                            // bridge thin background slits such as an icon's
+                            // knockout halo.
+                            var invLen = 1.0f / MathF.Sqrt(dmSq);
+                            var dmx = p1.DMX * invLen;
+                            var dmy = p1.DMY * invLen;
+                            SetVert(ref _cache.Verts[vertOffset++], p1.X + dmx * lw, p1.Y + dmy * lw, 0.5f, 1);
+                            SetVert(ref _cache.Verts[vertOffset++], p1.X - dmx * rw, p1.Y - dmy * rw, ru, 1);
+                            BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru);
+                            // And again after the bevel pair, closing the sliver
+                            // on the outgoing side of the corner as well.
+                            SetVert(ref _cache.Verts[vertOffset++], p1.X + dmx * lw, p1.Y + dmy * lw, 0.5f, 1);
+                            SetVert(ref _cache.Verts[vertOffset++], p1.X - dmx * rw, p1.Y - dmy * rw, ru, 1);
+                        }
+                        else
+                        {
+                            BevelJoin(ref vertOffset, ref p0, ref p1, lw, rw, lu, ru);
+                        }
                     }
                     else
                     {
