@@ -1,7 +1,7 @@
 <Project>
   <PropertyGroup>
     <MewVGTitle>Aprillz.MewVG</MewVGTitle>
-    <MewVGVersion>0.6.0</MewVGVersion>
+    <MewVGVersion>0.7.0</MewVGVersion>
     <MewVGAuthor>Aprillz</MewVGAuthor>
     <MewVGDescription>A cross-platform, fully managed .NET vector graphics library based on NanoVG.</MewVGDescription>
 
@@ -27,11 +27,11 @@
     <PublishRepositoryUrl>false</PublishRepositoryUrl>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageReadmeFile>NUGET_README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <None Include="$(MSBuildThisFileDirectory)..\assets\logo\logo_c-256.png" Pack="true" PackagePath="" />
-    <None Include="$(MSBuildThisFileDirectory)..\README.md" Pack="true" PackagePath="" />
+    <None Include="$(MSBuildThisFileDirectory)..\NUGET_README.md" Pack="true" PackagePath="" />
   </ItemGroup>
 </Project>
