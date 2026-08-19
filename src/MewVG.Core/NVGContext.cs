@@ -2477,7 +2477,7 @@ internal sealed class NVGContext
                         var dmSq = p1.DMX * p1.DMX + p1.DMY * p1.DMY;
                         var cross = p0.DX * p1.DY - p0.DY * p1.DX;
                         var isSolidNotch = false;
-                        if (dmSq > 2.0f && cross * fringeDir > 0f)
+                        if (resolvedFillBoundary && dmSq > 2.0f && cross * fringeDir > 0f)
                         {
                             // Distinguish a notch apex (solid interior beyond
                             // the corner) from a sharp corner of a thin hole
