@@ -2171,12 +2171,15 @@ internal sealed class NVGContext
             NormalizeContoursForFill(_distTol, 0.0f);
         }
         var resolvedFillBoundary = false;
-        if (!fastSingleConvex && w > 0.0f && _cache.NPaths > 1 &&
+        if (!fastSingleConvex && w > 0.0f && _cache.NPaths >= 1 &&
             FillNeedsBoundaryResolution(_fringeWidth))
         {
             // Resolve winding and coincident edges before building either the opaque
             // fill body or its AA fringe. This runs on the current device-space
             // contours, including contours restored from an object-space cache.
+            // Single contours qualify too: a stroke-outline peak is a sub-fringe
+            // wedge whose fill needs the thin-coverage fade, and a contour can
+            // fold back over itself.
             resolvedFillBoundary = ResolveFillBoundaryContours(tessWindingRule);
         }
         _lastFillUsedBoundaryResolution = resolvedFillBoundary;
