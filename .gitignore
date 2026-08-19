@@ -112,3 +112,6 @@ __MACOSX/
 # Tooling
 .vscode/
 *.code-workspace
+/agent
+/ref
+/benchmarks

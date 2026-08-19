@@ -30,7 +30,7 @@
 
 - **Pure C# / Fully Managed** &mdash; no native dependencies required
 - **Cross-platform** &mdash; OpenGL (Win32, X11) and Metal (macOS) backends
-- **NanoVG-compatible API** &mdash; familiar drawing model for paths, fills, strokes, and text
+- **NanoVG-compatible API** &mdash; familiar drawing model for paths, fills, strokes, gradients, and clipping
 - **NativeAOT / Trim friendly** &mdash; targets `net8.0` and `net10.0`
 
 ## Requirements
