@@ -1419,7 +1419,13 @@ internal sealed class NVGContext
         var d2 = Absf((x2 - x4) * dy - (y2 - y4) * dx);
         var d3 = Absf((x3 - x4) * dy - (y3 - y4) * dx);
 
-        if ((d2 + d3) * (d2 + d3) < _tessTol * (dx * dx + dy * dy))
+        // Absolute flatness: d2/|chord| is the control point's distance from
+        // the chord, so this bounds the real deviation by _tessTol device
+        // pixels regardless of chord length. The classic NanoVG form
+        // ((d2+d3)^2 < tol * chord^2) allows error proportional to the chord,
+        // which keeps the segment count constant across sizes and turns large
+        // curves visibly faceted.
+        if ((d2 + d3) * (d2 + d3) < _tessTol * _tessTol * (dx * dx + dy * dy))
         {
             AddPoint(x4, y4, type);
             return;
