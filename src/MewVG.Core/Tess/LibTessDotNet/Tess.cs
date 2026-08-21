@@ -827,5 +827,17 @@ namespace LibTessDotNet
             _dict = null;
             _event = null;
         }
+
+        /// <summary>Drops the mesh without returning its nodes, and installs an empty pool.</summary>
+        internal void ResetAndDropPool()
+        {
+            _mesh = null;
+            _pq = null;
+            _dict = null;
+            _event = null;
+            // DefaultPool re-registers this thread's per-type pools, so every node the previous
+            // runs parked there is released to the GC along with the abandoned mesh.
+            _pool = new DefaultPool();
+        }
     }
 }
