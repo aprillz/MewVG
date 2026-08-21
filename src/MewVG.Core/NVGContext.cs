@@ -1822,6 +1822,20 @@ internal sealed class NVGContext
             cache.NContourPoints = _cache.NPoints;
             cache.ContourPoints = _cache.Points.AsSpan(0, _cache.NPoints).ToArray();
 
+            // Geometry whose boundaries interact is re-resolved in device space at render
+            // time, and ExpandFill ignores a cached tessellation on that path, so building
+            // one here would only be thrown away. The gate reads the same topology in object
+            // space, with the fringe margin scaled to match.
+            var savedGateFringe = _fringeWidth;
+            _fringeWidth = fringeWidthObj;
+            var boundariesInteract = FillNeedsBoundaryResolution(fringeWidthObj);
+            _fringeWidth = savedGateFringe;
+            if (boundariesInteract)
+            {
+                ClearPathCache();
+                return cache;
+            }
+
             // Tessellate with fringe inset in object-space.
             // Inset = fringeWidthObj * 0.5 * fringeSign. After uniform scale S at
             // render time this becomes _fringeWidth * 0.5 * fringeSign, matching
