@@ -1803,6 +1803,26 @@ internal sealed class NVGContext
 
         if (!cache.IsDirectConvex)
         {
+            // Geometry whose boundaries interact is re-resolved in device space at render
+            // time, and ExpandFill ignores a cached tessellation on that path, so building
+            // one here would only be thrown away. The gate reads the same topology in object
+            // space, with the fringe margin scaled to match. It runs before the joins and
+            // fringe signs because those are recomputed in device space anyway, and the
+            // fringe-sign probe is quadratic in the contour count (2.3s on 25,575 contours
+            // that the resolution then collapses to 1,565).
+            _fringeWidth = fringeWidthObj;
+            var boundariesInteract = FillNeedsBoundaryResolution(fringeWidthObj);
+            _fringeWidth = savedFringeWidth;
+            if (boundariesInteract)
+            {
+                cache.NContourPaths = _cache.NPaths;
+                cache.ContourPaths = _cache.Paths.AsSpan(0, _cache.NPaths).ToArray();
+                cache.NContourPoints = _cache.NPoints;
+                cache.ContourPoints = _cache.Points.AsSpan(0, _cache.NPoints).ToArray();
+                ClearPathCache();
+                return cache;
+            }
+
             // Compute joins + fringe signs in object-space for inset tessellation.
             // fringeSigns are topology-dependent (inside/outside), transform-invariant.
             CalculateJoins(fringeWidthObj, NVGlineJoin.Miter, FillExpandMiterLimit);
@@ -1821,20 +1841,6 @@ internal sealed class NVGContext
             cache.ContourPaths = _cache.Paths.AsSpan(0, _cache.NPaths).ToArray();
             cache.NContourPoints = _cache.NPoints;
             cache.ContourPoints = _cache.Points.AsSpan(0, _cache.NPoints).ToArray();
-
-            // Geometry whose boundaries interact is re-resolved in device space at render
-            // time, and ExpandFill ignores a cached tessellation on that path, so building
-            // one here would only be thrown away. The gate reads the same topology in object
-            // space, with the fringe margin scaled to match.
-            var savedGateFringe = _fringeWidth;
-            _fringeWidth = fringeWidthObj;
-            var boundariesInteract = FillNeedsBoundaryResolution(fringeWidthObj);
-            _fringeWidth = savedGateFringe;
-            if (boundariesInteract)
-            {
-                ClearPathCache();
-                return cache;
-            }
 
             // Tessellate with fringe inset in object-space.
             // Inset = fringeWidthObj * 0.5 * fringeSign. After uniform scale S at
