@@ -13,16 +13,35 @@ public sealed class Tessellator
     private const float MaxInput = 1 << 23;
     private const float MinInput = -MaxInput;
 
+    // Mesh nodes returned to the pool stay alive for the life of the thread, so one large run
+    // parks hundreds of thousands of them; each return/reacquire cycle scatters them further
+    // and the sweep's pointer chasing gets slower run after run (the same input measured 9.2s,
+    // 14.7s, 17.9s, 20.3s over four reuses). Past this input size the pool is dropped instead,
+    // which keeps repeat runs flat at the first run's cost.
+    private const int POOL_DROP_POINT_THRESHOLD = 20_000;
+
     private LibTessDotNet.Tess _tess = new();
     private ContourVertex[] _contourBuffer = Array.Empty<ContourVertex>();
     private bool _hasContours;
     private bool _inputValid = true;
+    private int _pointCount;
+    private int _lastPointCount;
 
     public void Clear()
     {
-        // Reset() drops any mesh/sweep state left over from a run that never
-        // reached Tessellate()'s normal completion (e.g. invalid input, exception).
-        _tess.Reset();
+        if (_lastPointCount >= POOL_DROP_POINT_THRESHOLD)
+        {
+            _tess.ResetAndDropPool();
+        }
+        else
+        {
+            // Reset() drops any mesh/sweep state left over from a run that never
+            // reached Tessellate()'s normal completion (e.g. invalid input, exception).
+            _tess.Reset();
+        }
+
+        _lastPointCount = 0;
+        _pointCount = 0;
         _hasContours = false;
         _inputValid = true;
     }
@@ -51,6 +70,7 @@ public sealed class Tessellator
         }
 
         _tess.AddContour(contour, ContourOrientation.Original);
+        _pointCount += points.Length;
         _hasContours = true;
     }
 
@@ -60,6 +80,7 @@ public sealed class Tessellator
         int polySize = 3)
     {
         var status = RunTessellation(windingRule, elementType, polySize);
+        _lastPointCount = _pointCount;
         if (status != TessStatus.Ok || !_hasContours)
         {
             return new TessResult { Status = status };
@@ -87,6 +108,7 @@ public sealed class Tessellator
         ArgumentNullException.ThrowIfNull(resultBuffer);
 
         var status = RunTessellation(windingRule, elementType, polySize);
+        _lastPointCount = _pointCount;
         if (status != TessStatus.Ok || !_hasContours)
         {
             resultBuffer.Clear();
