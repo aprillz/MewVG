@@ -566,6 +566,74 @@ namespace LibTessDotNet
         }
 
         /// <summary>
+        /// Joins two faces by destroying whichever has the shorter loop, so the relabel
+        /// walk costs the smaller side. Returns the surviving face.
+        /// </summary>
+        /// <remarks>
+        /// Destroying a fixed side makes the sweep quadratic on inputs with many contours:
+        /// every join re-walks the one face that has absorbed all the others (25,575
+        /// contours: 137k joins, 496M relabel steps). Walking both loops in lockstep bounds
+        /// a join by twice the smaller loop. Callers read the face back through the edge,
+        /// and a face's inside flag is assigned when its region finishes, so which object
+        /// survives is not observable.
+        /// </remarks>
+        public static Face KillSmallerFace(IPool pool, Face fA, Face fB)
+        {
+            var startA = fA._anEdge;
+            var startB = fB._anEdge;
+            var eA = startA;
+            var eB = startB;
+            while (true)
+            {
+                eA = eA._Lnext;
+                eB = eB._Lnext;
+                if (eA == startA)
+                {
+                    KillFace(pool, fA, fB);
+                    return fB;
+                }
+                if (eB == startB)
+                {
+                    KillFace(pool, fB, fA);
+                    return fA;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Splits the face the two now-disjoint loops still share: the shorter loop gets a
+        /// new face and the old face keeps the other, anchored at that loop's edge.
+        /// </summary>
+        /// <remarks>
+        /// The split-side counterpart of <see cref="KillSmallerFace"/>: creating the new
+        /// face for a fixed side re-walked the large remainder on every split (332M steps
+        /// on the same input).
+        /// </remarks>
+        public static void SplitFaceAcross(IPool pool, Edge eA, Edge eB)
+        {
+            var fOld = eA._Lface;
+            var walkA = eA;
+            var walkB = eB;
+            while (true)
+            {
+                walkA = walkA._Lnext;
+                walkB = walkB._Lnext;
+                if (walkA == eA)
+                {
+                    MakeFace(pool, eA, fOld);
+                    fOld._anEdge = eB;
+                    return;
+                }
+                if (walkB == eB)
+                {
+                    MakeFace(pool, eB, fOld);
+                    fOld._anEdge = eA;
+                    return;
+                }
+            }
+        }
+
+        /// <summary>
         /// Return signed area of face.
         /// </summary>
         public static Real FaceArea(Face f)

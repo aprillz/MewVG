@@ -159,9 +159,9 @@ namespace LibTessDotNet
             bool joiningLoops = false;
             if (eDst._Lface != eOrg._Lface)
             {
-                // We are connecting two disjoint loops -- destroy eDst->Lface
+                // We are connecting two disjoint loops -- destroy the shorter one
                 joiningLoops = true;
-                MeshUtils.KillFace(pool, eDst._Lface, eOrg._Lface);
+                MeshUtils.KillSmallerFace(pool, eDst._Lface, eOrg._Lface);
             }
 
             // Change the edge structure
@@ -176,10 +176,8 @@ namespace LibTessDotNet
             }
             if (!joiningLoops)
             {
-                // We split one loop into two -- the new loop is eDst->Lface.
-                // Make sure the old face points to a valid half-edge.
-                MeshUtils.MakeFace(pool, eDst, eOrg._Lface);
-                eOrg._Lface._anEdge = eOrg;
+                // We split one loop into two -- the shorter loop gets the new face.
+                MeshUtils.SplitFaceAcross(pool, eDst, eOrg);
             }
         }
 
@@ -200,9 +198,9 @@ namespace LibTessDotNet
             bool joiningLoops = false;
             if (eDel._Lface != eDel._Rface)
             {
-                // We are joining two loops into one -- remove the left face
+                // We are joining two loops into one -- remove the shorter one
                 joiningLoops = true;
-                MeshUtils.KillFace(pool, eDel._Lface, eDel._Rface);
+                MeshUtils.KillSmallerFace(pool, eDel._Lface, eDel._Rface);
             }
 
             if (eDel._Onext == eDel)
@@ -212,15 +210,16 @@ namespace LibTessDotNet
             else
             {
                 // Make sure that eDel->Org and eDel->Rface point to valid half-edges
-                eDel._Rface._anEdge = eDel._Oprev;
+                var eOther = eDel._Oprev;
+                eDel._Rface._anEdge = eOther;
                 eDel._Org._anEdge = eDel._Onext;
 
-                MeshUtils.Splice(eDel, eDel._Oprev);
+                MeshUtils.Splice(eDel, eOther);
 
                 if (!joiningLoops)
                 {
-                    // We are splitting one loop into two -- create a new loop for eDel.
-                    MeshUtils.MakeFace(pool, eDel, eDel._Lface);
+                    // We are splitting one loop into two -- the shorter loop gets the new face.
+                    MeshUtils.SplitFaceAcross(pool, eDel, eOther);
                 }
             }
 
@@ -306,9 +305,9 @@ namespace LibTessDotNet
             bool joiningLoops = false;
             if (eDst._Lface != eOrg._Lface)
             {
-                // We are connecting two disjoint loops -- destroy eDst->Lface
+                // We are connecting two disjoint loops -- destroy the shorter one
                 joiningLoops = true;
-                MeshUtils.KillFace(pool, eDst._Lface, eOrg._Lface);
+                MeshUtils.KillSmallerFace(pool, eDst._Lface, eOrg._Lface);
             }
 
             // Connect the new edge appropriately
@@ -325,7 +324,8 @@ namespace LibTessDotNet
 
             if (!joiningLoops)
             {
-                MeshUtils.MakeFace(pool, eNew, eOrg._Lface);
+                // The shorter of the two loops gets the new face.
+                MeshUtils.SplitFaceAcross(pool, eNew, eNewSym);
             }
 
             return eNew;
