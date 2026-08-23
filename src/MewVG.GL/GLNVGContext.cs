@@ -22,6 +22,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int LocViewSize;
         public int LocTex;
         public int LocFrag;
+        public int LocCoverageOrigin;
     }
 
     private struct GLNVGTexture
@@ -1240,6 +1241,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             return;
         }
 
+        // Never give up an axis already allocated: callers pass per-call scissor sizes, so
+        // reallocating at exactly the requested size makes alternating shapes rebuild the
+        // texture, its renderbuffer, and its framebuffer on every draw.
+        width = Math.Max(width, _coverageTexWidth);
+        height = Math.Max(height, _coverageTexHeight);
+
         if (_coverageTex != 0) GL.DeleteTexture(_coverageTex);
         if (_coverageStencilRb != 0) GL.DeleteRenderbuffer(_coverageStencilRb);
         if (_coverageFbo != 0) GL.DeleteFramebuffer(_coverageFbo);
@@ -1369,19 +1376,25 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
 
-        var coverageW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
-        var coverageH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
-        EnsureCoverageTexture(coverageW, coverageH);
+        var viewportW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
+        var viewportH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
 
         var mainFbo = _flushMainFbo;
 
-        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, coverageW, coverageH,
+        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, viewportW, viewportH,
             out var scissorX, out var scissorY, out var scissorWidth, out var scissorHeight);
+        if (scissorWidth == 0 || scissorHeight == 0)
+        {
+            return;
+        }
+        EnsureCoverageTexture(scissorWidth, scissorHeight);
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
-        GL.Viewport(0, 0, coverageW, coverageH);
+        // Keep NanoVG's full-window clip-space transform, but translate its viewport so
+        // this call's device-pixel bounds land at (0,0) in the smaller shared scratch.
+        GL.Viewport(-scissorX, -scissorY, viewportW, viewportH);
         GL.Enable(EnableCap.ScissorTest);
-        GL.Scissor(scissorX, scissorY, scissorWidth, scissorHeight);
+        GL.Scissor(0, 0, scissorWidth, scissorHeight);
         GL.ClearColor(0, 0, 0, 0);
         GL.ClearStencil(0);
         GL.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.StencilBufferBit);
@@ -1465,6 +1478,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         BlendFuncSeparate(call.BlendFunc);
 
         SetUniforms(call.UniformOffset + 1, call.Image, bindTexture: false);
+        SetCoverageOrigin(scissorX, scissorY);
         BindTexture(_coverageTex);
         if (_clipActiveInRender)
         {
@@ -1482,19 +1496,23 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private void StrokeWithCoverage(in GLNVGCall call)
     {
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
-        var coverageW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
-        var coverageH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
-        EnsureCoverageTexture(coverageW, coverageH);
+        var viewportW = (int)MathF.Ceiling(_view[0] * _devicePixelRatio);
+        var viewportH = (int)MathF.Ceiling(_view[1] * _devicePixelRatio);
 
         var mainFbo = _flushMainFbo;
 
-        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, coverageW, coverageH,
+        GetCoverageScissor(call.TriangleOffset, call.TriangleCount, viewportW, viewportH,
             out var scissorX, out var scissorY, out var scissorWidth, out var scissorHeight);
+        if (scissorWidth == 0 || scissorHeight == 0)
+        {
+            return;
+        }
+        EnsureCoverageTexture(scissorWidth, scissorHeight);
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _coverageFbo);
-        GL.Viewport(0, 0, coverageW, coverageH);
+        GL.Viewport(-scissorX, -scissorY, viewportW, viewportH);
         GL.Enable(EnableCap.ScissorTest);
-        GL.Scissor(scissorX, scissorY, scissorWidth, scissorHeight);
+        GL.Scissor(0, 0, scissorWidth, scissorHeight);
         GL.ClearColor(0, 0, 0, 0);
         GL.Clear(ClearBufferMask.ColorBufferBit);
         GL.Disable(EnableCap.StencilTest);
@@ -1520,6 +1538,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(call.BlendFunc);
         SetUniforms(call.UniformOffset, call.Image, bindTexture: false);
+        SetCoverageOrigin(scissorX, scissorY);
         BindTexture(_coverageTex);
         if (_clipActiveInRender)
         {
@@ -1536,6 +1555,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         GL.Enable(EnableCap.CullFace);
         _boundTexture = -1;
+    }
+
+    private void SetCoverageOrigin(int x, int y)
+    {
+        Span<float> origin = stackalloc float[2] { x, y };
+        GL.Uniform2(_shader.LocCoverageOrigin, 1, origin);
     }
 
     private static void SetSimpleUniform(float[] frag, ref NVGscissorState scissor, float fringe)
@@ -1970,6 +1995,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         const string fillFragShader =
             "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
             "\tuniform sampler2D tex;\n" +
+            "\tuniform vec2 coverageOrigin;\n" +
             "\tin vec2 ftcoord;\n" +
             "\tin vec2 fpos;\n" +
             "\tout vec4 outColor;\n" +
@@ -2088,7 +2114,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\t} else if (type == 4) {\n" +
             "\t\tresult = vec4(strokeAlpha);\n" +
             "\t} else if (type == 5) {\n" +
-            "\t\tfloat coverage = texelFetch(tex, ivec2(gl_FragCoord.xy), 0).r;\n" +
+            "\t\tfloat coverage = texelFetch(tex, ivec2(gl_FragCoord.xy - coverageOrigin), 0).r;\n" +
             "\t\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
             "\t\tfloat d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
             "\t\tvec4 color = mix(innerCol,outerCol,d);\n" +
@@ -2164,6 +2190,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         shader.LocViewSize = GL.GetUniformLocation(shader.Program, "viewSize");
         shader.LocTex = GL.GetUniformLocation(shader.Program, "tex");
         shader.LocFrag = GL.GetUniformLocation(shader.Program, "frag");
+        shader.LocCoverageOrigin = GL.GetUniformLocation(shader.Program, "coverageOrigin");
     }
 
     public void Dispose()
