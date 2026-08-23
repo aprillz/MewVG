@@ -63,4 +63,16 @@ public sealed class FrozenFillCache
     internal int SnapshotNPaths;
     internal int SnapshotNVerts;
     internal float[] SnapshotBounds = new float[4];
+
+    /// <summary>
+    /// Approximate managed size of the cached tessellation data, for consumers that keep many
+    /// caches alive and evict against a memory budget.
+    /// </summary>
+    public long EstimatedBytes =>
+        ContourPoints.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpoint>() +
+        ContourPaths.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpathData>() +
+        (TessVertices?.Length ?? 0) * 8L +
+        (TessIndices?.Length ?? 0) * 4L +
+        SnapshotPaths.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpathData>() +
+        SnapshotVerts.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGvertex>();
 }
