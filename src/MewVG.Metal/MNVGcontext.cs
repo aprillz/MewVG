@@ -399,20 +399,25 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           }
         }
 
+        // Path clip: color[2] (RG8) holds the current clip coverage in .r for every pixel, 1 when
+        // no clip is active, and every paint fragment multiplies by it through framebuffer fetch.
+        // Its .g channel is scratch for building the next clip (see the clip functions below).
         fragment float4 fragmentShader(RasterizerData in [[stage_in]],
                                        constant Uniforms& uniforms [[buffer(0)]],
                                        texture2d<float> texture [[texture(0)]],
                                        texture2d<float> maskTex [[texture(1)]],
-                                       sampler sampler [[sampler(0)]]) {
-          return fragmentShaderBody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos);
+                                       sampler sampler [[sampler(0)]],
+                                       float4 clipIn [[color(2)]]) {
+          return fragmentShaderBody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos) * clipIn.r;
         }
 
         fragment float4 fragmentShaderAA(RasterizerData in [[stage_in]],
                                          constant Uniforms& uniforms [[buffer(0)]],
                                          texture2d<float> texture [[texture(0)]],
                                          texture2d<float> maskTex [[texture(1)]],
-                                         sampler sampler [[sampler(0)]]) {
-          return fragmentShaderAABody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos);
+                                         sampler sampler [[sampler(0)]],
+                                         float4 clipIn [[color(2)]]) {
+          return fragmentShaderAABody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos) * clipIn.r;
         }
 
         // ─── Coverage AA (transparent stroke/fill, single-encoder) ────────────
@@ -456,7 +461,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                                                         constant Uniforms& uniforms [[buffer(0)]],
                                                         texture2d<float> texture [[texture(0)]],
                                                         sampler textureSampler [[sampler(0)]],
-                                                        float4 prevCov [[color(1)]]) {
+                                                        float4 prevCov [[color(1)]],
+                                                        float4 clipIn [[color(2)]]) {
           // Coverage texture is R8Unorm so the build pass wrote into the red
           // channel; read .r here (Metal returns 1.0 in .a for single-channel
           // formats, which would silently give "fully covered" everywhere).
@@ -490,18 +496,54 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           }
 
           CoverageOut o;
-          o.main = color * coverage * scissor;
+          o.main = color * coverage * scissor * clipIn.r;
           o.cov = float4(0);                           // self-clear for next stroke this frame
           return o;
         }
+
+        // ─── Path clip (color[2], single encoder) ────────────────────────────
+        // A clip is built in three draws that read and write color[2] through framebuffer
+        // fetch: prepare zeroes the scratch .g everywhere, build accumulates the clip
+        // geometry's coverage into .g by max, and resolve multiplies the current clip .r by
+        // that coverage, which is how nested clips intersect. Reset writes .r = 1.
+        struct ClipOut {
+          float4 main [[color(0)]];
+          float4 clip [[color(2)]];
+        };
+
+        fragment ClipOut fragmentClipPrepare(RasterizerData in [[stage_in]],
+                                             float4 clipIn [[color(2)]]) {
+          ClipOut o;
+          o.main = float4(0);
+          o.clip = float4(clipIn.r, 0.0f, 0.0f, 0.0f);
+          return o;
+        }
+
+        fragment ClipOut fragmentClipBuild(RasterizerData in [[stage_in]],
+                                           constant Uniforms& uniforms [[buffer(0)]],
+                                           float4 clipIn [[color(2)]]) {
+          float coverage = strokeMask(uniforms, in.ftcoord);
+          ClipOut o;
+          o.main = float4(0);
+          o.clip = float4(clipIn.r, max(clipIn.g, coverage), 0.0f, 0.0f);
+          return o;
+        }
+
+        fragment ClipOut fragmentClipResolve(RasterizerData in [[stage_in]],
+                                             float4 clipIn [[color(2)]]) {
+          ClipOut o;
+          o.main = float4(0);
+          o.clip = float4(clipIn.r * clipIn.g, 0.0f, 0.0f, 0.0f);
+          return o;
+        }
+
+        fragment ClipOut fragmentClipReset(RasterizerData in [[stage_in]]) {
+          ClipOut o;
+          o.main = float4(0);
+          o.clip = float4(1.0f, 0.0f, 0.0f, 0.0f);
+          return o;
+        }
         """;
-    // Reserve the MSB for clip so NanoVG's own stencil usage can keep using the lower bits.
-    // This avoids clip getting overwritten by fill/stroke stencil passes.
-    private const uint ClipStencilRef = 0x80;
-    private const ulong ClipStencilMask = 0x80;
-    // Temporary bit for clip intersection while recording nested clips.
-    // This shares space with NanoVG's lower bits but is always cleared immediately.
-    private const ulong ClipTempMask = 0x01;
     private const ulong NanoVgStencilMask = 0x7F;
 
     // SrcOver: NanoVG's default composite operation. Also used for clip calls'
@@ -525,6 +567,16 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _fragmentAAFunction;          // id<MTLFunction>
     private IntPtr _fragmentCoverageBuildFn;     // id<MTLFunction>
     private IntPtr _fragmentCoverageCompositeFn; // id<MTLFunction>
+    private IntPtr _fragmentClipPrepareFn;       // id<MTLFunction>
+    private IntPtr _fragmentClipBuildFn;         // id<MTLFunction>
+    private IntPtr _fragmentClipResolveFn;       // id<MTLFunction>
+    private IntPtr _fragmentClipResetFn;         // id<MTLFunction>
+    // Clip pipelines per (pixel format, stencil format): prepare, build, resolve, reset.
+    private readonly Dictionary<ulong, IntPtr[]> _clipPipelineCache = new();
+    // color[2] of the main pass: the clip attachment the host creates through EnsureClipMaskTexture.
+    private IntPtr _clipMaskTexture;
+    private int _clipMaskWidth;
+    private int _clipMaskHeight;
 
     /// <summary>
     /// Cached PSO pair for a given (blend factors, pixel format, stencil format) key:
@@ -555,19 +607,11 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     // Depth stencil states
     private IntPtr _defaultStencilState;
     private IntPtr _fillShapeStencilState;
-    private IntPtr _fillShapeStencilStateClipped;
     private IntPtr _fillAntiAliasStencilState;
-    private IntPtr _fillAntiAliasStencilStateClipped;
     private IntPtr _fillStencilState;
     private IntPtr _strokeShapeStencilState;
     private IntPtr _strokeAntiAliasStencilState;
     private IntPtr _strokeClearStencilState;
-    private IntPtr _clipWriteStencilState;
-    private IntPtr _clipTestStencilState;
-    private IntPtr _clipClearStencilState;
-    private IntPtr _clipCopyToTempStencilState;
-    private IntPtr _clipWriteIntersectStencilState;
-    private IntPtr _clipClearTempStencilState;
 
     // Buffers and textures
     private MNVGbuffers[] _buffers;
@@ -631,7 +675,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private float _devicePixelRatio;
     private Vector2 _viewSize;
     private bool _recordingClipActive;
-    private bool _clipActiveInRender;
     // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
     private readonly MaskImageCache _maskImages;
     private bool _disposed;
@@ -742,6 +785,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _fragmentFunction = GetFunction("fragmentShader");
         _fragmentAAFunction = GetFunction("fragmentShaderAA");
         _fragmentCoverageBuildFn = GetFunction("fragmentCoverageBuild");
+        _fragmentClipPrepareFn = GetFunction("fragmentClipPrepare");
+        _fragmentClipBuildFn = GetFunction("fragmentClipBuild");
+        _fragmentClipResolveFn = GetFunction("fragmentClipResolve");
+        _fragmentClipResetFn = GetFunction("fragmentClipReset");
         _fragmentCoverageCompositeFn = GetFunction("fragmentCoverageComposite");
 
         // Create pipeline states
@@ -902,6 +949,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(colorAttachment1, MetalSelectors.setBlendingEnabled, false);
         ObjCRuntime.SendMessage(colorAttachment1, MetalSelectors.setWriteMask,
             (ulong)MTLColorWriteMask.None);
+        DeclareClipAttachment(colorAttachments, writable: false);
 
         var error = IntPtr.Zero;
         var pipeline = ObjCRuntime.SendMessage(
@@ -963,6 +1011,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationRGBBlendFactor, (ulong)MTLBlendFactor.One);
         ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)MTLBlendFactor.One);
         ObjCRuntime.SendMessage(color1, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
+        DeclareClipAttachment(colorAttachments, writable: false);
 
         var error = IntPtr.Zero;
         var pipeline = ObjCRuntime.SendMessage(_device,
@@ -1031,6 +1080,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationRGBBlendFactor, (ulong)MTLBlendFactor.Zero);
         ObjCRuntime.SendMessage(color1, MetalSelectors.setDestinationAlphaBlendFactor, (ulong)MTLBlendFactor.Zero);
         ObjCRuntime.SendMessage(color1, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.All);
+        DeclareClipAttachment(colorAttachments, writable: false);
 
         var error = IntPtr.Zero;
         var pipeline = ObjCRuntime.SendMessage(_device,
@@ -1105,6 +1155,82 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// </summary>
     private static ulong PackFormatKey(MTLPixelFormat pixelFormat, MTLPixelFormat stencilFormat)
         => ((ulong)pixelFormat << 32) | ((ulong)stencilFormat << 48);
+
+    /// <summary>
+    /// Declares color[2], the clip attachment, on a pipeline of the main pass. Every pipeline in
+    /// the pass has to name it; only the clip pipelines write to it, and they do so through
+    /// framebuffer fetch rather than blending.
+    /// </summary>
+    private static void DeclareClipAttachment(IntPtr colorAttachments, bool writable)
+    {
+        var color2 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)2);
+        ObjCRuntime.SendMessage(color2, MetalSelectors.setPixelFormat, (ulong)ClipPixelFormat);
+        ObjCRuntime.SendMessage(color2, MetalSelectors.setBlendingEnabled, false);
+        ObjCRuntime.SendMessage(color2, MetalSelectors.setWriteMask,
+            (ulong)(writable ? MTLColorWriteMask.All : MTLColorWriteMask.None));
+    }
+
+    private IntPtr CreateClipPipeline(IntPtr fragmentFunction)
+    {
+        using var pool = new AutoreleasePool();
+        var pipelineDescriptorClass = ObjCRuntime.GetClass("MTLRenderPipelineDescriptor");
+        var pipelineDescriptor = ObjCRuntime.New(pipelineDescriptorClass);
+        if (pipelineDescriptor == IntPtr.Zero) return IntPtr.Zero;
+
+        var vertexDescriptor = CreateVertexDescriptor();
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, fragmentFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
+        if (_stencilFormat == MTLPixelFormat.Depth24Unorm_Stencil8 ||
+            _stencilFormat == MTLPixelFormat.Depth32Float_Stencil8)
+        {
+            ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setDepthAttachmentPixelFormat, (ulong)_stencilFormat);
+        }
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setStencilAttachmentPixelFormat, (ulong)_stencilFormat);
+
+        var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
+        var color0 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)0);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setPixelFormat, (ulong)_pixelFormat);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setBlendingEnabled, false);
+        ObjCRuntime.SendMessage(color0, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.None);
+        var color1 = ObjCRuntime.SendMessage(colorAttachments, MetalSelectors.objectAtIndexedSubscript, (nuint)1);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setPixelFormat, (ulong)CoveragePixelFormat);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setBlendingEnabled, false);
+        ObjCRuntime.SendMessage(color1, MetalSelectors.setWriteMask, (ulong)MTLColorWriteMask.None);
+        DeclareClipAttachment(colorAttachments, writable: true);
+
+        var error = IntPtr.Zero;
+        var pipeline = ObjCRuntime.SendMessage(_device,
+            MetalSelectors.newRenderPipelineStateWithDescriptor_error,
+            pipelineDescriptor, (IntPtr)(&error));
+        ObjCRuntime.SendMessage(pipelineDescriptor, ObjCRuntime.Selectors.release);
+        ObjCRuntime.SendMessage(vertexDescriptor, ObjCRuntime.Selectors.release);
+        return pipeline;
+    }
+
+    private const int CLIP_PIPELINE_PREPARE = 0;
+    private const int CLIP_PIPELINE_BUILD = 1;
+    private const int CLIP_PIPELINE_RESOLVE = 2;
+    private const int CLIP_PIPELINE_RESET = 3;
+
+    private IntPtr[] GetClipPipelines()
+    {
+        var key = PackFormatKey(_pixelFormat, _stencilFormat);
+        if (_clipPipelineCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        var pipelines = new[]
+        {
+            CreateClipPipeline(_fragmentClipPrepareFn),
+            CreateClipPipeline(_fragmentClipBuildFn),
+            CreateClipPipeline(_fragmentClipResolveFn),
+            CreateClipPipeline(_fragmentClipResetFn),
+        };
+        _clipPipelineCache[key] = pipelines;
+        return pipelines;
+    }
 
     /// <summary>
     /// Packs (blend factors, pixel format, stencil format) into a single cache key.
@@ -1232,25 +1358,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
         _fillShapeStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
-        // Fill shape stencil state (clipped): only update winding inside current clip bit.
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.IncrementWrap);
-
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(backFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.DecrementWrap);
-
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, backFaceStencil);
-        _fillShapeStencilStateClipped = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
         // Fill anti-alias stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, NanoVgStencilMask);
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
@@ -1264,17 +1371,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Triangle strips flip winding every other triangle; set both faces so stencil ops apply consistently.
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
         _fillAntiAliasStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Fill anti-alias stencil state (clipped): only zero winding bits inside current clip bit.
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
-        _fillAntiAliasStencilStateClipped = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
         // Fill stencil state
         ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, NanoVgStencilMask);
@@ -1321,77 +1417,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
         _strokeClearStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
-        // Clip write stencil state
-        var clipStencil = ObjCRuntime.New(stencilDescriptorClass);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Replace);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipWriteStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Clip test stencil state
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, (ulong)0x00);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipTestStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Clip clear stencil state
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipClearStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Clip copy-to-temp state: if (clipBit set) write tempBit = 1.
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, ClipTempMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Replace);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipCopyToTempStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Clip write-intersect state: if (tempBit == 1) write clipBit = 1.
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipTempMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, ClipStencilMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Replace);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipWriteIntersectStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Clip clear-temp state: tempBit = 0 everywhere.
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilReadMask, ClipTempMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilWriteMask, ClipTempMask);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(clipStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, clipStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, clipStencil);
-        _clipClearTempStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
         // Release descriptors
         ObjCRuntime.SendMessage(frontFaceStencil, ObjCRuntime.Selectors.release);
         ObjCRuntime.SendMessage(backFaceStencil, ObjCRuntime.Selectors.release);
-        ObjCRuntime.SendMessage(clipStencil, ObjCRuntime.Selectors.release);
         ObjCRuntime.SendMessage(depthStencilDescriptor, ObjCRuntime.Selectors.release);
     }
 
@@ -1624,8 +1652,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, _pseudoTexture, (nuint)1);
 
         // Process all calls
-        bool clipActive = false;
-        _clipActiveInRender = false;
 
         for (var i = 0; i < _callCount; i++)
         {
@@ -1656,35 +1682,27 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             switch (call.type)
             {
                 case MNVGcallType.MNVG_CLIP_RESET:
-                    _clipActiveInRender = clipActive;
                     RenderClipReset(ref buffers, ref call);
-                    clipActive = false;
                     break;
                 case MNVGcallType.MNVG_CLIP:
-                    _clipActiveInRender = clipActive;
                     RenderClip(ref buffers, ref call);
-                    clipActive = true;
                     break;
                 case MNVGcallType.MNVG_FILL:
-                    _clipActiveInRender = clipActive;
                     if (call.hasCoverageAA)
                         RenderFillWithCoverage(ref buffers, ref call);
                     else
                         RenderFill(ref buffers, ref call);
                     break;
                 case MNVGcallType.MNVG_STROKE:
-                    _clipActiveInRender = clipActive;
                     if (call.hasCoverageAA)
                         RenderStrokeWithCoverage(ref buffers, ref call);
                     else
                         RenderStroke(ref buffers, ref call);
                     break;
                 case MNVGcallType.MNVG_TRIANGLES:
-                    _clipActiveInRender = clipActive;
                     RenderTriangles(ref buffers, ref call);
                     break;
                 case MNVGcallType.MNVG_MASK_FILL:
-                    _clipActiveInRender = clipActive;
                     RenderMaskFill(ref buffers, ref call);
                     break;
             }
@@ -1773,12 +1791,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     {
         if (call.cpuResolvedFill != 0)
         {
-            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetDepthStencilState(_defaultStencilState);
             SetCullMode(MTLCullMode.None);
-            if (_clipActiveInRender)
-            {
-                SetStencilReferenceValue(ClipStencilRef);
-            }
 
             SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
@@ -1832,9 +1846,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Draw shapes using stencil
         SetPipelineState(_stencilOnlyPipelineState);
-        SetDepthStencilState(_clipActiveInRender ? _fillShapeStencilStateClipped : _fillShapeStencilState);
+        SetDepthStencilState(_fillShapeStencilState);
         SetCullMode(MTLCullMode.None);
-        SetStencilReferenceValue(_clipActiveInRender ? ClipStencilRef : (uint)0);
+        SetStencilReferenceValue((uint)0);
 
         // Set uniform for shape drawing
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
@@ -1857,7 +1871,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Draw anti-aliased edges
         SetPipelineState(_pipelineState);
-        SetDepthStencilState(_clipActiveInRender ? _fillAntiAliasStencilStateClipped : _fillAntiAliasStencilState);
+        SetDepthStencilState(_fillAntiAliasStencilState);
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
@@ -1891,11 +1905,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         );
 
         // Reset stencil state
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
-        if (_clipActiveInRender)
-        {
-            SetStencilReferenceValue(ClipStencilRef);
-        }
+        SetDepthStencilState(_defaultStencilState);
     }
 
     /// <summary>
@@ -1913,12 +1923,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // ── Pass B: build coverage ────────────────────────────────────────────
         SetPipelineState(GetCoverageBuildPipeline());
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.None);
-        if (_clipActiveInRender)
-        {
-            SetStencilReferenceValue(ClipStencilRef);
-        }
         // Use the +1 paint uniform - strokeMult=-1 so strokeMask gives analytical
         // fill coverage. fragmentCoverageBuild ignores the type field.
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
@@ -1965,7 +1971,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (nuint)call.triangleOffset, (nuint)call.triangleCount);
 
         // Restore default stencil state for following calls (matches non-coverage path).
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
     }
 
     /// <summary>
@@ -1979,12 +1985,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // ── Pass B: build coverage from stroke geometry ───────────────────────
         SetPipelineState(GetCoverageBuildPipeline());
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.None);
-        if (_clipActiveInRender)
-        {
-            SetStencilReferenceValue(ClipStencilRef);
-        }
         // Stroke uses uniform[+0] (the original stroke paint with proper strokeMult).
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
@@ -2006,12 +2008,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (ulong)MTLPrimitiveType.TriangleStrip,
             (nuint)call.triangleOffset, (nuint)call.triangleCount);
 
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
     }
 
     private void RenderStroke(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        if ((_flags & NVGcreateFlags.StencilStrokes) != 0 && !_clipActiveInRender)
+        if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
         {
             // Stencil stroke
             SetCullMode(MTLCullMode.None);
@@ -2073,17 +2075,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 }
             }
 
-            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetDepthStencilState(_defaultStencilState);
         }
         else
         {
             // Simple stroke
-            SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+            SetDepthStencilState(_defaultStencilState);
             SetCullMode(MTLCullMode.None);
-            if (_clipActiveInRender)
-            {
-                SetStencilReferenceValue(ClipStencilRef);
-            }
 
             SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
@@ -2106,12 +2104,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void RenderTriangles(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.Back);
-        if (_clipActiveInRender)
-        {
-            SetStencilReferenceValue(ClipStencilRef);
-        }
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
 
@@ -2132,12 +2126,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return;
         }
 
-        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.None);
-        if (_clipActiveInRender)
-        {
-            SetStencilReferenceValue(ClipStencilRef);
-        }
 
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, mask.tex, MASK_TEXTURE_INDEX);
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
@@ -2153,127 +2143,81 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, _pseudoTexture, MASK_TEXTURE_INDEX);
     }
 
+    // Writes the clip geometry's coverage into color[2] in three draws (see the clip shader
+    // functions): the full-screen quad zeroes the scratch channel, the body and fringe raise it
+    // to their coverage, and the quad again folds it into the current clip.
     private void RenderClip(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        // Ensure fragments are generated (scissor disabled) so depth/stencil ops actually run.
-        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+        if (_clipMaskTexture == IntPtr.Zero)
+        {
+            throw new InvalidOperationException(
+                "MNVGcontext.RenderClip: no clip attachment. The host must call EnsureClipMaskTexture " +
+                "and attach the texture as color[2] of the render pass before a frame that clips.");
+        }
 
-        SetPipelineState(_stencilOnlyPipelineState);
+        var pipelines = GetClipPipelines();
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.None);
 
-        if (_clipActiveInRender)
+        SetPipelineState(pipelines[CLIP_PIPELINE_PREPARE]);
+        DrawQuad(call.triangleOffset, call.triangleCount);
+
+        SetPipelineState(pipelines[CLIP_PIPELINE_BUILD]);
+        for (var i = 0; i < call.pathCount; i++)
         {
-            // Intersect new clip with existing clip using a temp bit.
-            // Uses the same stencil reference for compare+replace:
-            // - ref=0x81: (ref & 0x80)=0x80 for clipBit compare, (ref & 0x01)=1 for tempBit write.
-            // - ref=0x81: (ref & 0x01)=1 for tempBit compare, (ref & 0x80)=0x80 for clipBit write.
-
-            // 1) tempBit = 1 where old clipBit == 1.
-            SetDepthStencilState(_clipCopyToTempStencilState);
-            SetStencilReferenceValue((uint)(ClipStencilRef | (uint)ClipTempMask));
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                (ulong)MTLPrimitiveType.TriangleStrip,
-                (nuint)call.triangleOffset,
-                (nuint)call.triangleCount
-            );
-
-            // 2) Clear clipBit everywhere.
-            SetDepthStencilState(_clipClearStencilState);
-            SetStencilReferenceValue((uint)0);
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                (ulong)MTLPrimitiveType.TriangleStrip,
-                (nuint)call.triangleOffset,
-                (nuint)call.triangleCount
-            );
-
-            // 3) Write new clipBit where tempBit == 1 and the new path covers.
-            SetDepthStencilState(_clipWriteIntersectStencilState);
-            SetStencilReferenceValue((uint)(ClipStencilRef | (uint)ClipTempMask));
-            for (var i = 0; i < call.pathCount; i++)
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.fillCount > 0)
             {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.fillCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.Triangle,
-                        (nuint)path.fillOffset,
-                        (nuint)path.fillCount
-                    );
-                }
+                ObjCRuntime.SendMessage(
+                    _renderEncoder,
+                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.Triangle,
+                    (nuint)path.fillOffset,
+                    (nuint)path.fillCount
+                );
             }
-
-            // 4) Clear tempBit everywhere.
-            SetDepthStencilState(_clipClearTempStencilState);
-            SetStencilReferenceValue((uint)0);
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                (ulong)MTLPrimitiveType.TriangleStrip,
-                (nuint)call.triangleOffset,
-                (nuint)call.triangleCount
-            );
-        }
-        else
-        {
-            // Fresh clip: clear clipBit then write it for the new path.
-            SetDepthStencilState(_clipClearStencilState);
-            SetStencilReferenceValue((uint)0);
-            ObjCRuntime.SendMessage(
-                _renderEncoder,
-                MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                (ulong)MTLPrimitiveType.TriangleStrip,
-                (nuint)call.triangleOffset,
-                (nuint)call.triangleCount
-            );
-
-            SetDepthStencilState(_clipWriteStencilState);
-            SetStencilReferenceValue(ClipStencilRef);
-            for (var i = 0; i < call.pathCount; i++)
+            if (path.strokeCount > 0)
             {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.fillCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.Triangle,
-                        (nuint)path.fillOffset,
-                        (nuint)path.fillCount
-                    );
-                }
+                ObjCRuntime.SendMessage(
+                    _renderEncoder,
+                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.TriangleStrip,
+                    (nuint)path.strokeOffset,
+                    (nuint)path.strokeCount
+                );
             }
         }
 
-        SetDepthStencilState(_clipTestStencilState);
-        SetStencilReferenceValue(ClipStencilRef);
+        SetPipelineState(pipelines[CLIP_PIPELINE_RESOLVE]);
+        DrawQuad(call.triangleOffset, call.triangleCount);
+
+        SetPipelineState(_pipelineState);
     }
 
     private void RenderClipReset(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        if (call.triangleCount <= 0)
+        if (call.triangleCount <= 0 || _clipMaskTexture == IntPtr.Zero)
         {
             return;
         }
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
-
-        SetPipelineState(_stencilOnlyPipelineState);
-        SetDepthStencilState(_clipClearStencilState);
+        SetDepthStencilState(_defaultStencilState);
         SetCullMode(MTLCullMode.None);
-        SetStencilReferenceValue((uint)0);
+        SetPipelineState(GetClipPipelines()[CLIP_PIPELINE_RESET]);
+        DrawQuad(call.triangleOffset, call.triangleCount);
+        SetPipelineState(_pipelineState);
+    }
 
+    private void DrawQuad(int vertexStart, int vertexCount)
+    {
         ObjCRuntime.SendMessage(
             _renderEncoder,
             MetalSelectors.drawPrimitives_vertexStart_vertexCount,
             (ulong)MTLPrimitiveType.TriangleStrip,
-            (nuint)call.triangleOffset,
-            (nuint)call.triangleCount
+            (nuint)vertexStart,
+            (nuint)vertexCount
         );
     }
 
@@ -2285,6 +2229,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         frag->scissorExt[1] = 1.0f;
         frag->scissorScale[0] = 1.0f;
         frag->scissorScale[1] = 1.0f;
+        // Analytical fill coverage: the body texcoord reads as 1 and the fringe ramps.
+        frag->strokeMult = -1.0f;
         frag->strokeThr = -1.0f;
         frag->type = (int)MNVGshaderType.MNVG_SHADER_SIMPLE;
     }
@@ -2668,8 +2614,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     public const MTLPixelFormat CoveragePixelFormat = MTLPixelFormat.R8Unorm;
 
     // Fragment texture slots: the paint texture is 0 and the coverage-mask fill's mask is 1.
+    // The path clip is not a sampled texture here but color[2] of the main pass (see
+    // ClipPixelFormat), read through framebuffer fetch.
     private const nuint PAINT_TEXTURE_INDEX = 0;
     private const nuint MASK_TEXTURE_INDEX = 1;
+
+    /// <summary>color[2] of the main pass: .r is the current clip coverage, .g scratch while a clip is built.</summary>
+    public const MTLPixelFormat ClipPixelFormat = MTLPixelFormat.RG8Unorm;
 
     /// <summary>
     /// Ensures the coverage AA scratch texture (color[1] attachment) exists at the
@@ -2726,6 +2677,50 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     /// <summary>The current coverage scratch texture, or IntPtr.Zero if not yet allocated.</summary>
     public IntPtr GetCoverageTexture() => _coverageTexture;
+
+    /// <summary>
+    /// Ensures the clip attachment (color[2]) exists at the requested size. The host attaches it
+    /// to the main render pass cleared to (1, 0, 0, 0): .r = 1 means no clip. Like the coverage
+    /// scratch it is memoryless where the device allows, since nothing reads it after the pass.
+    /// </summary>
+    public IntPtr EnsureClipMaskTexture(int width, int height)
+    {
+        if (width <= 0 || height <= 0) return IntPtr.Zero;
+        if (_clipMaskTexture != IntPtr.Zero && _clipMaskWidth >= width && _clipMaskHeight >= height)
+        {
+            return _clipMaskTexture;
+        }
+
+        if (_clipMaskTexture != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_clipMaskTexture, ObjCRuntime.Selectors.release);
+            _clipMaskTexture = IntPtr.Zero;
+        }
+
+        var textureDescriptorClass = ObjCRuntime.GetClass("MTLTextureDescriptor");
+        var textureDescriptor = ObjCRuntime.SendMessage(
+            textureDescriptorClass,
+            MetalSelectors.texture2DDescriptorWithPixelFormat_width_height_mipmapped,
+            (ulong)ClipPixelFormat,
+            (nuint)width,
+            (nuint)height,
+            false);
+        ObjCRuntime.SendMessage(textureDescriptor, MetalSelectors.setUsage, (ulong)MTLTextureUsage.RenderTarget);
+        ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetStorageMode, (ulong)MTLStorageMode.Memoryless);
+        _clipMaskTexture = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
+        if (_clipMaskTexture == IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(textureDescriptor, Metal.Sel.SetStorageMode, (ulong)MTLStorageMode.Private);
+            _clipMaskTexture = ObjCRuntime.SendMessage(_device, MetalSelectors.newTextureWithDescriptor, textureDescriptor);
+        }
+
+        _clipMaskWidth = width;
+        _clipMaskHeight = height;
+        return _clipMaskTexture;
+    }
+
+    /// <summary>The current clip attachment texture, or IntPtr.Zero if not yet allocated.</summary>
+    public IntPtr GetClipMaskTexture() => _clipMaskTexture;
 
     /// <summary>
     /// Signals that the frame has completed
@@ -3140,8 +3135,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 _vertCount += path.NFill;
             }
 
-            dstPath.strokeOffset = 0;
-            dstPath.strokeCount = 0;
+            dstPath.strokeOffset = _vertCount;
+            dstPath.strokeCount = path.NStroke;
+            if (path.NStroke > 0)
+            {
+                EnsureVerts(_vertCount + path.NStroke);
+                verts.Slice(path.StrokeOffset, path.NStroke).CopyTo(_verts.AsSpan(_vertCount));
+                _vertCount += path.NStroke;
+            }
         }
 
         EnsureCalls(_callCount + 1);
@@ -3469,19 +3470,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ObjCRuntime.SendMessage(_fillShapeStencilState, ObjCRuntime.Selectors.release);
         }
 
-        if (_fillShapeStencilStateClipped != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_fillShapeStencilStateClipped, ObjCRuntime.Selectors.release);
-        }
-
         if (_fillAntiAliasStencilState != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_fillAntiAliasStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_fillAntiAliasStencilStateClipped != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_fillAntiAliasStencilStateClipped, ObjCRuntime.Selectors.release);
         }
 
         if (_fillStencilState != IntPtr.Zero)
@@ -3502,36 +3493,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_strokeClearStencilState != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_strokeClearStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipWriteStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipWriteStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipTestStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipTestStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipClearStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipClearStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipCopyToTempStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipCopyToTempStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipWriteIntersectStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipWriteIntersectStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_clipClearTempStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_clipClearTempStencilState, ObjCRuntime.Selectors.release);
         }
 
         if (_vertexFunction != IntPtr.Zero)
@@ -3578,6 +3539,24 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_coverageTexture != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_coverageTexture, ObjCRuntime.Selectors.release);
+        }
+
+        foreach (var pipelines in _clipPipelineCache.Values)
+        {
+            foreach (var pipeline in pipelines)
+            {
+                if (pipeline != IntPtr.Zero)
+                {
+                    ObjCRuntime.SendMessage(pipeline, ObjCRuntime.Selectors.release);
+                }
+            }
+        }
+        _clipPipelineCache.Clear();
+
+        if (_clipMaskTexture != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_clipMaskTexture, ObjCRuntime.Selectors.release);
+            _clipMaskTexture = IntPtr.Zero;
         }
 
         if (_library != IntPtr.Zero)

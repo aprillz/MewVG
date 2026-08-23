@@ -888,10 +888,9 @@ internal sealed class NVGContext
 
         var fillFringe = _fringeWidth;
 
-        // Clip uses stencil (binary inside/outside) - pass fringe=0 so fill
-        // triangles stay at geometric boundary (no inset that would shrink clip). The renderer
-        // needs geometry here, never a CPU mask in its place.
-        ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule), allowMask: false);
+        // The clip becomes a coverage mask, so it takes the same inset body and AA fringe as a
+        // fill. The renderer needs geometry here, never a CPU mask in its place.
+        ExpandFill(fillFringe, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule), allowMask: false);
 
         var clip = RentClipBuffer(_clipStack.Count);
         CaptureClipSnapshot(clip, state.Scissor, fillFringe);
@@ -935,15 +934,16 @@ internal sealed class NVGContext
         clip.Scissor = scissor;
         clip.Fringe = fringe;
 
-        int totalFillVerts = 0;
+        // Body and fringe both go to the renderer: the mask takes the fringe's coverage ramp.
+        int totalVerts = 0;
         for (var i = 0; i < _cache.NPaths; i++)
         {
-            totalFillVerts += _cache.Paths[i].NFill;
+            totalVerts += _cache.Paths[i].NFill + _cache.Paths[i].NStroke;
         }
 
-        if (clip.Verts.Length < totalFillVerts)
+        if (clip.Verts.Length < totalVerts)
         {
-            clip.Verts = new NVGvertex[totalFillVerts];
+            clip.Verts = new NVGvertex[totalVerts];
         }
         if (clip.Paths.Length < _cache.NPaths)
         {
@@ -955,10 +955,8 @@ internal sealed class NVGContext
         {
             ref var srcPath = ref _cache.Paths[i];
             var dstPath = srcPath;
-            dstPath.FillOffset = vertOffset;
-            dstPath.NStroke = 0;
-            dstPath.StrokeOffset = 0;
 
+            dstPath.FillOffset = vertOffset;
             if (srcPath.NFill > 0)
             {
                 _cache.Verts.AsSpan(srcPath.FillOffset, srcPath.NFill)
@@ -966,11 +964,19 @@ internal sealed class NVGContext
                 vertOffset += srcPath.NFill;
             }
 
+            dstPath.StrokeOffset = vertOffset;
+            if (srcPath.NStroke > 0)
+            {
+                _cache.Verts.AsSpan(srcPath.StrokeOffset, srcPath.NStroke)
+                    .CopyTo(clip.Verts.AsSpan(vertOffset));
+                vertOffset += srcPath.NStroke;
+            }
+
             clip.Paths[i] = dstPath;
         }
 
         clip.PathCount = _cache.NPaths;
-        clip.VertCount = totalFillVerts;
+        clip.VertCount = totalVerts;
 
         Array.Copy(_cache.Bounds, clip.Bounds, 4);
     }

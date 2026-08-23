@@ -65,6 +65,14 @@ public sealed class NanoVGMetal : NanoVG
         => _context.EnsureCoverageTexture(width, height);
 
     /// <summary>
+    /// Allocates (or resizes) the path-clip attachment the host binds as color[2] of its main
+    /// render pass, cleared to (1, 0, 0, 0). Call before building the render pass each frame;
+    /// a frame that clips without it fails in <c>Flush</c>.
+    /// </summary>
+    public IntPtr EnsureClipMaskTexture(int width, int height)
+        => _context.EnsureClipMaskTexture(width, height);
+
+    /// <summary>
     /// Signals that the GPU has completed rendering the frame
     /// Call this in your command buffer completion handler
     /// </summary>
