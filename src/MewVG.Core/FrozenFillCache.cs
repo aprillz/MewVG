@@ -64,9 +64,35 @@ public sealed class FrozenFillCache
     internal int SnapshotNVerts;
     internal float[] SnapshotBounds = new float[4];
 
+    // Coverage-mask path (see NVGContext.TryRasterizeCoverageMask): the mask is device-space,
+    // so it is keyed by the transform, fringe and winding rule it was built for, exactly like
+    // the tessellation snapshot above. Only CPU pixels live here; the renderer that draws the
+    // cache owns any device copy and keys it on (this cache, MaskVersion), so a cache shared
+    // between windows never carries one context's texture into another. LastUsedMask feeds
+    // the hysteresis that keeps a geometry on one path while its area-to-point ratio hovers
+    // around the switch threshold.
+    internal bool MaskValid;
+    internal bool LastUsedMask;
+    internal byte[] MaskPixels = Array.Empty<byte>();
+    internal int MaskWidth;
+    internal int MaskHeight;
+    // Bumped on every rasterization; a renderer re-uploads when the version it holds differs.
+    internal int MaskVersion;
+    // Device-pixel placement of the mask, and the unclipped device-pixel bounds of the
+    // geometry it was cut from: the mask is reusable only while everything visible of the
+    // geometry lies inside it.
+    internal float MaskOriginX;
+    internal float MaskOriginY;
+    internal float[] MaskGeometryPx = new float[4];
+    internal float[] MaskXform = new float[6];
+    internal float MaskFringe;
+    internal Tess.TessWindingRule MaskWindingRule;
+    internal float[] MaskBounds = new float[4];
+
     /// <summary>
-    /// Approximate managed size of the cached tessellation data, for consumers that keep many
-    /// caches alive and evict against a memory budget.
+    /// Approximate managed size of the cached tessellation and mask data, for consumers that
+    /// keep many caches alive and evict against a memory budget. A renderer's device copy of
+    /// the mask is the same size again.
     /// </summary>
     public long EstimatedBytes =>
         ContourPoints.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpoint>() +
@@ -74,5 +100,6 @@ public sealed class FrozenFillCache
         (TessVertices?.Length ?? 0) * 8L +
         (TessIndices?.Length ?? 0) * 4L +
         SnapshotPaths.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpathData>() +
-        SnapshotVerts.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGvertex>();
+        SnapshotVerts.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGvertex>() +
+        MaskPixels.Length;
 }

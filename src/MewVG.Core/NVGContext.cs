@@ -183,6 +183,33 @@ internal sealed class NVGContext
     // Render backend
     private readonly INVGRenderer _renderer;
 
+    // Coverage-mask fill (agent/coverage-mask-fill/plan.md). A fill whose boundaries interact
+    // takes this path instead of winding resolution plus tessellation when its clipped device
+    // area per flattened point is small: mask cost scales with area, tessellation cost with
+    // points. The leave threshold sits above the enter threshold so a frozen geometry zooming
+    // around the switch point keeps one path.
+    private const float MASK_ENTER_AREA_PER_POINT = 500f;
+    private const float MASK_LEAVE_AREA_PER_POINT = 1000f;
+    private const int MASK_MAX_EXTENT = 8192;
+    // Below this the resolution sweep is already sub-millisecond, and a per-draw texture
+    // upload would cost more than it saves (a 2,000-point star measured 9.9ms against 8.6ms).
+    private const int MASK_MIN_POINTS = 2000;
+    // One mask is at most a 4K frame's worth of pixels; a frozen cache keeps a CPU copy and
+    // the renderer a device copy, so this bounds both. Unfrozen fills upload a fresh mask every
+    // draw, and a frame stops taking that route once its uploads reach the transient budget.
+    private const long MASK_MAX_BYTES = 16L * 1024 * 1024;
+    private const long MASK_TRANSIENT_FRAME_BUDGET_BYTES = 32L * 1024 * 1024;
+
+    private readonly CoverageRasterizer _maskRasterizer = new();
+    private float _frameWidth;
+    private float _frameHeight;
+    private bool _lastFillUsedMask;
+    private int _maskOriginPxX;
+    private int _maskOriginPxY;
+    private readonly float[] _maskBounds = new float[4];
+    private readonly float[] _maskGeometryPx = new float[4];
+    private long _maskTransientBytesThisFrame;
+
     private readonly bool _edgeAntiAlias;
 
     // Commands
@@ -862,8 +889,9 @@ internal sealed class NVGContext
         var fillFringe = _fringeWidth;
 
         // Clip uses stencil (binary inside/outside) - pass fringe=0 so fill
-        // triangles stay at geometric boundary (no inset that would shrink clip).
-        ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
+        // triangles stay at geometric boundary (no inset that would shrink clip). The renderer
+        // needs geometry here, never a CPU mask in its place.
+        ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule), allowMask: false);
 
         var clip = RentClipBuffer(_clipStack.Count);
         CaptureClipSnapshot(clip, state.Scissor, fillFringe);
@@ -958,8 +986,11 @@ internal sealed class NVGContext
         Reset();
 
         SetDevicePixelRatio(devicePixelRatio);
+        _frameWidth = windowWidth;
+        _frameHeight = windowHeight;
 
         _renderer.BeginFrame(windowWidth, windowHeight, devicePixelRatio);
+        _maskTransientBytesThisFrame = 0;
 
         DrawCallCount = 0;
         FillTriCount = 0;
@@ -1306,6 +1337,258 @@ internal sealed class NVGContext
         _cache.NPoints = 0;
         _cache.NPaths = 0;
     }
+
+    #region Coverage mask fill
+
+    /// <summary>Rasterizes the current device-space contours into a coverage mask when the
+    /// area-per-point gate favours it over winding resolution. Leaves the mask in
+    /// <see cref="_maskRasterizer"/> and its placement in the mask fields.</summary>
+    private bool TryRasterizeCoverageMask(TessWindingRule windingRule, FrozenFillCache? tessCache)
+    {
+        if (_cache.NPoints < MASK_MIN_POINTS)
+        {
+            if (tessCache != null) tessCache.LastUsedMask = false;
+            return false;
+        }
+
+        float minX = float.MaxValue, minY = float.MaxValue, maxX = float.MinValue, maxY = float.MinValue;
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref readonly var path = ref _cache.Paths[i];
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            for (var j = 0; j < points.Length; j++)
+            {
+                ref readonly var point = ref points[j];
+                if (point.X < minX) minX = point.X;
+                if (point.X > maxX) maxX = point.X;
+                if (point.Y < minY) minY = point.Y;
+                if (point.Y > maxY) maxY = point.Y;
+            }
+        }
+
+        // The unclipped extent decides later whether a cached mask still covers what is visible.
+        var scale = _devicePxRatio;
+        _maskGeometryPx[0] = minX * scale;
+        _maskGeometryPx[1] = minY * scale;
+        _maskGeometryPx[2] = maxX * scale;
+        _maskGeometryPx[3] = maxY * scale;
+
+        // Clip to the frame and the scissor: the mask only has to cover what can show, and the
+        // gate compares visible area, not the geometry's full extent.
+        minX = MathF.Max(minX, 0f);
+        minY = MathF.Max(minY, 0f);
+        maxX = MathF.Min(maxX, _frameWidth);
+        maxY = MathF.Min(maxY, _frameHeight);
+        ref var state = ref GetState();
+        if (state.Scissor.Extent[0] >= 0f && state.Scissor.Extent[1] >= 0f)
+        {
+            ScissorDeviceBounds(ref state.Scissor, out var sx0, out var sy0, out var sx1, out var sy1);
+            minX = MathF.Max(minX, sx0);
+            minY = MathF.Max(minY, sy0);
+            maxX = MathF.Min(maxX, sx1);
+            maxY = MathF.Min(maxY, sy1);
+        }
+        if (maxX <= minX || maxY <= minY)
+        {
+            return false;
+        }
+
+        var originPxX = (int)MathF.Floor(minX * scale);
+        var originPxY = (int)MathF.Floor(minY * scale);
+        var width = (int)MathF.Ceiling(maxX * scale) - originPxX;
+        var height = (int)MathF.Ceiling(maxY * scale) - originPxY;
+        if (width < 1 || height < 1 || width > MASK_MAX_EXTENT || height > MASK_MAX_EXTENT
+            || (long)width * height > MASK_MAX_BYTES)
+        {
+            if (tessCache != null) tessCache.LastUsedMask = false;
+            return false;
+        }
+
+        // A frozen mask is uploaded once and reused; an unfrozen one is uploaded per draw and
+        // counts against this frame's transient budget.
+        if (tessCache == null && _maskTransientBytesThisFrame + (long)width * height > MASK_TRANSIENT_FRAME_BUDGET_BYTES)
+        {
+            return false;
+        }
+
+        var areaPerPoint = (float)width * height / _cache.NPoints;
+        var threshold = tessCache is { LastUsedMask: true } ? MASK_LEAVE_AREA_PER_POINT : MASK_ENTER_AREA_PER_POINT;
+        if (areaPerPoint > threshold)
+        {
+            if (tessCache != null) tessCache.LastUsedMask = false;
+            return false;
+        }
+
+        var originX = originPxX / scale;
+        var originY = originPxY / scale;
+        _maskRasterizer.Clear();
+        for (var i = 0; i < _cache.NPaths; i++)
+        {
+            ref readonly var path = ref _cache.Paths[i];
+            if (path.Count < 3)
+            {
+                continue;
+            }
+
+            var points = _cache.Points.AsSpan(path.First, path.Count);
+            if (scale == 1f)
+            {
+                _maskRasterizer.AddContour(points, originX, originY);
+            }
+            else
+            {
+                AddScaledContour(points, originX, originY, scale);
+            }
+        }
+        _maskRasterizer.Rasterize(width, height, windingRule);
+
+        _maskOriginPxX = originPxX;
+        _maskOriginPxY = originPxY;
+        _maskBounds[0] = originX;
+        _maskBounds[1] = originY;
+        _maskBounds[2] = (originPxX + width) / scale;
+        _maskBounds[3] = (originPxY + height) / scale;
+        _lastFillUsedMask = true;
+        if (tessCache != null) tessCache.LastUsedMask = true;
+        return true;
+    }
+
+    private NVGpoint[] _maskScaledPoints = Array.Empty<NVGpoint>();
+
+    private void AddScaledContour(ReadOnlySpan<NVGpoint> points, float originX, float originY, float scale)
+    {
+        if (_maskScaledPoints.Length < points.Length)
+        {
+            _maskScaledPoints = new NVGpoint[Math.Max(points.Length, _maskScaledPoints.Length * 2)];
+        }
+
+        var scaled = _maskScaledPoints.AsSpan(0, points.Length);
+        for (var i = 0; i < points.Length; i++)
+        {
+            scaled[i].X = (points[i].X - originX) * scale;
+            scaled[i].Y = (points[i].Y - originY) * scale;
+        }
+        _maskRasterizer.AddContour(scaled, 0f, 0f);
+    }
+
+    private static void ScissorDeviceBounds(ref NVGscissorState scissor, out float x0, out float y0, out float x1, out float y1)
+    {
+        // Axis-aligned bounds of the rotated scissor rectangle: centre plus the transformed
+        // half-extents, each axis taking the absolute contributions of both basis vectors.
+        var halfW = MathF.Abs(scissor.Xform[0]) * scissor.Extent[0] + MathF.Abs(scissor.Xform[2]) * scissor.Extent[1];
+        var halfH = MathF.Abs(scissor.Xform[1]) * scissor.Extent[0] + MathF.Abs(scissor.Xform[3]) * scissor.Extent[1];
+        x0 = scissor.Xform[4] - halfW;
+        x1 = scissor.Xform[4] + halfW;
+        y0 = scissor.Xform[5] - halfH;
+        y1 = scissor.Xform[5] + halfH;
+    }
+
+    private void SubmitMaskFill(
+        ref NVGpaint paint,
+        ref NVGstate state,
+        ReadOnlySpan<byte> coverage,
+        int maskWidth,
+        int maskHeight,
+        ReadOnlySpan<float> bounds,
+        float maskOriginPxX,
+        float maskOriginPxY,
+        object? cacheKey,
+        int cacheVersion)
+    {
+        paint.InnerColor.A *= state.Alpha;
+        paint.OuterColor.A *= state.Alpha;
+        // The mask lives in device pixels while bounds and the origin handed to the renderer
+        // are in the frame's units; the renderer maps between them with the pixel ratio.
+        _renderer.RenderMaskFill(
+            ref paint,
+            state.CompositeOperation,
+            ref state.Scissor,
+            _fringeWidth,
+            bounds,
+            coverage,
+            maskWidth,
+            maskHeight,
+            maskOriginPxX / _devicePxRatio,
+            maskOriginPxY / _devicePxRatio,
+            cacheKey,
+            cacheVersion);
+        DrawCallCount++;
+        FillTriCount += 2;
+    }
+
+    /// <summary>Whether the cached mask still contains everything of the geometry that can show:
+    /// the mask was cut to the frame and scissor of its build, and a wider frame or scissor since
+    /// then would expose the cut edge.</summary>
+    private bool MaskCoversVisible(FrozenFillCache cache, ref NVGstate state)
+    {
+        var scale = _devicePxRatio;
+        var visibleX0 = MathF.Max(cache.MaskGeometryPx[0], 0f);
+        var visibleY0 = MathF.Max(cache.MaskGeometryPx[1], 0f);
+        var visibleX1 = MathF.Min(cache.MaskGeometryPx[2], _frameWidth * scale);
+        var visibleY1 = MathF.Min(cache.MaskGeometryPx[3], _frameHeight * scale);
+        if (state.Scissor.Extent[0] >= 0f && state.Scissor.Extent[1] >= 0f)
+        {
+            ScissorDeviceBounds(ref state.Scissor, out var sx0, out var sy0, out var sx1, out var sy1);
+            visibleX0 = MathF.Max(visibleX0, sx0 * scale);
+            visibleY0 = MathF.Max(visibleY0, sy0 * scale);
+            visibleX1 = MathF.Min(visibleX1, sx1 * scale);
+            visibleY1 = MathF.Min(visibleY1, sy1 * scale);
+        }
+        if (visibleX1 <= visibleX0 || visibleY1 <= visibleY0)
+        {
+            return true;
+        }
+
+        return visibleX0 >= cache.MaskOriginX
+            && visibleY0 >= cache.MaskOriginY
+            && visibleX1 <= cache.MaskOriginX + cache.MaskWidth
+            && visibleY1 <= cache.MaskOriginY + cache.MaskHeight;
+    }
+
+    private void StoreMaskInCache(FrozenFillCache cache, TessWindingRule windingRule, float fringe, Buffer6<float> xform)
+    {
+        var width = _maskRasterizer.Width;
+        var height = _maskRasterizer.Height;
+        var coverage = _maskRasterizer.Mask.AsSpan(0, width * height);
+
+        if (cache.MaskPixels.Length < coverage.Length)
+        {
+            cache.MaskPixels = new byte[coverage.Length];
+        }
+        coverage.CopyTo(cache.MaskPixels);
+        cache.MaskVersion++;
+
+        cache.MaskWidth = width;
+        cache.MaskHeight = height;
+        cache.MaskOriginX = _maskOriginPxX;
+        cache.MaskOriginY = _maskOriginPxY;
+        _maskBounds.CopyTo(cache.MaskBounds, 0);
+        _maskGeometryPx.CopyTo(cache.MaskGeometryPx, 0);
+        for (var i = 0; i < 6; i++)
+        {
+            cache.MaskXform[i] = xform[i];
+        }
+        cache.MaskFringe = fringe;
+        cache.MaskWindingRule = windingRule;
+        cache.MaskValid = true;
+        // One device-space replay per cache: the tessellation snapshot answers the same
+        // (transform, fringe, rule) key, so it would only duplicate memory here.
+        cache.SnapshotValid = false;
+    }
+
+    private static bool XformEquals(float[] stored, Buffer6<float> current)
+    {
+        for (var i = 0; i < 6; i++)
+        {
+            if (stored[i] != current[i])
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    #endregion
 
     private void AddPath()
     {
@@ -1694,6 +1977,18 @@ internal sealed class NVGContext
             ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
         }
 
+        if (_lastFillUsedMask)
+        {
+            // Nothing caches an unfrozen fill: the renderer gets a one-draw mask.
+            var width = _maskRasterizer.Width;
+            var height = _maskRasterizer.Height;
+            _maskTransientBytesThisFrame += (long)width * height;
+            SubmitMaskFill(ref fillPaint, ref state, _maskRasterizer.Mask.AsSpan(0, width * height), width, height,
+                _maskBounds, _maskOriginPxX, _maskOriginPxY, cacheKey: null, cacheVersion: 0);
+            ClearPathCache();
+            return;
+        }
+
         // Apply global alpha
         fillPaint.InnerColor.A *= state.Alpha;
         fillPaint.OuterColor.A *= state.Alpha;
@@ -1918,6 +2213,14 @@ internal sealed class NVGContext
         var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
         var fringe = useFringeAa ? _fringeWidth : 0.0f;
 
+        if (cache.MaskValid && cache.MaskFringe == fringe && cache.MaskWindingRule == windingRule &&
+            XformEquals(cache.MaskXform, state.Xform) && MaskCoversVisible(cache, ref state))
+        {
+            SubmitMaskFill(ref fillPaint, ref state, cache.MaskPixels.AsSpan(0, cache.MaskWidth * cache.MaskHeight),
+                cache.MaskWidth, cache.MaskHeight, cache.MaskBounds, cache.MaskOriginX, cache.MaskOriginY, cache, cache.MaskVersion);
+            return;
+        }
+
         if (TryFillFromDeviceSnapshot(cache, windingRule, fringe, ref state, fillPaint))
         {
             return;
@@ -1934,6 +2237,15 @@ internal sealed class NVGContext
         else
         {
             ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
+        }
+
+        if (_lastFillUsedMask)
+        {
+            StoreMaskInCache(cache, windingRule, fringe, state.Xform);
+            SubmitMaskFill(ref fillPaint, ref state, cache.MaskPixels.AsSpan(0, cache.MaskWidth * cache.MaskHeight),
+                cache.MaskWidth, cache.MaskHeight, cache.MaskBounds, cache.MaskOriginX, cache.MaskOriginY, cache, cache.MaskVersion);
+            ClearPathCache();
+            return;
         }
 
         if (_lastFillUsedBoundaryResolution)
@@ -2032,6 +2344,9 @@ internal sealed class NVGContext
         float fringe,
         Buffer6<float> xform)
     {
+        // Same reasoning as StoreMaskInCache: one device-space replay per cache.
+        cache.MaskValid = false;
+
         if (cache.SnapshotPaths.Length < _cache.NPaths)
         {
             cache.SnapshotPaths = new NVGpathData[_cache.NPaths];
@@ -2171,7 +2486,7 @@ internal sealed class NVGContext
     #region Expand Fill/Stroke (Simplified)
 
     private void ExpandFill(float w, NVGlineJoin lineJoin, float miterLimit, TessWindingRule tessWindingRule,
-        FrozenFillCache? tessCache = null)
+        FrozenFillCache? tessCache = null, bool allowMask = true)
     {
         var fastSingleConvex = false;
         if (_cache.NPaths == 1)
@@ -2200,9 +2515,20 @@ internal sealed class NVGContext
             NormalizeContoursForFill(_distTol, 0.0f);
         }
         var resolvedFillBoundary = false;
+        _lastFillUsedMask = false;
         if (!fastSingleConvex && w > 0.0f && _cache.NPaths >= 1 &&
             FillNeedsBoundaryResolution(_fringeWidth))
         {
+            if (allowMask && TryRasterizeCoverageMask(tessWindingRule, tessCache))
+            {
+                // The mask carries both fill and anti-aliasing; the caller submits it in
+                // place of the vertex output.
+                _lastFillUsedBoundaryResolution = false;
+                _cache.NPaths = 0;
+                _cache.NVerts = 0;
+                return;
+            }
+
             // Resolve winding and coincident edges before building either the opaque
             // fill body or its AA fringe. This runs on the current device-space
             // contours, including contours restored from an object-space cache.

@@ -94,6 +94,28 @@ internal sealed class FakeRenderer : INVGRenderer
         ResetClipCount++;
         ClipEvents.Add(new ClipResetEvent());
     }
+
+    /// <summary>One RenderMaskFill invocation with its coverage bytes copied, plus the cache key and version the core handed over.</summary>
+    public sealed record MaskFillCall(float[] Bounds, float MaskOriginX, float MaskOriginY, int MaskWidth, int MaskHeight, byte[] Coverage, object? CacheKey, int CacheVersion);
+
+    public List<MaskFillCall> MaskFillCalls { get; } = new();
+
+    public void RenderMaskFill(
+        ref NVGpaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        ReadOnlySpan<float> bounds,
+        ReadOnlySpan<byte> coverage,
+        int maskWidth,
+        int maskHeight,
+        float maskOriginX,
+        float maskOriginY,
+        object? cacheKey,
+        int cacheVersion)
+    {
+        MaskFillCalls.Add(new MaskFillCall(bounds.ToArray(), maskOriginX, maskOriginY, maskWidth, maskHeight, coverage.ToArray(), cacheKey, cacheVersion));
+    }
 }
 
 /// <summary>

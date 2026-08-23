@@ -47,7 +47,8 @@ internal enum StencilFace : int
 internal enum TextureUnit : int
 {
     Texture0 = 0x84C0,
-    Texture1 = 0x84C1
+    Texture1 = 0x84C1,
+    Texture2 = 0x84C2,
 }
 
 internal enum TextureTarget : int
@@ -275,6 +276,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glDisableVertexAttribArray;
     private static delegate* unmanaged<uint, int, uint, byte, int, void*, void> _glVertexAttribPointer;
     private static delegate* unmanaged<int, int, void> _glUniform1i;
+    private static delegate* unmanaged<int, float, void> _glUniform1f;
     private static delegate* unmanaged<int, int, float*, void> _glUniform2fv;
     private static delegate* unmanaged<int, int, float*, void> _glUniform4fv;
     private static delegate* unmanaged<int, uint*, void> _glGenTextures;
@@ -382,6 +384,7 @@ internal static unsafe class GL
         _glDisableVertexAttribArray = (delegate* unmanaged<uint, void>)LoadProc("glDisableVertexAttribArray");
         _glVertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)LoadProc("glVertexAttribPointer");
         _glUniform1i = (delegate* unmanaged<int, int, void>)LoadProc("glUniform1i");
+        _glUniform1f = (delegate* unmanaged<int, float, void>)LoadProc("glUniform1f");
         _glUniform2fv = (delegate* unmanaged<int, int, float*, void>)LoadProc("glUniform2fv");
         _glUniform4fv = (delegate* unmanaged<int, int, float*, void>)LoadProc("glUniform4fv");
         _glGenTextures = (delegate* unmanaged<int, uint*, void>)LoadProc("glGenTextures");
@@ -492,6 +495,7 @@ internal static unsafe class GL
         => _glVertexAttribPointer((uint)index, size, (uint)type, (byte)(normalized ? 1 : 0), stride, (void*)(nint)pointer);
 
     public static void Uniform1(int location, int v0) => _glUniform1i(location, v0);
+    public static void Uniform1(int location, float v0) => _glUniform1f(location, v0);
 
     public static void Uniform2(int location, int count, ReadOnlySpan<float> value)
     {
