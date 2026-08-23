@@ -609,9 +609,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _fillShapeStencilState;
     private IntPtr _fillAntiAliasStencilState;
     private IntPtr _fillStencilState;
-    private IntPtr _strokeShapeStencilState;
-    private IntPtr _strokeAntiAliasStencilState;
-    private IntPtr _strokeClearStencilState;
 
     // Buffers and textures
     private MNVGbuffers[] _buffers;
@@ -674,7 +671,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private MTLPixelFormat _stencilFormat;
     private float _devicePixelRatio;
     private Vector2 _viewSize;
-    private bool _recordingClipActive;
     // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
     private readonly MaskImageCache _maskImages;
     private bool _disposed;
@@ -1384,39 +1380,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
         _fillStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
 
-        // Stroke shape stencil state
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Equal);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Keep);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.IncrementClamp);
-
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
-        _strokeShapeStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Stroke anti-alias stencil state
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Keep);
-
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
-        _strokeAntiAliasStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
-        // Stroke clear stencil state
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilReadMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilWriteMask, NanoVgStencilMask);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilCompareFunction, (ulong)MTLCompareFunction.Always);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setStencilFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthFailureOperation, (ulong)MTLStencilOperation.Zero);
-        ObjCRuntime.SendMessage(frontFaceStencil, MetalSelectors.setDepthStencilPassOperation, (ulong)MTLStencilOperation.Zero);
-
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setFrontFaceStencil, frontFaceStencil);
-        ObjCRuntime.SendMessage(depthStencilDescriptor, MetalSelectors.setBackFaceStencil, frontFaceStencil);
-        _strokeClearStencilState = ObjCRuntime.SendMessage(_device, MetalSelectors.newDepthStencilStateWithDescriptor, depthStencilDescriptor);
-
         // Release descriptors
         ObjCRuntime.SendMessage(frontFaceStencil, ObjCRuntime.Selectors.release);
         ObjCRuntime.SendMessage(backFaceStencil, ObjCRuntime.Selectors.release);
@@ -1488,7 +1451,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pathCount = 0;
         _vertCount = 0;
         _uniformCount = 0;
-        _recordingClipActive = false;
         _maskImages.BeginFrame();
     }
 
@@ -2013,91 +1975,23 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void RenderStroke(ref MNVGbuffers buffers, ref MNVGcall call)
     {
-        if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
+        SetDepthStencilState(_defaultStencilState);
+        SetCullMode(MTLCullMode.None);
+
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+
+        for (var i = 0; i < call.pathCount; i++)
         {
-            // Stencil stroke
-            SetCullMode(MTLCullMode.None);
-            SetDepthStencilState(_strokeShapeStencilState);
-            SetStencilReferenceValue((uint)0);
-
-            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
-
-            for (var i = 0; i < call.pathCount; i++)
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.strokeCount > 0)
             {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip,
-                        (nuint)path.strokeOffset,
-                        (nuint)path.strokeCount
-                    );
-                }
-            }
-
-            // Anti-alias
-            SetDepthStencilState(_strokeAntiAliasStencilState);
-
-            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
-
-            for (var i = 0; i < call.pathCount; i++)
-            {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip,
-                        (nuint)path.strokeOffset,
-                        (nuint)path.strokeCount
-                    );
-                }
-            }
-
-            // Clear stencil
-            SetDepthStencilState(_strokeClearStencilState);
-
-            for (var i = 0; i < call.pathCount; i++)
-            {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip,
-                        (nuint)path.strokeOffset,
-                        (nuint)path.strokeCount
-                    );
-                }
-            }
-
-            SetDepthStencilState(_defaultStencilState);
-        }
-        else
-        {
-            // Simple stroke
-            SetDepthStencilState(_defaultStencilState);
-            SetCullMode(MTLCullMode.None);
-
-            SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
-
-            for (var i = 0; i < call.pathCount; i++)
-            {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip,
-                        (nuint)path.strokeOffset,
-                        (nuint)path.strokeCount
-                    );
-                }
+                ObjCRuntime.SendMessage(
+                    _renderEncoder,
+                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.TriangleStrip,
+                    (nuint)path.strokeOffset,
+                    (nuint)path.strokeCount
+                );
             }
         }
     }
@@ -2745,7 +2639,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pathCount = 0;
         _vertCount = 0;
         _uniformCount = 0;
-        _recordingClipActive = false;
     }
 
     void INVGRenderer.BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio)
@@ -2963,22 +2856,12 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             && PaintHasTransparency(paint);
 
         // Allocate uniforms
-        var stencilStrokes = (_flags & NVGcreateFlags.StencilStrokes) != 0 && !_recordingClipActive;
-        call.uniformOffset = AllocUniforms(stencilStrokes ? 2 : 1);
+        call.uniformOffset = AllocUniforms(1);
 
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
             ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, -1.0f);
-        }
-
-        if (stencilStrokes)
-        {
-            fixed (byte* ptr = &_uniforms[(call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
-            {
-                var frag = (MNVGfragUniforms*)ptr;
-                ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, 1.0f - 0.5f / 255.0f);
-            }
         }
 
         // Coverage AA composite needs a bounds quad. Compute from stroke verts
@@ -3169,7 +3052,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _verts[_vertCount++] = new NVGvertex(0, _viewSize.Y, 0.5f, 1.0f);
         _verts[_vertCount++] = new NVGvertex(0, 0, 0.5f, 1.0f);
 
-        _recordingClipActive = true;
     }
 
     internal void ResetClip()
@@ -3197,7 +3079,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _verts[_vertCount++] = new NVGvertex(0, _viewSize.Y, 0.5f, 1.0f);
         _verts[_vertCount++] = new NVGvertex(0, 0, 0.5f, 1.0f);
 
-        _recordingClipActive = false;
     }
 
     private void ConvertPaint(MNVGfragUniforms* frag, ref NVGpaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
@@ -3478,21 +3359,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_fillStencilState != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_fillStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_strokeShapeStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_strokeShapeStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_strokeAntiAliasStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_strokeAntiAliasStencilState, ObjCRuntime.Selectors.release);
-        }
-
-        if (_strokeClearStencilState != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_strokeClearStencilState, ObjCRuntime.Selectors.release);
         }
 
         if (_vertexFunction != IntPtr.Zero)

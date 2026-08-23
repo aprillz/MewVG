@@ -714,19 +714,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             SetUniformValue(coverageOut, 12, 1, -1.0f);
             SetUniformValue(coverageOut, 12, 3, (float)GLNVGShaderType.CoverageOutput);
         }
-        else if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
-        {
-            call.UniformOffset = AllocUniforms(2);
-            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f))
-            {
-                return;
-            }
-
-            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, strokeWidth, fringe, 1.0f - 0.5f / 255.0f))
-            {
-                return;
-            }
-        }
         else
         {
             call.UniformOffset = AllocUniforms(1);
@@ -1163,39 +1150,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var strokeMode = call.MergedStrokeIsStrip ? PrimitiveType.TriangleStrip : PrimitiveType.Triangles;
 
         GL.Disable(EnableCap.CullFace);
-
-        if ((_flags & NVGcreateFlags.StencilStrokes) != 0)
-        {
-            GL.Enable(EnableCap.StencilTest);
-            StencilMask(0xff);
-
-            StencilFunc(StencilFunction.Equal, 0x0, 0xff);
-            GL.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Incr);
-            SetUniforms(call.UniformOffset + 1, call.Image);
-            if (call.MergedStrokeCount > 0)
-                GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
-
-            SetUniforms(call.UniformOffset, call.Image);
-            StencilFunc(StencilFunction.Equal, 0x00, 0xff);
-            GL.StencilOp(StencilOp.Keep, StencilOp.Keep, StencilOp.Keep);
-            if (call.MergedStrokeCount > 0)
-                GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
-
-            GL.ColorMask(false, false, false, false);
-            StencilFunc(StencilFunction.Always, 0x0, 0xff);
-            GL.StencilOp(StencilOp.Zero, StencilOp.Zero, StencilOp.Zero);
-            if (call.MergedStrokeCount > 0)
-                GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
-
-            GL.ColorMask(true, true, true, true);
-            GL.Disable(EnableCap.StencilTest);
-        }
-        else
-        {
-            SetUniforms(call.UniformOffset, call.Image);
-            if (call.MergedStrokeCount > 0)
-                GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
-        }
+        SetUniforms(call.UniformOffset, call.Image);
+        if (call.MergedStrokeCount > 0)
+            GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
         GL.Enable(EnableCap.CullFace);
     }
 
