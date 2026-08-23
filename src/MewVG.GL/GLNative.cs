@@ -7,8 +7,7 @@ internal enum EnableCap : int
     Blend = 0x0BE2,
     CullFace = 0x0B44,
     DepthTest = 0x0B71,
-    ScissorTest = 0x0C11,
-    StencilTest = 0x0B90
+    ScissorTest = 0x0C11
 }
 
 internal enum CullFaceMode : int
@@ -19,29 +18,6 @@ internal enum CullFaceMode : int
 internal enum FrontFaceDirection : int
 {
     Ccw = 0x0901
-}
-
-internal enum StencilFunction : int
-{
-    Always = 0x0207,
-    Equal = 0x0202,
-    Notequal = 0x0205
-}
-
-internal enum StencilOp : int
-{
-    Keep = 0x1E00,
-    Replace = 0x1E01,
-    Zero = 0,
-    Incr = 0x1E02,
-    IncrWrap = 0x8507,
-    DecrWrap = 0x8508
-}
-
-internal enum StencilFace : int
-{
-    Front = 0x0404,
-    Back = 0x0405
 }
 
 internal enum TextureUnit : int
@@ -149,20 +125,7 @@ internal enum FramebufferTarget : int
 
 internal enum FramebufferAttachment : int
 {
-    ColorAttachment0 = 0x8CE0,
-    StencilAttachment = 0x8D20,
-    DepthStencilAttachment = 0x821A
-}
-
-internal enum RenderbufferTarget : int
-{
-    Renderbuffer = 0x8D41
-}
-
-internal enum RenderbufferStorage : int
-{
-    StencilIndex8 = 0x8D48,
-    Depth24Stencil8 = 0x88F0
+    ColorAttachment0 = 0x8CE0
 }
 
 internal enum FramebufferErrorCode : int
@@ -229,7 +192,6 @@ internal enum GetPName : int
     Viewport = 0x0BA2,
     MaxRenderbufferSize = 0x84E8,
     FramebufferBinding = 0x8CA6,
-    RenderbufferBinding = 0x8CA7,
     MaxUniformBlockSize = 0x8A30
 }
 
@@ -242,7 +204,6 @@ internal enum BlendEquationMode : int
 [Flags]
 internal enum ClearBufferMask : uint
 {
-    StencilBufferBit = 0x00000400,
     ColorBufferBit = 0x00004000
 }
 
@@ -262,10 +223,6 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glCullFace;
     private static delegate* unmanaged<uint, void> _glFrontFace;
     private static delegate* unmanaged<byte, byte, byte, byte, void> _glColorMask;
-    private static delegate* unmanaged<uint, void> _glStencilMask;
-    private static delegate* unmanaged<uint, uint, uint, void> _glStencilOp;
-    private static delegate* unmanaged<uint, uint, uint, uint, void> _glStencilOpSeparate;
-    private static delegate* unmanaged<uint, int, uint, void> _glStencilFunc;
     private static delegate* unmanaged<uint, void> _glActiveTexture;
     private static delegate* unmanaged<uint, uint, void> _glBindTexture;
     private static delegate* unmanaged<uint, void> _glBindVertexArray;
@@ -310,17 +267,11 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint> _glGetError;
     private static delegate* unmanaged<int, uint*, void> _glGenFramebuffers;
     private static delegate* unmanaged<uint, uint, void> _glBindFramebuffer;
-    private static delegate* unmanaged<int, uint*, void> _glGenRenderbuffers;
-    private static delegate* unmanaged<uint, uint, void> _glBindRenderbuffer;
-    private static delegate* unmanaged<uint, uint, uint, uint, void> _glRenderbufferStorage;
     private static delegate* unmanaged<uint, uint, uint, uint, int, void> _glFramebufferTexture2D;
-    private static delegate* unmanaged<uint, uint, uint, uint, void> _glFramebufferRenderbuffer;
     private static delegate* unmanaged<uint, uint> _glCheckFramebufferStatus;
     private static delegate* unmanaged<int, uint*, void> _glDeleteFramebuffers;
-    private static delegate* unmanaged<int, uint*, void> _glDeleteRenderbuffers;
     private static delegate* unmanaged<uint, void> _glBlendEquation;
     private static delegate* unmanaged<float, float, float, float, void> _glClearColor;
-    private static delegate* unmanaged<int, void> _glClearStencil;
     private static delegate* unmanaged<uint, void> _glClear;
     private static delegate* unmanaged<int, int, int, int, void> _glScissor;
     private static delegate* unmanaged<int, int, int, int, void> _glViewport;
@@ -370,10 +321,6 @@ internal static unsafe class GL
         _glCullFace = (delegate* unmanaged<uint, void>)LoadProc("glCullFace");
         _glFrontFace = (delegate* unmanaged<uint, void>)LoadProc("glFrontFace");
         _glColorMask = (delegate* unmanaged<byte, byte, byte, byte, void>)LoadProc("glColorMask");
-        _glStencilMask = (delegate* unmanaged<uint, void>)LoadProc("glStencilMask");
-        _glStencilOp = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glStencilOp");
-        _glStencilOpSeparate = (delegate* unmanaged<uint, uint, uint, uint, void>)LoadProc("glStencilOpSeparate");
-        _glStencilFunc = (delegate* unmanaged<uint, int, uint, void>)LoadProc("glStencilFunc");
         _glActiveTexture = (delegate* unmanaged<uint, void>)LoadProc("glActiveTexture");
         _glBindTexture = (delegate* unmanaged<uint, uint, void>)LoadProc("glBindTexture");
         _glBindVertexArray = (delegate* unmanaged<uint, void>)LoadProc("glBindVertexArray");
@@ -418,17 +365,11 @@ internal static unsafe class GL
         _glGetError = (delegate* unmanaged<uint>)LoadProc("glGetError");
         _glGenFramebuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glGenFramebuffers");
         _glBindFramebuffer = (delegate* unmanaged<uint, uint, void>)LoadProc("glBindFramebuffer");
-        _glGenRenderbuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glGenRenderbuffers");
-        _glBindRenderbuffer = (delegate* unmanaged<uint, uint, void>)LoadProc("glBindRenderbuffer");
-        _glRenderbufferStorage = (delegate* unmanaged<uint, uint, uint, uint, void>)LoadProc("glRenderbufferStorage");
         _glFramebufferTexture2D = (delegate* unmanaged<uint, uint, uint, uint, int, void>)LoadProc("glFramebufferTexture2D");
-        _glFramebufferRenderbuffer = (delegate* unmanaged<uint, uint, uint, uint, void>)LoadProc("glFramebufferRenderbuffer");
         _glCheckFramebufferStatus = (delegate* unmanaged<uint, uint>)LoadProc("glCheckFramebufferStatus");
         _glDeleteFramebuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteFramebuffers");
-        _glDeleteRenderbuffers = (delegate* unmanaged<int, uint*, void>)LoadProc("glDeleteRenderbuffers");
         _glBlendEquation = (delegate* unmanaged<uint, void>)LoadProc("glBlendEquation");
         _glClearColor = (delegate* unmanaged<float, float, float, float, void>)LoadProc("glClearColor");
-        _glClearStencil = (delegate* unmanaged<int, void>)LoadProc("glClearStencil");
         _glClear = (delegate* unmanaged<uint, void>)LoadProc("glClear");
         _glScissor = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glScissor");
         _glViewport = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glViewport");
@@ -450,15 +391,6 @@ internal static unsafe class GL
     public static void FrontFace(FrontFaceDirection mode) => _glFrontFace((uint)mode);
 
     public static void ColorMask(bool r, bool g, bool b, bool a) => _glColorMask((byte)(r ? 1 : 0), (byte)(g ? 1 : 0), (byte)(b ? 1 : 0), (byte)(a ? 1 : 0));
-
-    public static void StencilMask(int mask) => _glStencilMask((uint)mask);
-
-    public static void StencilOp(StencilOp fail, StencilOp zfail, StencilOp zpass) => _glStencilOp((uint)fail, (uint)zfail, (uint)zpass);
-
-    public static void StencilOpSeparate(StencilFace face, StencilOp sfail, StencilOp dpfail, StencilOp dppass)
-        => _glStencilOpSeparate((uint)face, (uint)sfail, (uint)dpfail, (uint)dppass);
-
-    public static void StencilFunc(StencilFunction func, int reference, int mask) => _glStencilFunc((uint)func, reference, (uint)mask);
 
     public static void ActiveTexture(TextureUnit texture) => _glActiveTexture((uint)texture);
 
@@ -698,23 +630,12 @@ internal static unsafe class GL
 
     public static void BindFramebuffer(FramebufferTarget target, int framebuffer) => _glBindFramebuffer((uint)target, (uint)framebuffer);
 
-    public static int GenRenderbuffer()
-    {
-        uint rb;
-        _glGenRenderbuffers(1, &rb);
-        return (int)rb;
-    }
 
-    public static void BindRenderbuffer(RenderbufferTarget target, int renderbuffer) => _glBindRenderbuffer((uint)target, (uint)renderbuffer);
 
-    public static void RenderbufferStorage(RenderbufferTarget target, RenderbufferStorage internalformat, int width, int height)
-        => _glRenderbufferStorage((uint)target, (uint)internalformat, (uint)width, (uint)height);
 
     public static void FramebufferTexture2D(FramebufferTarget target, FramebufferAttachment attachment, TextureTarget textarget, int texture, int level)
         => _glFramebufferTexture2D((uint)target, (uint)attachment, (uint)textarget, (uint)texture, level);
 
-    public static void FramebufferRenderbuffer(FramebufferTarget target, FramebufferAttachment attachment, RenderbufferTarget renderbuffertarget, int renderbuffer)
-        => _glFramebufferRenderbuffer((uint)target, (uint)attachment, (uint)renderbuffertarget, (uint)renderbuffer);
 
     public static FramebufferErrorCode CheckFramebufferStatus(FramebufferTarget target)
         => (FramebufferErrorCode)(int)_glCheckFramebufferStatus((uint)target);
@@ -725,17 +646,10 @@ internal static unsafe class GL
         _glDeleteFramebuffers(1, &fb);
     }
 
-    public static void DeleteRenderbuffer(int renderbuffer)
-    {
-        var rb = (uint)renderbuffer;
-        _glDeleteRenderbuffers(1, &rb);
-    }
 
     public static void BlendEquation(BlendEquationMode mode) => _glBlendEquation((uint)mode);
 
     public static void ClearColor(float r, float g, float b, float a) => _glClearColor(r, g, b, a);
-
-    public static void ClearStencil(int s) => _glClearStencil(s);
 
     public static void Clear(ClearBufferMask mask) => _glClear((uint)mask);
 
