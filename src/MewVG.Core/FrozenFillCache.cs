@@ -88,4 +88,18 @@ public sealed class FrozenFillCache
     internal float MaskFringe;
     internal Tess.TessWindingRule MaskWindingRule;
     internal float[] MaskBounds = new float[4];
+
+    /// <summary>
+    /// Approximate managed size of the cached tessellation and mask data, for consumers that
+    /// keep many caches alive and evict against a memory budget. A renderer's device copy of
+    /// the mask is the same size again.
+    /// </summary>
+    public long EstimatedBytes =>
+        ContourPoints.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpoint>() +
+        ContourPaths.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpathData>() +
+        (TessVertices?.Length ?? 0) * 8L +
+        (TessIndices?.Length ?? 0) * 4L +
+        SnapshotPaths.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGpathData>() +
+        SnapshotVerts.Length * (long)System.Runtime.CompilerServices.Unsafe.SizeOf<NVGvertex>() +
+        MaskPixels.Length;
 }
