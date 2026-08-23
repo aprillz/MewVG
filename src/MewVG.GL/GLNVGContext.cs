@@ -72,7 +72,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int TriangleCount;
         public int UniformOffset;
         public GLNVGBlend BlendFunc;
-        public bool HasTransparency;
+        // The call draws through the coverage scratch instead of directly (see RenderFill/RenderStroke).
+        public bool UsesCoverageAA;
         public int MergedFringeOffset;
         public int MergedFringeCount;
         public bool MergedFringeIsStrip;
@@ -165,7 +166,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _boundTexture;
     private GLNVGBlend _blendFunc;
     private bool _disposed;
-    private readonly bool _coverageFillAaEnabled;
 
     // captured once per Flush() so the coverage passes don't re-query GL state per call
     private int _flushMainFbo;
@@ -174,12 +174,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _flushViewportWidth;
     private int _flushViewportHeight;
 
-    private static bool HasTransparency(in NVGpaint paint)
+    private static bool PaintHasTransparency(in NVGpaint paint)
         => paint.InnerColor.A < 0.999f || paint.OuterColor.A < 0.999f;
 
     public GLNVGContext()
     {
-        _coverageFillAaEnabled = true;
         // GL orders commands: once a frame's calls are flushed, its images may be rewritten.
         _maskImages = new MaskImageCache(
             (width, height, coverage) => CreateTexture(NVGtextureType.Alpha, width, height, NVGimageFlags.Nearest, coverage),
@@ -565,9 +564,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         // The coverage buffer's Max-blended accumulation collapses overlapping fringe
         // strips to a clean boundary, where the direct fill + fringe-overlay path
         // would leave visible seams cutting across the fill interior.
-        call.HasTransparency = _coverageFillAaEnabled && !isConvexFill && paint.Image == 0;
+        call.UsesCoverageAA = !isConvexFill && paint.Image == 0;
 
-        if (call.HasTransparency)
+        if (call.UsesCoverageAA)
         {
             // Coverage buffer path: 3 uniform sets
             call.UniformOffset = AllocUniforms(3);
@@ -627,7 +626,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         call.Image = paint.Image;
         call.BlendFunc = BlendCompositeOperation(compositeOperation);
         var isConvexStroke = paths.Length == 1 && paths[0].Convex;
-        call.HasTransparency = _coverageFillAaEnabled && !isConvexStroke && paint.Image == 0 && HasTransparency(paint);
+        call.UsesCoverageAA = !isConvexStroke && paint.Image == 0 && PaintHasTransparency(paint);
 
         var singleStrokePath = paths.Length == 1;
         var maxVerts = 0;
@@ -696,7 +695,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _verts[vertOffset++] = new NVGvertex(minX, maxY, 0.5f, 1.0f);
         _verts[vertOffset++] = new NVGvertex(minX, minY, 0.5f, 1.0f);
 
-        if (call.HasTransparency)
+        if (call.UsesCoverageAA)
         {
             call.UniformOffset = AllocUniforms(2);
             if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f))
@@ -1041,7 +1040,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private void Fill(in GLNVGCall call)
     {
-        if (call.HasTransparency)
+        if (call.UsesCoverageAA)
         {
             FillWithCoverage(call);
             return;
@@ -1081,7 +1080,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private void Stroke(in GLNVGCall call)
     {
-        if (call.HasTransparency)
+        if (call.UsesCoverageAA)
         {
             StrokeWithCoverage(call);
             return;
@@ -2010,24 +2009,18 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
             "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
             "}\n" +
-            "#ifdef EDGE_AA\n" +
             "float strokeMask() {\n" +
             "\tif (strokeMult < 0.0) {\n" +
             "\t\treturn clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);\n" +
             "\t}\n" +
             "\treturn clamp((1.0-abs(ftcoord.x*2.0-1.0))*strokeMult, 0.0, 1.0) * min(1.0, ftcoord.y);\n" +
             "}\n" +
-            "#endif\n" +
             "\n" +
             "void main(void) {\n" +
             "\tvec4 result;\n" +
             "\tfloat scissor = scissorMask(fpos);\n" +
-            "#ifdef EDGE_AA\n" +
             "\tfloat strokeAlpha = strokeMask();\n" +
             "\tif (strokeAlpha < strokeThr) discard;\n" +
-            "#else\n" +
-            "\tfloat strokeAlpha = 1.0;\n" +
-            "#endif\n" +
             "\tif (type == 0) {\n" +
             "\t\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
             "\t\tfloat d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
@@ -2077,9 +2070,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\toutColor = result * clipMask() * maskCoverage();\n" +
             "}\n";
 
-        var opts = "#define EDGE_AA 1\n";
-
-        _shader = CreateShader("shader", header, opts, fillVertShader, fillFragShader);
+        _shader = CreateShader("shader", header, string.Empty, fillVertShader, fillFragShader);
         GetUniforms(ref _shader);
 
         _vao = GL.GenVertexArray();
