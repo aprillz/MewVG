@@ -141,6 +141,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     // coverage buffer for transparent fills
     private int _coverageFbo;
     private int _coverageTex;
+    private int _vboCapacity;
     // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
     private readonly MaskImageCache _maskImages;
     private int _coverageTexWidth;
@@ -268,11 +269,20 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _flushMainFbo = GL.GetInteger(GetPName.FramebufferBinding);
         GL.GetViewport(out _flushViewportX, out _flushViewportY, out _flushViewportWidth, out _flushViewportHeight);
 
-        // Upload vertex data
+        // Upload vertex data. Orphan at a fixed, power-of-two capacity and copy in with SubData:
+        // orphaning with a different size every flush defeats the driver's buffer-storage reuse
+        // pool, so a burst of many small flushes leaves one freshly sized storage per flush in
+        // flight instead of recycling a handful of same-sized ones.
         var vertexSize = Unsafe.SizeOf<NVGvertex>();
+        int uploadBytes = _vertCount * vertexSize;
         GL.BindVertexArray(_vao);
         GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
-        GL.BufferData(BufferTarget.ArrayBuffer, _vertCount * vertexSize, _verts, BufferUsageHint.StreamDraw);
+        if (uploadBytes > _vboCapacity)
+        {
+            _vboCapacity = Math.Max(256 * 1024, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)uploadBytes));
+        }
+        GL.BufferDataOrphan(BufferTarget.ArrayBuffer, _vboCapacity, BufferUsageHint.StreamDraw);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, 0, uploadBytes, _verts);
 
         GL.EnableVertexAttribArray(0);
         GL.EnableVertexAttribArray(1);
