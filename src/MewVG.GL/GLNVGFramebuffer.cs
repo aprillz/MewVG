@@ -11,8 +11,6 @@ public sealed class GLNVGFramebuffer : IDisposable
 
     public int Framebuffer { get; private set; }
 
-    public int Renderbuffer { get; private set; }
-
     public int Texture { get; private set; }
 
     public int Image { get; private set; }
@@ -28,7 +26,6 @@ public sealed class GLNVGFramebuffer : IDisposable
         var fb = new GLNVGFramebuffer(ctx);
 
         var defaultFbo = GL.GetInteger(GetPName.FramebufferBinding);
-        var defaultRbo = GL.GetInteger(GetPName.RenderbufferBinding);
 
         fb.Image = ctx.CreateImageRGBA(width, height, imageFlags | NVGimageFlags.FlipY | NVGimageFlags.Premultiplied, ReadOnlySpan<byte>.Empty);
         fb.Texture = ctx.ImageHandle(fb.Image);
@@ -36,32 +33,17 @@ public sealed class GLNVGFramebuffer : IDisposable
         fb.Framebuffer = GL.GenFramebuffer();
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, fb.Framebuffer);
 
-        fb.Renderbuffer = GL.GenRenderbuffer();
-        GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, fb.Renderbuffer);
-        GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer, RenderbufferStorage.StencilIndex8, width, height);
-
         GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, fb.Texture, 0);
-        GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.StencilAttachment, RenderbufferTarget.Renderbuffer, fb.Renderbuffer);
 
         var status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
         if (status != FramebufferErrorCode.FramebufferComplete)
         {
-            GL.RenderbufferStorage(RenderbufferTarget.Renderbuffer, RenderbufferStorage.Depth24Stencil8, width, height);
-            GL.FramebufferTexture2D(FramebufferTarget.Framebuffer, FramebufferAttachment.ColorAttachment0, TextureTarget.Texture2D, fb.Texture, 0);
-            GL.FramebufferRenderbuffer(FramebufferTarget.Framebuffer, FramebufferAttachment.DepthStencilAttachment, RenderbufferTarget.Renderbuffer, fb.Renderbuffer);
-
-            status = GL.CheckFramebufferStatus(FramebufferTarget.Framebuffer);
-            if (status != FramebufferErrorCode.FramebufferComplete)
-            {
-                GL.BindFramebuffer(FramebufferTarget.Framebuffer, defaultFbo);
-                GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, defaultRbo);
-                fb.Dispose();
-                return null;
-            }
+            GL.BindFramebuffer(FramebufferTarget.Framebuffer, defaultFbo);
+            fb.Dispose();
+            return null;
         }
 
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, defaultFbo);
-        GL.BindRenderbuffer(RenderbufferTarget.Renderbuffer, defaultRbo);
         return fb;
     }
 
@@ -90,18 +72,12 @@ public sealed class GLNVGFramebuffer : IDisposable
             GL.DeleteFramebuffer(Framebuffer);
         }
 
-        if (Renderbuffer != 0)
-        {
-            GL.DeleteRenderbuffer(Renderbuffer);
-        }
-
         if (Image > 0)
         {
             _ctx.DeleteImage(Image);
         }
 
         Framebuffer = 0;
-        Renderbuffer = 0;
         Texture = 0;
         Image = -1;
     }
