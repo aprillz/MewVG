@@ -270,6 +270,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glBindVertexArray;
     private static delegate* unmanaged<uint, uint, void> _glBindBuffer;
     private static delegate* unmanaged<uint, nint, void*, uint, void> _glBufferData;
+    private static delegate* unmanaged<uint, nint, nint, void*, void> _glBufferSubData;
     private static delegate* unmanaged<uint, void> _glEnableVertexAttribArray;
     private static delegate* unmanaged<uint, void> _glDisableVertexAttribArray;
     private static delegate* unmanaged<uint, int, uint, byte, int, void*, void> _glVertexAttribPointer;
@@ -376,6 +377,7 @@ internal static unsafe class GL
         _glBindVertexArray = (delegate* unmanaged<uint, void>)LoadProc("glBindVertexArray");
         _glBindBuffer = (delegate* unmanaged<uint, uint, void>)LoadProc("glBindBuffer");
         _glBufferData = (delegate* unmanaged<uint, nint, void*, uint, void>)LoadProc("glBufferData");
+        _glBufferSubData = (delegate* unmanaged<uint, nint, nint, void*, void>)LoadProc("glBufferSubData");
         _glEnableVertexAttribArray = (delegate* unmanaged<uint, void>)LoadProc("glEnableVertexAttribArray");
         _glDisableVertexAttribArray = (delegate* unmanaged<uint, void>)LoadProc("glDisableVertexAttribArray");
         _glVertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)LoadProc("glVertexAttribPointer");
@@ -468,6 +470,17 @@ internal static unsafe class GL
         fixed (NVGvertex* ptr = data)
         {
             _glBufferData((uint)target, size, ptr, (uint)usage);
+        }
+    }
+
+    public static void BufferDataOrphan(BufferTarget target, int size, BufferUsageHint usage)
+        => _glBufferData((uint)target, size, null, (uint)usage);
+
+    public static void BufferSubData(BufferTarget target, int offset, int size, ReadOnlySpan<NVGvertex> data)
+    {
+        fixed (NVGvertex* ptr = data)
+        {
+            _glBufferSubData((uint)target, offset, size, ptr);
         }
     }
 
