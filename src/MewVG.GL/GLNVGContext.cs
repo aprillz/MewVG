@@ -107,7 +107,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GradientLinear = 7,
     }
 
-    private readonly NVGcreateFlags _flags;
+    // MEWVG_GL_DEBUG=1 turns on the glGetError check after each state change.
+    private static readonly bool _debugChecks = Environment.GetEnvironmentVariable("MEWVG_GL_DEBUG") == "1";
     private GLNVGShader _shader;
 
     private int _vao;
@@ -181,9 +182,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private static bool HasTransparency(in NVGpaint paint)
         => paint.InnerColor.A < 0.999f || paint.OuterColor.A < 0.999f;
 
-    public GLNVGContext(NVGcreateFlags flags)
+    public GLNVGContext()
     {
-        _flags = flags;
         _coverageFillAaEnabled = true;
         // GL orders commands: once a frame's calls are flushed, its images may be rewritten.
         _maskImages = new MaskImageCache(
@@ -1637,10 +1637,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.Simple);
     }
 
-    // Ported from nanovg_gl.h glnvg__checkError: no-op unless NVGcreateFlags.Debug is set.
     private void CheckError(string label)
     {
-        if ((_flags & NVGcreateFlags.Debug) == 0)
+        if (!_debugChecks)
         {
             return;
         }

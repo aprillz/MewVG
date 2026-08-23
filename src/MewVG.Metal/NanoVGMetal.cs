@@ -17,9 +17,8 @@ public sealed class NanoVGMetal : NanoVG
     /// Creates a new NanoVG context with Metal backend
     /// </summary>
     /// <param name="device">Metal device (id&lt;MTLDevice&gt;)</param>
-    /// <param name="flags">Creation flags</param>
-    public NanoVGMetal(IntPtr device, NVGcreateFlags flags = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes)
-        : base(CreateRenderer(device, flags, out var context))
+    public NanoVGMetal(IntPtr device)
+        : base(CreateRenderer(device, out var context))
     {
         _context = context;
     }
@@ -226,9 +225,9 @@ public sealed class NanoVGMetal : NanoVG
 
     protected override void DisposeBackend() => _context.Dispose();
 
-    private static MNVGcontext CreateRenderer(IntPtr device, NVGcreateFlags flags, out MNVGcontext context)
+    private static MNVGcontext CreateRenderer(IntPtr device, out MNVGcontext context)
     {
-        context = new MNVGcontext(device, flags);
+        context = new MNVGcontext(device);
         return context;
     }
 }

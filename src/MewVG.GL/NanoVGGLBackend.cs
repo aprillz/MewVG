@@ -7,5 +7,5 @@ public sealed class NanoVGGLBackend : INanoVGBackend
     public bool IsSupported(NanoVGBackendOptions options) => true;
 
     public NanoVG Create(NanoVGBackendOptions options)
-        => new NanoVGGL(options.Flags);
+        => new NanoVGGL();
 }

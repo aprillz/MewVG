@@ -2,8 +2,6 @@ namespace Aprillz.MewVG;
 
 public sealed class NanoVGBackendOptions
 {
-    public NVGcreateFlags Flags { get; set; } = NVGcreateFlags.Antialias;
-
     public string? PreferredBackend { get; set; }
 
     public IntPtr MetalDevice { get; set; }

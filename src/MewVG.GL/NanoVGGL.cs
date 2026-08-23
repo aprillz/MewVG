@@ -11,8 +11,8 @@ public sealed class NanoVGGL : NanoVG
 
     public static void Initialize(Func<string, nint> getProcAddress) => GL.Initialize(getProcAddress);
 
-    public NanoVGGL(NVGcreateFlags flags = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes)
-        : base(CreateRenderer(flags, out var gl))
+    public NanoVGGL()
+        : base(CreateRenderer(out var gl))
     {
         _gl = gl;
     }
@@ -59,7 +59,7 @@ public sealed class NanoVGGL : NanoVG
 
     protected override void DisposeBackend() => _gl.Dispose();
 
-    private static GLNVGContext CreateRenderer(NVGcreateFlags flags, out GLNVGContext gl)
+    private static GLNVGContext CreateRenderer(out GLNVGContext gl)
     {
         // Creating the GL backend requires that:
         // 1) NanoVGGL.Initialize(...) has already been called, and
@@ -76,7 +76,7 @@ public sealed class NanoVGGL : NanoVG
                 ex);
         }
 
-        gl = new GLNVGContext(flags);
+        gl = new GLNVGContext();
         return gl;
     }
 }
