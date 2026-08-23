@@ -37,15 +37,6 @@ public sealed class NanoVGMetal : NanoVG
         set => _context.PixelFormat = value;
     }
 
-    /// <summary>
-    /// Gets or sets the stencil format
-    /// </summary>
-    public MTLPixelFormat StencilFormat
-    {
-        get => _context.StencilFormat;
-        set => _context.StencilFormat = value;
-    }
-
     #region Frame Management
 
     /// <summary>
