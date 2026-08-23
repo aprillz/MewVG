@@ -55,6 +55,7 @@ public enum MNVGcallType
     MNVG_TRIANGLES = 4,
     MNVG_CLIP = 5,
     MNVG_CLIP_RESET = 6,
+    MNVG_MASK_FILL = 7,
 }
 
 /// <summary>
@@ -82,7 +83,13 @@ public unsafe struct MNVGfragUniforms
     public float strokeThr;                // 4 bytes
     public int texType;                    // 4 bytes
     public int type;                       // 4 bytes
-    // Total: 208 bytes
+    public Buffer2<float> maskOrigin;      // 8 bytes - coverage mask placement, frame units
+    public Buffer2<float> maskSize;        // 8 bytes - coverage mask size, pixels
+    public float maskScale;                // 4 bytes - frame units to mask pixels
+    public int maskEnabled;                // 4 bytes
+    public int maskPad0;                   // 4 bytes
+    public int maskPad1;                   // 4 bytes
+    // Total: 240 bytes
 }
 
 /// <summary>
@@ -99,6 +106,7 @@ public struct MNVGcall
     public int triangleCount;
     public int uniformOffset;
     public int cpuResolvedFill;
+    public int maskImage;
     public NVGcompositeOperationState blendFunc;
     // Coverage AA (transparent fill/stroke): when true, this call is dispatched
     // through the coverage-build + composite passes that use FB fetch on color[1]
@@ -201,7 +209,22 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           float strokeThr;
           int texType;
           int type;
+          float2 maskOrigin;
+          float2 maskSize;
+          float maskScale;
+          int maskEnabled;
+          int maskPad0;
+          int maskPad1;
         } Uniforms;
+
+        // Coverage-mask fill: the mask is a device-pixel R8 texture placed at maskOrigin
+        // (frame units); fpos is in frame units, so the lookup scales by the pixel ratio.
+        float maskCoverage(constant Uniforms& uniforms, texture2d<float> maskTex, float2 fpos) {
+          if (uniforms.maskEnabled == 0) return 1.0f;
+          float2 p = (fpos - uniforms.maskOrigin) * uniforms.maskScale;
+          if (p.x < 0.0f || p.y < 0.0f || p.x >= uniforms.maskSize.x || p.y >= uniforms.maskSize.y) return 0.0f;
+          return maskTex.read(uint2(p)).r;
+        }
 
         float gradientRadialT(float2 p, float2 center, float2 focal, float2 radii, int spread) {
           float2 np = (p - center) / radii;
@@ -266,10 +289,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           return out;
         }
 
-        fragment float4 fragmentShader(RasterizerData in [[stage_in]],
-                                       constant Uniforms& uniforms [[buffer(0)]],
-                                       texture2d<float> texture [[texture(0)]],
-                                       sampler sampler [[sampler(0)]]) {
+        static float4 fragmentShaderBody(RasterizerData in,
+                                         constant Uniforms& uniforms,
+                                         texture2d<float> texture,
+                                         sampler sampler) {
           float scissor = scissorMask(uniforms, in.fpos);
           if (scissor == 0)
             return float4(0);
@@ -312,10 +335,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           }
         }
 
-        fragment float4 fragmentShaderAA(RasterizerData in [[stage_in]],
-                                         constant Uniforms& uniforms [[buffer(0)]],
-                                         texture2d<float> texture [[texture(0)]],
-                                         sampler sampler [[sampler(0)]]) {
+        static float4 fragmentShaderAABody(RasterizerData in,
+                                           constant Uniforms& uniforms,
+                                           texture2d<float> texture,
+                                           sampler sampler) {
           float scissor = scissorMask(uniforms, in.fpos);
           if (scissor == 0)
             return float4(0);
@@ -374,6 +397,22 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             color *= strokeAlpha;
             return color * uniforms.innerCol;
           }
+        }
+
+        fragment float4 fragmentShader(RasterizerData in [[stage_in]],
+                                       constant Uniforms& uniforms [[buffer(0)]],
+                                       texture2d<float> texture [[texture(0)]],
+                                       texture2d<float> maskTex [[texture(1)]],
+                                       sampler sampler [[sampler(0)]]) {
+          return fragmentShaderBody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos);
+        }
+
+        fragment float4 fragmentShaderAA(RasterizerData in [[stage_in]],
+                                         constant Uniforms& uniforms [[buffer(0)]],
+                                         texture2d<float> texture [[texture(0)]],
+                                         texture2d<float> maskTex [[texture(1)]],
+                                         sampler sampler [[sampler(0)]]) {
+          return fragmentShaderAABody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos);
         }
 
         // ─── Coverage AA (transparent stroke/fill, single-encoder) ────────────
@@ -593,6 +632,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private Vector2 _viewSize;
     private bool _recordingClipActive;
     private bool _clipActiveInRender;
+    // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
+    private readonly MaskImageCache _maskImages;
     private bool _disposed;
 
     /// <summary>
@@ -617,6 +658,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _pixelFormat = MTLPixelFormat.BGRA8Unorm;
         _stencilFormat = MTLPixelFormat.Stencil8;
         _devicePixelRatio = 1.0f;
+        // Up to MNVG_INIT_BUFFER_COUNT frames execute at once, and a command buffer retains the
+        // textures it references: an image may be deleted any time but rewritten only once every
+        // frame that drew with it has been overtaken.
+        _maskImages = new MaskImageCache(
+            (width, height, coverage) => CreateTexture((int)NVGtexture.Alpha, width, height, (int)NVGimageFlags.Nearest, coverage),
+            (image, width, height, coverage) => UpdateTexture(image, 0, 0, width, height, coverage),
+            DeleteTexture,
+            framesInFlight: MNVG_INIT_BUFFER_COUNT);
 
         // Retain the device
         ObjCRuntime.SendMessage(_device, ObjCRuntime.Selectors.retain);
@@ -1412,6 +1461,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         _vertCount = 0;
         _uniformCount = 0;
         _recordingClipActive = false;
+        _maskImages.BeginFrame();
     }
 
     /// <summary>
@@ -1569,6 +1619,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (nuint)1
         );
 
+        // Every fragment function declares the mask texture slot, so it has to hold a
+        // texture even for calls that never read it.
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, _pseudoTexture, (nuint)1);
+
         // Process all calls
         bool clipActive = false;
         _clipActiveInRender = false;
@@ -1628,6 +1682,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 case MNVGcallType.MNVG_TRIANGLES:
                     _clipActiveInRender = clipActive;
                     RenderTriangles(ref buffers, ref call);
+                    break;
+                case MNVGcallType.MNVG_MASK_FILL:
+                    _clipActiveInRender = clipActive;
+                    RenderMaskFill(ref buffers, ref call);
                     break;
             }
         }
@@ -2064,6 +2122,35 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (nuint)call.triangleOffset,
             (nuint)call.triangleCount
         );
+    }
+
+    private void RenderMaskFill(ref MNVGbuffers buffers, ref MNVGcall call)
+    {
+        ref var mask = ref FindTexture(call.maskImage);
+        if (mask.id == 0 || mask.tex == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetDepthStencilState(_clipActiveInRender ? _clipTestStencilState : _defaultStencilState);
+        SetCullMode(MTLCullMode.None);
+        if (_clipActiveInRender)
+        {
+            SetStencilReferenceValue(ClipStencilRef);
+        }
+
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, mask.tex, MASK_TEXTURE_INDEX);
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+
+        ObjCRuntime.SendMessage(
+            _renderEncoder,
+            MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+            (ulong)MTLPrimitiveType.TriangleStrip,
+            (nuint)call.triangleOffset,
+            (nuint)call.triangleCount
+        );
+
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, _pseudoTexture, MASK_TEXTURE_INDEX);
     }
 
     private void RenderClip(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -2580,6 +2667,10 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// </summary>
     public const MTLPixelFormat CoveragePixelFormat = MTLPixelFormat.R8Unorm;
 
+    // Fragment texture slots: the paint texture is 0 and the coverage-mask fill's mask is 1.
+    private const nuint PAINT_TEXTURE_INDEX = 0;
+    private const nuint MASK_TEXTURE_INDEX = 1;
+
     /// <summary>
     /// Ensures the coverage AA scratch texture (color[1] attachment) exists at the
     /// requested size. Call from the host before building the main render pass so
@@ -2673,6 +2764,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         => RenderClip(ref scissor, fringe, bounds, paths, verts);
 
     void INVGRenderer.ResetClip() => ResetClip();
+    void INVGRenderer.RenderMaskFill(ref NVGpaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
+        => RenderMaskFill(ref paint, compositeOperation, ref scissor, fringe, bounds, coverage, maskWidth, maskHeight, maskOriginX, maskOriginY, cacheKey, cacheVersion);
 
     /// <summary>
     /// Flushes the current frame and submits rendering commands
@@ -2965,6 +3058,61 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         EnsureVerts(_vertCount + verts.Length);
         verts.CopyTo(_verts.AsSpan(_vertCount));
         _vertCount += verts.Length;
+    }
+
+    internal void RenderMaskFill(
+        ref NVGpaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        ReadOnlySpan<float> bounds,
+        ReadOnlySpan<byte> coverage,
+        int maskWidth,
+        int maskHeight,
+        float maskOriginX,
+        float maskOriginY,
+        object? cacheKey,
+        int cacheVersion)
+    {
+        var maskImage = _maskImages.Acquire(coverage, maskWidth, maskHeight, cacheKey, cacheVersion);
+        if (maskImage == 0)
+        {
+            return;
+        }
+
+        EnsureCalls(_callCount + 1);
+        ref var call = ref _calls[_callCount++];
+        call = default;
+
+        call.type = MNVGcallType.MNVG_MASK_FILL;
+        call.image = paint.Image;
+        call.maskImage = maskImage;
+        call.blendFunc = compositeOperation;
+
+        ref var mask = ref FindTexture(maskImage);
+        call.uniformOffset = AllocUniforms(1);
+        fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
+        {
+            var frag = (MNVGfragUniforms*)ptr;
+            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
+            // strokeMult < 0 reads the fill-body texcoord (0.5, 1) as full coverage, leaving
+            // the mask as the only shape.
+            frag->strokeMult = -1.0f;
+            frag->maskOrigin[0] = maskOriginX;
+            frag->maskOrigin[1] = maskOriginY;
+            frag->maskSize[0] = mask.width;
+            frag->maskSize[1] = mask.height;
+            frag->maskScale = _devicePixelRatio;
+            frag->maskEnabled = 1;
+        }
+
+        call.triangleOffset = _vertCount;
+        call.triangleCount = 4;
+        EnsureVerts(_vertCount + 4);
+        _verts[_vertCount++] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
+        _verts[_vertCount++] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
+        _verts[_vertCount++] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
+        _verts[_vertCount++] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
     }
 
     internal void RenderClip(
@@ -3291,6 +3439,9 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         _disposed = true;
+
+        // Mask images live in the texture table; release them through it before the table goes.
+        _maskImages.Dispose();
 
         // Release Metal resources. _pipelineState/_stencilOnlyPipelineState only alias
         // the last-selected entry of _pipelineCache, so release through the cache to

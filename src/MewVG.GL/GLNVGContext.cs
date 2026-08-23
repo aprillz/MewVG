@@ -23,6 +23,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int LocTex;
         public int LocFrag;
         public int LocCoverageOrigin;
+        public int LocMaskTex;
+        public int LocMaskEnabled;
+        public int LocMaskOrigin;
+        public int LocMaskSize;
+        public int LocMaskScale;
     }
 
     private struct GLNVGTexture
@@ -51,12 +56,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         Fill,
         Stroke,
         Triangles,
+        MaskFill,
     }
 
     private struct GLNVGCall
     {
         public GLNVGCallType Type;
         public int Image;
+        public int MaskImage;
+        public float MaskOriginX;
+        public float MaskOriginY;
         public int PathOffset;
         public int PathCount;
         public int TriangleOffset;
@@ -132,6 +141,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _coverageFbo;
     private int _coverageTex;
     private int _coverageStencilRb;
+    // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
+    private readonly MaskImageCache _maskImages;
     private int _coverageTexWidth;
     private int _coverageTexHeight;
     private float _devicePixelRatio = 1.0f;
@@ -161,6 +172,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         _flags = flags;
         _coverageFillAaEnabled = true;
+        // GL orders commands: once a frame's calls are flushed, its images may be rewritten.
+        _maskImages = new MaskImageCache(
+            (width, height, coverage) => CreateTexture(NVGtextureType.Alpha, width, height, NVGimageFlags.Nearest, coverage),
+            (image, width, height, coverage) => UpdateTexture(image, 0, 0, width, height, coverage),
+            DeleteTexture,
+            framesInFlight: 1);
         GL.EnsureLoaded();
         CreateResources();
     }
@@ -206,7 +223,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _pathCount = 0;
         _vertCount = 0;
         _uniformCount = 0;
-
+        _maskImages.BeginFrame();
     }
 
     public void Cancel()
@@ -264,6 +281,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, vertexSize, sizeof(float) * 2);
 
         GL.Uniform1(_shader.LocTex, 0);
+        GL.Uniform1(_shader.LocMaskTex, 2);
+        GL.Uniform1(_shader.LocMaskEnabled, 0);
         GL.Uniform2(_shader.LocViewSize, 1, _view);
 
         bool clipActive = false;
@@ -301,6 +320,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                     BlendFuncSeparate(call.BlendFunc);
                     Triangles(call);
                     break;
+                case GLNVGCallType.MaskFill:
+                    _clipActiveInRender = clipActive;
+                    BlendFuncSeparate(call.BlendFunc);
+                    MaskFill(call);
+                    break;
             }
         }
 
@@ -326,6 +350,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     void INVGRenderer.RenderClip(ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts)
         => RenderClip(ref scissor, fringe, bounds, paths, verts);
     void INVGRenderer.ResetClip() => ResetClip();
+    void INVGRenderer.RenderMaskFill(ref NVGpaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
+        => RenderMaskFill(ref paint, compositeOperation, ref scissor, fringe, bounds, coverage, maskWidth, maskHeight, maskOriginX, maskOriginY, cacheKey, cacheVersion);
 
     private void RenderClip(
         ref NVGscissorState scissor,
@@ -704,6 +730,88 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 3, (float)GLNVGShaderType.Img);
+    }
+
+    public void RenderMaskFill(
+        ref NVGpaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        ReadOnlySpan<float> bounds,
+        ReadOnlySpan<byte> coverage,
+        int maskWidth,
+        int maskHeight,
+        float maskOriginX,
+        float maskOriginY,
+        object? cacheKey,
+        int cacheVersion)
+    {
+        var maskImage = _maskImages.Acquire(coverage, maskWidth, maskHeight, cacheKey, cacheVersion);
+        if (maskImage == 0)
+        {
+            return;
+        }
+
+        ref var call = ref AllocCall();
+        call.Type = GLNVGCallType.MaskFill;
+        call.Image = paint.Image;
+        call.MaskImage = maskImage;
+        call.MaskOriginX = maskOriginX;
+        call.MaskOriginY = maskOriginY;
+        call.BlendFunc = BlendCompositeOperation(compositeOperation);
+
+        // Bounds quad with the fill-body texcoord (0.5, 1): strokeMask reads 1 for it under
+        // the analytical-fill strokeMult below, so only the mask shapes the coverage.
+        call.TriangleOffset = AllocVerts(4);
+        call.TriangleCount = 4;
+        var quad = _verts.AsSpan(call.TriangleOffset, 4);
+        quad[0] = new NVGvertex(bounds[2], bounds[3], 0.5f, 1.0f);
+        quad[1] = new NVGvertex(bounds[2], bounds[1], 0.5f, 1.0f);
+        quad[2] = new NVGvertex(bounds[0], bounds[3], 0.5f, 1.0f);
+        quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
+
+        call.UniformOffset = AllocUniforms(1);
+        if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+        {
+            call.Type = GLNVGCallType.None;
+            return;
+        }
+        SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0: analytical fill
+    }
+
+    private void MaskFill(in GLNVGCall call)
+    {
+        if (!TryFindTexture(call.MaskImage, out var maskIndex))
+        {
+            return;
+        }
+
+        GL.Disable(EnableCap.CullFace);
+        if (_clipActiveInRender)
+        {
+            EnableClipStencilTest();
+        }
+        SetUniforms(call.UniformOffset, call.Image);
+
+        ref var mask = ref _textures[maskIndex];
+        GL.ActiveTexture(TextureUnit.Texture2);
+        GL.BindTexture(TextureTarget.Texture2D, mask.Tex);
+        GL.ActiveTexture(TextureUnit.Texture0);
+        GL.Uniform1(_shader.LocMaskEnabled, 1);
+        Span<float> origin = stackalloc float[2] { call.MaskOriginX, call.MaskOriginY };
+        Span<float> size = stackalloc float[2] { mask.Width, mask.Height };
+        GL.Uniform2(_shader.LocMaskOrigin, 1, origin);
+        GL.Uniform2(_shader.LocMaskSize, 1, size);
+        GL.Uniform1(_shader.LocMaskScale, _devicePixelRatio);
+
+        GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
+
+        GL.Uniform1(_shader.LocMaskEnabled, 0);
+        if (_clipActiveInRender)
+        {
+            RestoreClipStencilState();
+        }
+        GL.Enable(EnableCap.CullFace);
     }
 
     public int CreateTexture(NVGtextureType type, int width, int height, NVGimageFlags flags, ReadOnlySpan<byte> data)
@@ -1996,6 +2104,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
             "\tuniform sampler2D tex;\n" +
             "\tuniform vec2 coverageOrigin;\n" +
+            "\tuniform sampler2D maskTex;\n" +
+            "\tuniform int maskEnabled;\n" +
+            "\tuniform vec2 maskOrigin;\n" +
+            "\tuniform vec2 maskSize;\n" +
+            "\tuniform float maskScale;\n" +
             "\tin vec2 ftcoord;\n" +
             "\tin vec2 fpos;\n" +
             "\tout vec4 outColor;\n" +
@@ -2027,6 +2140,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\tvec2 sc = (abs((scissorMat * vec3(p,1.0)).xy) - scissorExt);\n" +
             "\tsc = vec2(0.5,0.5) - sc * scissorScale;\n" +
             "\treturn clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);\n" +
+            "}\n" +
+            "float maskCoverage() {\n" +
+            "\tif (maskEnabled == 0) return 1.0;\n" +
+            "\tvec2 p = (fpos - maskOrigin) * maskScale;\n" +
+            "\tif (p.x < 0.0 || p.y < 0.0 || p.x >= maskSize.x || p.y >= maskSize.y) return 0.0;\n" +
+            "\treturn texelFetch(maskTex, ivec2(p), 0).r;\n" +
             "}\n" +
             "\n" +
             "float gradientRadialT(vec2 p, vec2 center, vec2 focal, vec2 radii, int spread) {\n" +
@@ -2121,7 +2240,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             "\t\tcolor *= coverage * scissor;\n" +
             "\t\tresult = color;\n" +
             "\t}\n" +
-            "\toutColor = result;\n" +
+            "\toutColor = result * maskCoverage();\n" +
             "}\n";
 
         var opts = "#define EDGE_AA 1\n";
@@ -2191,6 +2310,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         shader.LocTex = GL.GetUniformLocation(shader.Program, "tex");
         shader.LocFrag = GL.GetUniformLocation(shader.Program, "frag");
         shader.LocCoverageOrigin = GL.GetUniformLocation(shader.Program, "coverageOrigin");
+        shader.LocMaskTex = GL.GetUniformLocation(shader.Program, "maskTex");
+        shader.LocMaskEnabled = GL.GetUniformLocation(shader.Program, "maskEnabled");
+        shader.LocMaskOrigin = GL.GetUniformLocation(shader.Program, "maskOrigin");
+        shader.LocMaskSize = GL.GetUniformLocation(shader.Program, "maskSize");
+        shader.LocMaskScale = GL.GetUniformLocation(shader.Program, "maskScale");
     }
 
     public void Dispose()
@@ -2231,6 +2355,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (_coverageFbo != 0) GL.DeleteFramebuffer(_coverageFbo);
         if (_coverageTex != 0) GL.DeleteTexture(_coverageTex);
         if (_coverageStencilRb != 0) GL.DeleteRenderbuffer(_coverageStencilRb);
+
+        // Mask images live in the texture table; releasing them first keeps the table loop below
+        // from deleting the same names again.
+        _maskImages.Dispose();
 
         for (var i = 0; i < _textureCount; i++)
         {
