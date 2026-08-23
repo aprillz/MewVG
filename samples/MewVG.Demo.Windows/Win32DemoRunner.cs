@@ -146,7 +146,7 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
         NanoVGGL.Initialize(getProcAddress);
 
         _gl = new GLMinimal(getProcAddress);
-        _vg = new NanoVGGL( NVGcreateFlags.Antialias );
+        _vg = new NanoVGGL();
     }
 
     protected override void Execute()

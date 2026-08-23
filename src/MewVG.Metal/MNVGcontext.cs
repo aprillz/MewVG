@@ -610,7 +610,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private readonly Dictionary<ulong, IntPtr> _coverageCompositePipelineCache = new();  // 2-attachment PSO: writeMask color[0]=All SrcOver, color[1] cleared via shader
 
     // Settings
-    private NVGcreateFlags _flags;
     private MTLPixelFormat _pixelFormat;
     private MTLPixelFormat _stencilFormat;
     private float _devicePixelRatio;
@@ -623,8 +622,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// Creates a new Metal NanoVG context
     /// </summary>
     /// <param name="device">Metal device</param>
-    /// <param name="flags">Creation flags</param>
-    public MNVGcontext(IntPtr device, NVGcreateFlags flags)
+    public MNVGcontext(IntPtr device)
     {
         if (device == IntPtr.Zero)
         {
@@ -632,7 +630,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         _device = device;
-        _flags = flags;
         _pixelFormat = MTLPixelFormat.BGRA8Unorm;
         _stencilFormat = MTLPixelFormat.Stencil8;
         _devicePixelRatio = 1.0f;

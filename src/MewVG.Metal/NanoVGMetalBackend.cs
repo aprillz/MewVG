@@ -13,6 +13,6 @@ public sealed class NanoVGMetalBackend : INanoVGBackend
             throw new ArgumentException("MetalDevice must be provided for Metal backend.", nameof(options));
         }
 
-        return new NanoVGMetal(options.MetalDevice, options.Flags);
+        return new NanoVGMetal(options.MetalDevice);
     }
 }

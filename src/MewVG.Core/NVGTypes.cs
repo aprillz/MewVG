@@ -8,44 +8,6 @@ using System.Runtime.InteropServices;
 namespace Aprillz.MewVG;
 
 /// <summary>
-/// Create flags for NanoVG context.
-/// </summary>
-[Flags]
-public enum NVGcreateFlags
-{
-    /// <summary>
-    /// No flags.
-    /// </summary>
-    None = 0,
-
-    /// <summary>
-    /// Flag indicating if geometry based anti-aliasing is used.
-    /// </summary>
-    Antialias = 1 << 0,
-
-    /// <summary>
-    /// Flag indicating if strokes should be drawn using stencil buffer.
-    /// The rendering will be a little slower, but path overlaps (i.e. self-intersecting or sharp turns) will be drawn just once.
-    /// </summary>
-    StencilStrokes = 1 << 1,
-
-    /// <summary>
-    /// Flag indicating that additional debug checks are done.
-    /// </summary>
-    Debug = 1 << 2,
-
-    /// <summary>
-    /// Flag indicating if double buffering scheme is used.
-    /// </summary>
-    DoubleBuffer = 1 << 12,
-
-    /// <summary>
-    /// Flag indicating if triple buffering scheme is used.
-    /// </summary>
-    TripleBuffer = 1 << 13,
-}
-
-/// <summary>
 /// Image flags for NanoVG.
 /// </summary>
 [Flags]
