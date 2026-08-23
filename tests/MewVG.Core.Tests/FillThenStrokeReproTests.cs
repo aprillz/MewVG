@@ -26,8 +26,9 @@ public class FillThenStrokeReproTests
     {
         // Baseline: Stroke() alone, AA off, closed rect.
         var baselineRenderer = new FakeRenderer();
-        var baselineContext = new NVGContext(baselineRenderer, edgeAntiAlias: false);
+        var baselineContext = new NVGContext(baselineRenderer);
         baselineContext.BeginFrame(200, 200, 1.0f);
+        baselineContext.ShapeAntiAlias(false);
         baselineContext.BeginPath();
         baselineContext.Rect(10, 10, 50, 50);
         baselineContext.StrokeColor(NVGcolor.RGBA(0, 0, 0, 255));
@@ -40,8 +41,9 @@ public class FillThenStrokeReproTests
 
         // Repro: Fill() then Stroke() on the same closed rect, AA off.
         var renderer = new FakeRenderer();
-        var context = new NVGContext(renderer, edgeAntiAlias: false);
+        var context = new NVGContext(renderer);
         context.BeginFrame(200, 200, 1.0f);
+        context.ShapeAntiAlias(false);
         context.BeginPath();
         context.Rect(10, 10, 50, 50);
         context.FillColor(NVGcolor.RGBA(255, 0, 0, 255));
@@ -63,7 +65,7 @@ public class FillThenStrokeReproTests
     {
         // Baseline: Stroke() alone, AA on, open 2-segment polyline (no ClosePath).
         var baselineRenderer = new FakeRenderer();
-        var baselineContext = new NVGContext(baselineRenderer, edgeAntiAlias: true);
+        var baselineContext = new NVGContext(baselineRenderer);
         baselineContext.BeginFrame(200, 200, 1.0f);
         baselineContext.BeginPath();
         baselineContext.MoveTo(10, 10);
@@ -80,7 +82,7 @@ public class FillThenStrokeReproTests
 
         // Repro: Fill() then Stroke() on the same open polyline, AA on.
         var renderer = new FakeRenderer();
-        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        var context = new NVGContext(renderer);
         context.BeginFrame(200, 200, 1.0f);
         context.BeginPath();
         context.MoveTo(10, 10);

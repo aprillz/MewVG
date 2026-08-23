@@ -210,8 +210,6 @@ internal sealed class NVGContext
     private readonly float[] _maskGeometryPx = new float[4];
     private long _maskTransientBytesThisFrame;
 
-    private readonly bool _edgeAntiAlias;
-
     // Commands
     private float[] _commands;
 
@@ -422,10 +420,9 @@ internal sealed class NVGContext
         public int VertCount;
     }
 
-    public NVGContext(INVGRenderer renderer, bool edgeAntiAlias)
+    public NVGContext(INVGRenderer renderer)
     {
         _renderer = renderer;
-        _edgeAntiAlias = edgeAntiAlias;
 
         _commands = new float[NVG_INIT_COMMANDS_SIZE];
         _ccommands = NVG_INIT_COMMANDS_SIZE;
@@ -1972,7 +1969,7 @@ internal sealed class NVGContext
         ApplyPathTolerances();
         FlattenPaths(enforceWinding: false);
 
-        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
+        var useFringeAa = state.ShapeAntiAlias;
         if (useFringeAa)
         {
             var fillFringe = _fringeWidth;
@@ -2216,7 +2213,7 @@ internal sealed class NVGContext
         var fillPaint = state.Fill;
         ApplyPathTolerances();
 
-        var useFringeAa = _edgeAntiAlias && state.ShapeAntiAlias;
+        var useFringeAa = state.ShapeAntiAlias;
         var fringe = useFringeAa ? _fringeWidth : 0.0f;
 
         if (cache.MaskValid && cache.MaskFringe == fringe && cache.MaskWindingRule == windingRule &&
@@ -2459,7 +2456,7 @@ internal sealed class NVGContext
         ApplyPathTolerances();
         FlattenPaths();
 
-        if (_edgeAntiAlias && state.ShapeAntiAlias)
+        if (state.ShapeAntiAlias)
         {
             ExpandStroke(strokeWidth * 0.5f, _fringeWidth, state.LineCap, state.LineJoin, state.MiterLimit);
         }

@@ -14,7 +14,7 @@ public class RectWindingTests
     public void FacadeRect_MatchesInternalContextRect_FillVertices()
     {
         var internalRenderer = new FakeRenderer();
-        var internalContext = new NVGContext(internalRenderer, edgeAntiAlias: true);
+        var internalContext = new NVGContext(internalRenderer);
         internalContext.BeginFrame(200, 200, 1.0f);
         internalContext.BeginPath();
         internalContext.Rect(10, 20, 30, 40);
@@ -22,7 +22,7 @@ public class RectWindingTests
         internalContext.Fill();
 
         var facadeRenderer = new FakeRenderer();
-        using var facade = new TestNanoVG(facadeRenderer, edgeAntiAlias: true);
+        using var facade = new TestNanoVG(facadeRenderer);
         facade.BeginFrame(200, 200, 1.0f);
         facade.BeginPath();
         facade.Rect(10, 20, 30, 40);
@@ -51,7 +51,7 @@ public class RectWindingTests
     public void OuterRectWithReversedInnerRect_NonZeroFill_CreatesHole()
     {
         var renderer = new FakeRenderer();
-        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        var context = new NVGContext(renderer);
         context.BeginFrame(200, 200, 1.0f);
         context.BeginPath();
 
@@ -87,7 +87,7 @@ public class RectWindingTests
     public void RoundedBorderWithZeroTop_DoesNotPutOpaqueBodyInTheTaper(float devicePixelRatio)
     {
         var renderer = new FakeRenderer();
-        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        var context = new NVGContext(renderer);
         context.BeginFrame(220, 120, devicePixelRatio);
         context.BeginPath();
 

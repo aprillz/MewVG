@@ -21,7 +21,7 @@ public class ClipStackTests
 {
     private static NVGContext NewContext(FakeRenderer renderer)
     {
-        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        var context = new NVGContext(renderer);
         context.BeginFrame(200, 200, 1.0f);
         return context;
     }

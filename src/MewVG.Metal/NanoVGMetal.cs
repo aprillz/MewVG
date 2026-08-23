@@ -19,7 +19,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="device">Metal device (id&lt;MTLDevice&gt;)</param>
     /// <param name="flags">Creation flags</param>
     public NanoVGMetal(IntPtr device, NVGcreateFlags flags = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes)
-        : base(CreateRenderer(device, flags, out var context), (flags & NVGcreateFlags.Antialias) != 0)
+        : base(CreateRenderer(device, flags, out var context))
     {
         _context = context;
     }

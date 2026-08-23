@@ -13,7 +13,7 @@ public class SharpConcaveCornerTests
     public void SharpConcaveCorner_WithoutResolution_DoesNotThrow()
     {
         var renderer = new FakeRenderer();
-        var context = new NVGContext(renderer, edgeAntiAlias: true);
+        var context = new NVGContext(renderer);
         context.BeginFrame(220, 120, 1.0f);
         context.BeginPath();
 
