@@ -12,7 +12,7 @@ public sealed class NanoVGGL : NanoVG
     public static void Initialize(Func<string, nint> getProcAddress) => GL.Initialize(getProcAddress);
 
     public NanoVGGL(NVGcreateFlags flags = NVGcreateFlags.Antialias | NVGcreateFlags.StencilStrokes)
-        : base(CreateRenderer(flags, out var gl), (flags & NVGcreateFlags.Antialias) != 0)
+        : base(CreateRenderer(flags, out var gl))
     {
         _gl = gl;
     }

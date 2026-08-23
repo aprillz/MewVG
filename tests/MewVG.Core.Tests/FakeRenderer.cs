@@ -125,7 +125,7 @@ internal sealed class FakeRenderer : INVGRenderer
 /// </summary>
 internal sealed class TestNanoVG : NanoVG
 {
-    public TestNanoVG(INVGRenderer renderer, bool edgeAntiAlias) : base(renderer, edgeAntiAlias)
+    public TestNanoVG(INVGRenderer renderer) : base(renderer)
     {
     }
 

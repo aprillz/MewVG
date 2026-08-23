@@ -289,52 +289,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
           return out;
         }
 
-        static float4 fragmentShaderBody(RasterizerData in,
-                                         constant Uniforms& uniforms,
-                                         texture2d<float> texture,
-                                         sampler sampler) {
-          float scissor = scissorMask(uniforms, in.fpos);
-          if (scissor == 0)
-            return float4(0);
-
-          if (uniforms.type == 0) {
-            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
-            float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, pt))
-                               / uniforms.feather);
-            float4 color = mix(uniforms.innerCol, uniforms.outerCol, d);
-            return color * scissor;
-          } else if (uniforms.type == 6) {
-            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
-            float t = gradientRadialT(pt, uniforms.gradientCenter, uniforms.gradientFocal, uniforms.gradientRadii, int(uniforms.gradientSpread));
-            float4 color = texture.sample(sampler, float2(t, 0.5f));
-            return color * uniforms.innerCol * scissor;
-          } else if (uniforms.type == 7) {
-            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy;
-            float t = gradientLinearT(pt, uniforms.gradientCenter, uniforms.gradientFocal, int(uniforms.gradientSpread));
-            float4 color = texture.sample(sampler, float2(t, 0.5f));
-            return color * uniforms.innerCol * scissor;
-          } else if (uniforms.type == 1) {
-            float2 pt = (uniforms.paintMat * float3(in.fpos, 1.0)).xy / uniforms.extent;
-            float4 color = texture.sample(sampler, pt);
-            if (uniforms.texType == 1)
-              color = float4(color.xyz * color.w, color.w);
-            else if (uniforms.texType == 2)
-              color = float4(color.x);
-            color *= scissor;
-            return color * uniforms.innerCol;
-          } else if (uniforms.type == 3) {  // MNVG_SHADER_IMG
-            float4 color = texture.sample(sampler, in.ftcoord);
-            if (uniforms.texType == 1)
-              color = float4(color.xyz * color.w, color.w);
-            else if (uniforms.texType == 2)
-              color = float4(color.x);
-            color *= scissor;
-            return color * uniforms.innerCol;
-          } else {  // MNVG_SHADER_SIMPLE (stencil-only, color write masked)
-            return uniforms.innerCol * scissor;
-          }
-        }
-
         static float4 fragmentShaderAABody(RasterizerData in,
                                            constant Uniforms& uniforms,
                                            texture2d<float> texture,
@@ -402,15 +356,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Path clip: color[2] (RG8) holds the current clip coverage in .r for every pixel, 1 when
         // no clip is active, and every paint fragment multiplies by it through framebuffer fetch.
         // Its .g channel is scratch for building the next clip (see the clip functions below).
-        fragment float4 fragmentShader(RasterizerData in [[stage_in]],
-                                       constant Uniforms& uniforms [[buffer(0)]],
-                                       texture2d<float> texture [[texture(0)]],
-                                       texture2d<float> maskTex [[texture(1)]],
-                                       sampler sampler [[sampler(0)]],
-                                       float4 clipIn [[color(2)]]) {
-          return fragmentShaderBody(in, uniforms, texture, sampler) * maskCoverage(uniforms, maskTex, in.fpos) * clipIn.r;
-        }
-
         fragment float4 fragmentShaderAA(RasterizerData in [[stage_in]],
                                          constant Uniforms& uniforms [[buffer(0)]],
                                          texture2d<float> texture [[texture(0)]],
@@ -563,7 +508,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _commandQueue;        // id<MTLCommandQueue>
     private IntPtr _library;             // id<MTLLibrary>
     private IntPtr _vertexFunction;      // id<MTLFunction>
-    private IntPtr _fragmentFunction;            // id<MTLFunction>
     private IntPtr _fragmentAAFunction;          // id<MTLFunction>
     private IntPtr _fragmentCoverageBuildFn;     // id<MTLFunction>
     private IntPtr _fragmentCoverageCompositeFn; // id<MTLFunction>
@@ -676,11 +620,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     private bool _disposed;
 
     /// <summary>
-    /// Whether geometry-based fringe anti-aliasing is active.
-    /// </summary>
-    private bool UseGeometryAA => (_flags & NVGcreateFlags.Antialias) != 0;
-
-    /// <summary>
     /// Creates a new Metal NanoVG context
     /// </summary>
     /// <param name="device">Metal device</param>
@@ -778,7 +717,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Get shader functions
         _vertexFunction = GetFunction("vertexShader");
-        _fragmentFunction = GetFunction("fragmentShader");
         _fragmentAAFunction = GetFunction("fragmentShaderAA");
         _fragmentCoverageBuildFn = GetFunction("fragmentCoverageBuild");
         _fragmentClipPrepareFn = GetFunction("fragmentClipPrepare");
@@ -905,8 +843,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         var vertexDescriptor = CreateVertexDescriptor();
-        var useGeometryAA = (_flags & NVGcreateFlags.Antialias) != 0;
-        var fragmentFunc = useGeometryAA ? _fragmentAAFunction : _fragmentFunction;
+        var fragmentFunc = _fragmentAAFunction;
 
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
         // Even for stencil-only passes we keep a fragment function so fragments are generated
@@ -1785,22 +1722,19 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 );
             }
 
-            if (UseGeometryAA)
+            for (var i = 0; i < call.pathCount; i++)
             {
-                for (var i = 0; i < call.pathCount; i++)
+                ref var path = ref _paths[call.pathOffset + i];
+                if (path.strokeCount > 0)
                 {
-                    ref var path = ref _paths[call.pathOffset + i];
-                    if (path.strokeCount > 0)
-                    {
-                        ObjCRuntime.SendMessage(
-                            _renderEncoder,
-                            MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                            (ulong)MTLPrimitiveType.TriangleStrip,
-                            (nuint)path.strokeOffset,
-                            (nuint)path.strokeCount
-                        );
+                    ObjCRuntime.SendMessage(
+                        _renderEncoder,
+                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                        (ulong)MTLPrimitiveType.TriangleStrip,
+                        (nuint)path.strokeOffset,
+                        (nuint)path.strokeCount
+                    );
                     }
-                }
             }
 
             return;
@@ -1837,22 +1771,19 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
 
-        if (UseGeometryAA)
+        for (var i = 0; i < call.pathCount; i++)
         {
-            for (var i = 0; i < call.pathCount; i++)
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.strokeCount > 0)
             {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(
-                        _renderEncoder,
-                        MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip,
-                        (nuint)path.strokeOffset,
-                        (nuint)path.strokeCount
-                    );
+                ObjCRuntime.SendMessage(
+                    _renderEncoder,
+                    MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.TriangleStrip,
+                    (nuint)path.strokeOffset,
+                    (nuint)path.strokeCount
+                );
                 }
-            }
         }
 
         // Draw fill
@@ -1910,17 +1841,14 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         // Geometry-AA fringe also contributes coverage so anti-aliased boundaries
         // make it into color[1].
-        if (UseGeometryAA)
+        for (var i = 0; i < call.pathCount; i++)
         {
-            for (var i = 0; i < call.pathCount; i++)
+            ref var path = ref _paths[call.pathOffset + i];
+            if (path.strokeCount > 0)
             {
-                ref var path = ref _paths[call.pathOffset + i];
-                if (path.strokeCount > 0)
-                {
-                    ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
-                        (ulong)MTLPrimitiveType.TriangleStrip, (nuint)path.strokeOffset, (nuint)path.strokeCount);
+                ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount,
+                    (ulong)MTLPrimitiveType.TriangleStrip, (nuint)path.strokeOffset, (nuint)path.strokeCount);
                 }
-            }
         }
 
         // ── Pass C: composite ─────────────────────────────────────────────────
@@ -3364,11 +3292,6 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_vertexFunction != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_vertexFunction, ObjCRuntime.Selectors.release);
-        }
-
-        if (_fragmentFunction != IntPtr.Zero)
-        {
-            ObjCRuntime.SendMessage(_fragmentFunction, ObjCRuntime.Selectors.release);
         }
 
         if (_fragmentAAFunction != IntPtr.Zero)

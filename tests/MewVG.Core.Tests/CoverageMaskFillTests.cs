@@ -138,7 +138,7 @@ public class CoverageMaskFillTests
     public void ManyInteractingContours_TakeTheMaskPath()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer, edgeAntiAlias: true);
+        using var vg = new TestNanoVG(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         vg.BeginFrame(600, 600, 1f);
@@ -162,7 +162,7 @@ public class CoverageMaskFillTests
     public void FewPoints_KeepTheTessellationPath()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer, edgeAntiAlias: true);
+        using var vg = new TestNanoVG(renderer);
 
         // A rounded border ring with a zero-width top: boundaries interact, but the point
         // count is far below the mask floor.
@@ -183,7 +183,7 @@ public class CoverageMaskFillTests
     public void FrozenFill_ReusesTheMaskUntilTheTransformChanges()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer, edgeAntiAlias: true);
+        using var vg = new TestNanoVG(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         vg.BeginFrame(600, 600, 1f);
@@ -211,7 +211,7 @@ public class CoverageMaskFillTests
     public void FrozenFill_RebuildsTheMaskWhenTheScissorWidens()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer, edgeAntiAlias: true);
+        using var vg = new TestNanoVG(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         // Built under a scissor that cuts the geometry: the mask covers only the visible part.

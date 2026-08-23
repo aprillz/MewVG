@@ -10,9 +10,9 @@ public abstract class NanoVG : IDisposable
     private readonly NVGContext _nvg;
     private readonly List<int> _ownedImages = [];
 
-    internal NanoVG(INVGRenderer renderer, bool edgeAntiAlias)
+    internal NanoVG(INVGRenderer renderer)
     {
-        _nvg = new NVGContext(renderer, edgeAntiAlias);
+        _nvg = new NVGContext(renderer);
     }
 
     #region Frame Management
