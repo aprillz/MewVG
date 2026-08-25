@@ -77,16 +77,16 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
             nSize = (ushort)sizeof(PIXELFORMATDESCRIPTOR),
             nVersion = 1,
             dwFlags = Gdi32.PFD_DRAW_TO_WINDOW | Gdi32.PFD_SUPPORT_OPENGL | Gdi32.PFD_DOUBLEBUFFER,
+            iPixelType = Gdi32.PFD_TYPE_RGBA,
             cColorBits = 32,
             cAlphaBits = 8,
-            cDepthBits = 24,
-            cStencilBits = 8,
+            iLayerType = Gdi32.PFD_MAIN_PLANE,
         };
 
-        int pixelFormat = Gdi32.ChoosePixelFormat(_hdc, ref pfd);
+        int pixelFormat = ChooseExactColorOnlyPixelFormat(_hdc, ref pfd);
         if (pixelFormat == 0)
         {
-            throw new InvalidOperationException("ChoosePixelFormat failed.");
+            throw new InvalidOperationException("No accelerated color-only OpenGL pixel format is available.");
         }
 
         Gdi32.SetPixelFormat(_hdc, pixelFormat, ref pfd);
@@ -164,8 +164,7 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
             {
                 _gl.ClearColor(0.5f, 0.5f, 0.5f, 1f);
             }
-            _gl.ClearStencil(0);
-            _gl.Clear(GLMinimal.ColorBufferBit | GLMinimal.StencilBufferBit);
+            _gl.Clear(GLMinimal.ColorBufferBit);
 
             _vg!.BeginFrame(_winw, _winh, 1.0f);
             DemoScene.DrawDemo(_vg, _winw, _winh);
@@ -261,6 +260,54 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
         }
 
         return User32.DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    private static int ChooseExactColorOnlyPixelFormat(nint hdc, ref PIXELFORMATDESCRIPTOR selected)
+    {
+        var descriptorSize = (uint)sizeof(PIXELFORMATDESCRIPTOR);
+        var candidate = new PIXELFORMATDESCRIPTOR
+        {
+            nSize = (ushort)descriptorSize,
+            nVersion = 1,
+        };
+        int formatCount = Gdi32.DescribePixelFormat(hdc, 1, descriptorSize, ref candidate);
+        if (formatCount <= 0)
+        {
+            return 0;
+        }
+
+        const uint requiredFlags = Gdi32.PFD_DRAW_TO_WINDOW |
+                                   Gdi32.PFD_SUPPORT_OPENGL |
+                                   Gdi32.PFD_DOUBLEBUFFER;
+        for (int format = 1; format <= formatCount; format++)
+        {
+            candidate = new PIXELFORMATDESCRIPTOR
+            {
+                nSize = (ushort)descriptorSize,
+                nVersion = 1,
+            };
+            if (Gdi32.DescribePixelFormat(hdc, format, descriptorSize, ref candidate) == 0)
+            {
+                continue;
+            }
+
+            bool softwareOnly = (candidate.dwFlags & Gdi32.PFD_GENERIC_FORMAT) != 0 &&
+                                (candidate.dwFlags & Gdi32.PFD_GENERIC_ACCELERATED) == 0;
+            if (softwareOnly ||
+                (candidate.dwFlags & requiredFlags) != requiredFlags ||
+                candidate.iPixelType != Gdi32.PFD_TYPE_RGBA ||
+                candidate.iLayerType != Gdi32.PFD_MAIN_PLANE ||
+                candidate.cColorBits != 32 || candidate.cAlphaBits != 8 ||
+                candidate.cDepthBits != 0 || candidate.cStencilBits != 0)
+            {
+                continue;
+            }
+
+            selected = candidate;
+            return format;
+        }
+
+        return 0;
     }
 
     // ─── Structs ─────────────────────────────────────────────────────────────
@@ -413,9 +460,13 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
         public const uint PFD_DRAW_TO_WINDOW = 0x00000004;
         public const uint PFD_SUPPORT_OPENGL = 0x00000020;
         public const uint PFD_DOUBLEBUFFER = 0x00000001;
+        public const uint PFD_GENERIC_FORMAT = 0x00000040;
+        public const uint PFD_GENERIC_ACCELERATED = 0x00001000;
+        public const byte PFD_TYPE_RGBA = 0;
+        public const byte PFD_MAIN_PLANE = 0;
 
         [LibraryImport("gdi32.dll")]
-        public static partial int ChoosePixelFormat(nint hdc, ref PIXELFORMATDESCRIPTOR ppfd);
+        public static partial int DescribePixelFormat(nint hdc, int format, uint bytes, ref PIXELFORMATDESCRIPTOR ppfd);
 
         [LibraryImport("gdi32.dll")]
         public static partial int SetPixelFormat(nint hdc, int format, ref PIXELFORMATDESCRIPTOR ppfd);
