@@ -8,16 +8,6 @@ namespace MewVG.Demo.MacOS;
 
 internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 {
-    // Pool depth matches the color drawable's triple buffering (CAMetalLayer default
-    // maximumDrawableCount = 3). A single shared stencil texture makes Metal's hazard tracker
-    // serialize frame N+1 behind frame N's stencil access; N independent slots let N frames
-    // stay in flight, same as the color drawable.
-    private const int StencilPoolSize = 3;
-
-    private static readonly nint[] _stencilTextures = new nint[StencilPoolSize];
-    private static int _stencilSlotIndex = -1;
-    private static int _stencilWidth;
-    private static int _stencilHeight;
     private static nint _device;
     private static nint _commandQueue;
     private static NanoVGMetal? _vg;
@@ -39,7 +29,6 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 
         _vg = new NanoVGMetal(_device);
         _vg.PixelFormat = MTLPixelFormat.BGRA8Unorm;
-        _vg.StencilFormat = MTLPixelFormat.Stencil8;
     }
 
     protected override void Initialize()
@@ -104,15 +93,12 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 
     // ─── Rendering ──────────────────────────────────────────────────────────
 
-    private static void RenderFrame(nint drawable, nint drawableTexture, NanoVGMetal vg, nint commandQueue, int width, int height, float dpr, int drawableWidth, int drawableHeight)
+    private static void RenderFrame(nint drawable, nint drawableTexture, NanoVGMetal vg, nint commandQueue, int width, int height, float dpr)
     {
         if (dpr <= 0.0f)
         {
             dpr = 1.0f;
         }
-
-        drawableWidth = Math.Max(1, drawableWidth);
-        drawableHeight = Math.Max(1, drawableHeight);
 
         nint commandBuffer = ObjCRuntime.SendMessage(commandQueue, MetalInterop.Sel.CommandBuffer);
         if (commandBuffer == nint.Zero)
@@ -120,7 +106,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
             return;
         }
 
-        nint passDesc = CreateRenderPass(drawableTexture, _stencilTextures[_stencilSlotIndex]);
+        nint passDesc = CreateRenderPass(drawableTexture);
         nint encoder = ObjCRuntime.SendMessage(commandBuffer, MetalInterop.Sel.RenderCommandEncoderWithDescriptor, passDesc);
         if (encoder == nint.Zero)
         {
@@ -162,8 +148,6 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
         objc_msgSend(layer, Sel.SetDrawableSize, new CGSize(backingSize.Width, backingSize.Height));
         objc_msgSend(layer, Sel.SetContentsScale, dpr);
 
-        EnsureStencilTexture(_device, (int)MathF.Round((float)backingSize.Width), (int)MathF.Round((float)backingSize.Height));
-
         nint drawable = ObjCRuntime.SendMessage(layer, MetalInterop.Sel.NextDrawable);
         if (drawable == nint.Zero)
         {
@@ -176,7 +160,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
             return;
         }
 
-        RenderFrame(drawable, drawableTexture, _vg, _commandQueue, width, height, dpr, (int)MathF.Round((float)backingSize.Width), (int)MathF.Round((float)backingSize.Height));
+        RenderFrame(drawable, drawableTexture, _vg, _commandQueue, width, height, dpr);
     }
 
     [UnmanagedCallersOnly]
@@ -302,47 +286,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 
     // ─── Metal Helpers ──────────────────────────────────────────────────────
 
-    // Advances to the next pooled stencil slot; must be called exactly once per frame (from
-    // DisplayLayer, before RenderFrame). RenderFrame's single render pass keeps this slot for
-    // its whole encoder, so rotating here never splits a frame's stencil use across textures.
-    private static void EnsureStencilTexture(nint device, int width, int height)
-    {
-        if (_stencilWidth != width || _stencilHeight != height)
-        {
-            for (int i = 0; i < _stencilTextures.Length; i++)
-            {
-                if (_stencilTextures[i] != nint.Zero)
-                {
-                    ObjCRuntime.SendMessageNoReturn(_stencilTextures[i], ObjCRuntime.Selectors.release);
-                    _stencilTextures[i] = nint.Zero;
-                }
-            }
-
-            _stencilWidth = width;
-            _stencilHeight = height;
-        }
-
-        _stencilSlotIndex = (_stencilSlotIndex + 1) % StencilPoolSize;
-
-        if (_stencilTextures[_stencilSlotIndex] == nint.Zero)
-        {
-            _stencilTextures[_stencilSlotIndex] = CreateTexture(device, MTLPixelFormat.Stencil8, width, height, MTLTextureUsage.RenderTarget);
-        }
-    }
-
-    private static nint CreateTexture(nint device, MTLPixelFormat format, int width, int height, MTLTextureUsage usage)
-    {
-        nint desc = ObjCRuntime.SendMessage(ObjCRuntime.GetClass("MTLTextureDescriptor"), MetalSelectors.texture2DDescriptorWithPixelFormat_width_height_mipmapped,
-            (ulong)format, (nuint)width, (nuint)height, false);
-
-        if (desc == nint.Zero)
-            return nint.Zero;
-
-        ObjCRuntime.SendMessageNoReturn(desc, MetalSelectors.setUsage, (ulong)usage);
-        return ObjCRuntime.SendMessage(device, MetalSelectors.newTextureWithDescriptor, desc);
-    }
-
-    private static nint CreateRenderPass(nint colorTexture, nint stencilTexture)
+    private static nint CreateRenderPass(nint colorTexture)
     {
         nint passDesc = ObjCRuntime.SendMessage(ObjCRuntime.GetClass("MTLRenderPassDescriptor"), MetalSelectors.renderPassDescriptor);
 
@@ -352,12 +296,6 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
         ObjCRuntime.SendMessageNoReturn(color0, MetalSelectors.setLoadAction, (ulong)MTLLoadAction.Clear);
         ObjCRuntime.SendMessageNoReturn(color0, MetalSelectors.setStoreAction, (ulong)MTLStoreAction.Store);
         SetClearColor(color0, new MTLClearColor(0.0, 0.0, 0.0, 1.0));
-
-        nint stencil = ObjCRuntime.SendMessage(passDesc, MetalSelectors.stencilAttachment);
-        ObjCRuntime.SendMessageNoReturn(stencil, MetalSelectors.setTexture, stencilTexture);
-        ObjCRuntime.SendMessageNoReturn(stencil, MetalSelectors.setLoadAction, (ulong)MTLLoadAction.Clear);
-        ObjCRuntime.SendMessageNoReturn(stencil, MetalSelectors.setStoreAction, (ulong)MTLStoreAction.DontCare);
-        ObjCRuntime.SendMessageNoReturn(stencil, MetalSelectors.setClearStencil, (uint)0);
 
         return passDesc;
     }

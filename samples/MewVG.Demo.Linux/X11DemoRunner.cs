@@ -27,7 +27,7 @@ internal sealed unsafe partial class X11DemoRunner : DemoRunner
         int screen = X11.XDefaultScreen(_display);
         nint root = X11.XRootWindow(_display, screen);
 
-        // GLX visual: RGBA, double-buffered, depth 24, stencil 8
+        // GLX visual: RGBA, double-buffered, with no depth or stencil attachment.
         int* attribs = stackalloc int[]
         {
             4,  // GLX_RGBA
@@ -36,8 +36,6 @@ internal sealed unsafe partial class X11DemoRunner : DemoRunner
             9, 8,   // GLX_GREEN_SIZE, 8
             10, 8,  // GLX_BLUE_SIZE, 8
             11, 8,  // GLX_ALPHA_SIZE, 8
-            12, 24, // GLX_DEPTH_SIZE, 24
-            13, 8,  // GLX_STENCIL_SIZE, 8
             0       // None
         };
 
@@ -109,8 +107,7 @@ internal sealed unsafe partial class X11DemoRunner : DemoRunner
 
             _gl!.Viewport(0, 0, _winw, _winh);
             _gl.ClearColor(0f, 0f, 0f, 0f);
-            _gl.ClearStencil(0);
-            _gl.Clear(GLMinimal.ColorBufferBit | GLMinimal.StencilBufferBit);
+            _gl.Clear(GLMinimal.ColorBufferBit);
 
             _vg!.BeginFrame(_winw, _winh, pxRatio);
             DemoScene.DrawDemo(_vg, _winw, _winh);
