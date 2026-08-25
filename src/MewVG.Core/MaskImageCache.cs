@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Aprillz.MewVG;
 
 /// <summary>
@@ -20,6 +22,7 @@ internal sealed class MaskImageCache
 
     private sealed class Entry
     {
+        public WeakReference<object>? Key;
         public int Image;
         public int Width;
         public int Height;
@@ -34,11 +37,12 @@ internal sealed class MaskImageCache
     // Frames whose draws may still be reading an image: 1 when the backend finishes a frame's
     // commands before the next frame records (GL), the in-flight depth otherwise (Metal).
     private readonly int _framesInFlight;
-    private readonly Dictionary<object, Entry> _keyed = new(ReferenceEqualityComparer.Instance);
+    private readonly ConditionalWeakTable<object, Entry> _keyed = new();
+    private readonly HashSet<Entry> _keyedEntries = new();
     private readonly List<Entry> _transient = new();
     // Replaced while a draw of the current frame still references them; deleted once that frame is out.
     private readonly List<int> _retired = new();
-    private readonly List<object> _evictScratch = new();
+    private readonly List<Entry> _evictScratch = new();
     private int _frame;
     private long _keyedBytes;
 
@@ -51,7 +55,7 @@ internal sealed class MaskImageCache
     }
 
     /// <summary>Images held for frozen geometries and their device bytes, for diagnostics.</summary>
-    public int KeyedCount => _keyed.Count;
+    public int KeyedCount => _keyedEntries.Count;
     public long KeyedBytes => _keyedBytes;
 
     /// <summary>Starts a frame: retired images and idle entries are released, and over-budget keyed entries evicted.</summary>
@@ -66,16 +70,16 @@ internal sealed class MaskImageCache
         _retired.Clear();
 
         _evictScratch.Clear();
-        foreach (var pair in _keyed)
+        foreach (var entry in _keyedEntries)
         {
-            if (_frame - pair.Value.LastUsedFrame > IDLE_FRAMES)
+            if (entry.Key?.TryGetTarget(out _) != true || _frame - entry.LastUsedFrame > IDLE_FRAMES)
             {
-                _evictScratch.Add(pair.Key);
+                _evictScratch.Add(entry);
             }
         }
-        foreach (var key in _evictScratch)
+        foreach (var entry in _evictScratch)
         {
-            Release(key);
+            Release(entry);
         }
 
         for (var i = _transient.Count - 1; i >= 0; i--)
@@ -121,12 +125,23 @@ internal sealed class MaskImageCache
 
         if (entry != null)
         {
+            _keyed.Remove(key);
+            _keyedEntries.Remove(entry);
             Retire(entry);
             _keyedBytes -= entry.Bytes;
         }
 
-        entry = new Entry { Image = image, Width = width, Height = height, Version = version, LastUsedFrame = _frame };
-        _keyed[key] = entry;
+        entry = new Entry
+        {
+            Key = new WeakReference<object>(key),
+            Image = image,
+            Width = width,
+            Height = height,
+            Version = version,
+            LastUsedFrame = _frame,
+        };
+        _keyed.Add(key, entry);
+        _keyedEntries.Add(entry);
         _keyedBytes += entry.Bytes;
         EvictToBudget();
         return image;
@@ -161,14 +176,14 @@ internal sealed class MaskImageCache
     {
         while (_keyedBytes > DEVICE_BUDGET_BYTES)
         {
-            object? victim = null;
+            Entry? victim = null;
             var oldest = int.MaxValue;
-            foreach (var pair in _keyed)
+            foreach (var entry in _keyedEntries)
             {
-                if (pair.Value.LastUsedFrame < _frame && pair.Value.LastUsedFrame < oldest)
+                if (entry.LastUsedFrame < _frame && entry.LastUsedFrame < oldest)
                 {
-                    oldest = pair.Value.LastUsedFrame;
-                    victim = pair.Key;
+                    oldest = entry.LastUsedFrame;
+                    victim = entry;
                 }
             }
 
@@ -181,10 +196,14 @@ internal sealed class MaskImageCache
         }
     }
 
-    private void Release(object key)
+    private void Release(Entry entry)
     {
-        if (_keyed.Remove(key, out var entry))
+        if (_keyedEntries.Remove(entry))
         {
+            if (entry.Key?.TryGetTarget(out var key) == true)
+            {
+                _keyed.Remove(key);
+            }
             _keyedBytes -= entry.Bytes;
             Retire(entry);
         }
@@ -213,11 +232,12 @@ internal sealed class MaskImageCache
         }
         _retired.Clear();
 
-        foreach (var entry in _keyed.Values)
+        foreach (var entry in _keyedEntries)
         {
             _delete(entry.Image);
         }
         _keyed.Clear();
+        _keyedEntries.Clear();
         _keyedBytes = 0;
 
         foreach (var entry in _transient)
