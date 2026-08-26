@@ -1,5 +1,7 @@
 using Aprillz.MewVG;
 
+using System.Runtime.CompilerServices;
+
 using Xunit;
 
 namespace MewVG.Core.Tests;
@@ -120,6 +122,33 @@ public sealed class MaskImageCacheTests
         Assert.Contains(keyed, images.Deleted);
         Assert.Contains(transient, images.Deleted);
         Assert.Equal(0, cache.KeyedCount);
+    }
+
+    [Fact]
+    public void KeyedMask_DoesNotKeepItsOwnerAlive()
+    {
+        var images = new Images();
+        var cache = images.NewCache();
+
+        cache.BeginFrame();
+        var owner = AddKeyedMask(cache);
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+        GC.Collect();
+
+        Assert.False(owner.IsAlive);
+
+        cache.BeginFrame();
+        Assert.Equal(0, cache.KeyedCount);
+        Assert.Single(images.Deleted);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static WeakReference AddKeyedMask(MaskImageCache cache)
+    {
+        var key = new object();
+        cache.Acquire(_pixels.AsSpan(0, 100), 10, 10, key, version: 1);
+        return new WeakReference(key);
     }
 
     [Fact]
