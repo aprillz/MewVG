@@ -2289,6 +2289,11 @@ internal sealed class NVGContext
         ClearPathCache();
     }
 
+    // Scratch for replaying a device snapshot at a translated position; per context, so a
+    // replay never mutates the snapshot another context may be reading.
+    private NVGvertex[] _snapshotShiftVerts = Array.Empty<NVGvertex>();
+    private readonly float[] _snapshotShiftBounds = new float[4];
+
     private bool TryFillFromDeviceSnapshot(
         FrozenFillCache cache,
         TessWindingRule windingRule,
@@ -2303,7 +2308,11 @@ internal sealed class NVGContext
             return false;
         }
 
-        for (var i = 0; i < 6; i++)
+        // Translation does not change winding resolution, tessellation topology or the AA
+        // fringe shape, so only the linear part has to match; a scroll replays the snapshot
+        // shifted by the translation delta. The linear part stays an exact comparison: a
+        // scale that differs even by an ulp falls back to the full device-space path.
+        for (var i = 0; i < 4; i++)
         {
             if (cache.SnapshotXform[i] != state.Xform[i])
             {
@@ -2311,17 +2320,45 @@ internal sealed class NVGContext
             }
         }
 
+        float shiftX = state.Xform[4] - cache.SnapshotXform[4];
+        float shiftY = state.Xform[5] - cache.SnapshotXform[5];
+
         fillPaint.InnerColor.A *= state.Alpha;
         fillPaint.OuterColor.A *= state.Alpha;
+
+        ReadOnlySpan<NVGvertex> verts = cache.SnapshotVerts.AsSpan(0, cache.SnapshotNVerts);
+        ReadOnlySpan<float> bounds = cache.SnapshotBounds;
+        if (shiftX != 0f || shiftY != 0f)
+        {
+            // The stored snapshot stays untouched and every replay shifts from it, so the
+            // rounding error is a single step and never accumulates across scroll ticks.
+            if (_snapshotShiftVerts.Length < cache.SnapshotNVerts)
+            {
+                _snapshotShiftVerts = new NVGvertex[cache.SnapshotVerts.Length];
+            }
+            var shifted = _snapshotShiftVerts.AsSpan(0, cache.SnapshotNVerts);
+            verts.CopyTo(shifted);
+            for (var i = 0; i < shifted.Length; i++)
+            {
+                shifted[i].X += shiftX;
+                shifted[i].Y += shiftY;
+            }
+            _snapshotShiftBounds[0] = cache.SnapshotBounds[0] + shiftX;
+            _snapshotShiftBounds[1] = cache.SnapshotBounds[1] + shiftY;
+            _snapshotShiftBounds[2] = cache.SnapshotBounds[2] + shiftX;
+            _snapshotShiftBounds[3] = cache.SnapshotBounds[3] + shiftY;
+            verts = shifted;
+            bounds = _snapshotShiftBounds;
+        }
 
         _renderer.RenderFill(
             ref fillPaint,
             state.CompositeOperation,
             ref state.Scissor,
             fringe,
-            cache.SnapshotBounds,
+            bounds,
             cache.SnapshotPaths.AsSpan(0, cache.SnapshotNPaths),
-            cache.SnapshotVerts);
+            verts);
 
         for (var i = 0; i < cache.SnapshotNPaths; i++)
         {
