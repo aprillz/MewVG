@@ -337,6 +337,15 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.UseProgram(0);
         BindTexture(0);
 
+        // Release the clip and mask units too. Desktop GL tolerates a texture that stays bound while
+        // the framebuffer owning it is drawn into; GLES3/WebGL2 calls that a feedback loop and drops
+        // the draw, so clipped content rendered through an offscreen target disappears.
+        GL.ActiveTexture(TextureUnit.Texture1);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture2);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture0);
+
         _vertCount = 0;
         _pathCount = 0;
         _callCount = 0;
@@ -1578,10 +1587,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (!useClipMask)
         {
             GL.Uniform1(_shader.LocClipEnabled, 0);
+            UnbindClipMask();
         }
         else if (_clipMaskEmpty)
         {
             GL.Uniform1(_shader.LocClipEnabled, 2);
+            UnbindClipMask();
         }
         else
         {
@@ -1590,6 +1601,18 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         CheckError("set uniforms");
+    }
+
+    /// <summary>
+    /// Drops the clip sampler's binding. The shader ignores it once clipEnabled is 0, but a mask
+    /// texture left bound is still a feedback loop the moment its own framebuffer is drawn into,
+    /// and GLES3/WebGL2 discards that draw instead of reading stale texels.
+    /// </summary>
+    private void UnbindClipMask()
+    {
+        GL.ActiveTexture(TextureUnit.Texture1);
+        GL.BindTexture(TextureTarget.Texture2D, 0);
+        GL.ActiveTexture(TextureUnit.Texture0);
     }
 
     private void BindClipMask(int originX, int originY, int width, int height)
