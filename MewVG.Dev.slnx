@@ -12,6 +12,7 @@
     <Project Path="samples/MewVG.Demo.Linux/MewVG.Demo.Linux.csproj" />
     <Project Path="samples/MewVG.Demo.MacOS/MewVG.Demo.MacOS.csproj" />
     <Project Path="samples/MewVG.Demo.Windows/MewVG.Demo.Windows.csproj" />
+    <Project Path="samples/Skia.Demo.Browser/Skia.Demo.Browser.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/MewVG.Core.Tests/Aprillz.MewVG.Core.Tests.csproj" />
