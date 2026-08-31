@@ -273,7 +273,6 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glClear;
     private static delegate* unmanaged<int, int, int, int, void> _glScissor;
     private static delegate* unmanaged<int, int, int, int, void> _glViewport;
-    private static delegate* unmanaged<void> _glFinish;
 
     public static void Initialize(Func<string, nint> getProcAddress, NanoVGGLProfile profile)
     {
@@ -376,7 +375,6 @@ internal static unsafe class GL
         _glClear = (delegate* unmanaged<uint, void>)LoadProc("glClear");
         _glScissor = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glScissor");
         _glViewport = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glViewport");
-        _glFinish = (delegate* unmanaged<void>)LoadProc("glFinish");
     }
 
     public static void UseProgram(int program) => _glUseProgram((uint)program);
@@ -654,8 +652,6 @@ internal static unsafe class GL
 
     public static void Scissor(int x, int y, int width, int height) => _glScissor(x, y, width, height);
     public static void Viewport(int x, int y, int width, int height) => _glViewport(x, y, width, height);
-
-    public static void Finish() => _glFinish();
 
     public static void BufferData(BufferTarget target, int size, ReadOnlySpan<float> data, BufferUsageHint usage)
     {
