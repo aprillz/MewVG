@@ -3,13 +3,15 @@
 namespace Aprillz.MewVG;
 
 /// <summary>
-/// Main NanoVG API for OpenGL rendering (GL3 core profile)
+/// Main NanoVG API for OpenGL rendering. The GL API surface (desktop GL3 core or GLES3/WebGL2)
+/// is selected once per process via <see cref="Initialize"/>.
 /// </summary>
 public sealed class NanoVGGL : NanoVG
 {
     private readonly GLNVGContext _gl;
 
-    public static void Initialize(Func<string, nint> getProcAddress) => GL.Initialize(getProcAddress);
+    public static void Initialize(Func<string, nint> getProcAddress, NanoVGGLProfile profile = NanoVGGLProfile.Gl3Core)
+        => GL.Initialize(getProcAddress, profile);
 
     public NanoVGGL()
         : base(CreateRenderer(out var gl))
