@@ -8,6 +8,7 @@
     <File Path="build/MewVG.Common.props" />
   </Folder>
   <Folder Name="/samples/">
+    <Project Path="samples/MewVG.Demo.Browser/MewVG.Demo.Browser.csproj" />
     <Project Path="samples/MewVG.Demo.Linux/MewVG.Demo.Linux.csproj" />
     <Project Path="samples/MewVG.Demo.MacOS/MewVG.Demo.MacOS.csproj" />
     <Project Path="samples/MewVG.Demo.Windows/MewVG.Demo.Windows.csproj" />
