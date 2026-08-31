@@ -1,0 +1,29 @@
+<Project Sdk="Microsoft.NET.Sdk.WebAssembly">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>MewVG.Demo.Browser</AssemblyName>
+    <TargetFramework>net10.0</TargetFramework>
+    <RuntimeIdentifier>browser-wasm</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- The GL entry points are resolved by name at runtime; without GL_ENABLE_GET_PROC_ADDRESS
+         Emscripten strips the lookup table. WebGL2 is pinned so context creation cannot silently
+         fall back to WebGL1. -->
+    <EmccExtraLDFlags>-sMIN_WEBGL_VERSION=2 -sMAX_WEBGL_VERSION=2 -sGL_ENABLE_GET_PROC_ADDRESS=1</EmccExtraLDFlags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <NativeFileReference Include="mewvg_webgl_shim.c" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\MewVG.Demo.Shared\DemoScene.cs" Link="DemoScene.cs" />
+    <Compile Include="..\MewVG.Demo.Shared\GLMinimal.cs" Link="GLMinimal.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MewVG.GL\MewVG.GL.csproj" />
+  </ItemGroup>
+</Project>
