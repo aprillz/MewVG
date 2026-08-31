@@ -1918,7 +1918,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _dummyTex = CreateTexture(NVGtextureType.Alpha, 1, 1, 0, ReadOnlySpan<byte>.Empty);
 
         CheckError("create done");
-        GL.Finish();
     }
 
     private static GLNVGShader CreateShader(string name, string header, string opts, string vshader, string fshader)
