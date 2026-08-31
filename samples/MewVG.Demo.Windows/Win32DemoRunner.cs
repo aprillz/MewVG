@@ -128,12 +128,13 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
             _hglrc = legacyCtx;
         }
 
-        // VSync
+        // VSync; --no-vsync uncaps SwapBuffers so the FPS line reflects raw frame throughput
         var swapInterval = (delegate* unmanaged<int, int>)
             WGL.wglGetProcAddress("wglSwapIntervalEXT");
         if (swapInterval != null)
         {
-            swapInterval(1);
+            var vsyncEnabled = Array.IndexOf(Environment.GetCommandLineArgs(), "--no-vsync") < 0;
+            swapInterval(vsyncEnabled ? 1 : 0);
         }
 
         User32.ShowWindow(_hwnd, User32.SW_SHOW);
