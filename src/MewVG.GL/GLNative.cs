@@ -215,7 +215,10 @@ internal enum All : int
 internal static unsafe class GL
 {
     private static bool _initialized;
+    private static NanoVGGLProfile _profile;
     private static Func<string, nint>? _getProcAddress;
+
+    public static NanoVGGLProfile Profile => _profile;
 
     private static delegate* unmanaged<uint, void> _glUseProgram;
     private static delegate* unmanaged<uint, void> _glEnable;
@@ -281,14 +284,23 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, uint, uint, void> _glBindBufferBase;
     private static delegate* unmanaged<uint, uint, uint, void> _glTexBuffer;
 
-    public static void Initialize(Func<string, nint> getProcAddress)
+    public static void Initialize(Func<string, nint> getProcAddress, NanoVGGLProfile profile)
     {
         if (_initialized)
         {
+            // Entry points and shader sources are process-global; a second context cannot run a
+            // different GL API surface in the same process.
+            if (profile != _profile)
+            {
+                throw new InvalidOperationException(
+                    $"NanoVGGL is already initialized with profile {_profile}; it cannot be re-initialized with {profile}.");
+            }
+
             return;
         }
 
         _getProcAddress = getProcAddress ?? throw new ArgumentNullException(nameof(getProcAddress));
+        _profile = profile;
 
         Load();
         _initialized = true;
