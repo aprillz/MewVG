@@ -151,6 +151,9 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
 
     protected override void Execute()
     {
+        var fpsTimer = System.Diagnostics.Stopwatch.StartNew();
+        var frameCount = 0;
+
         while (_running)
         {
             ProcessEvents();
@@ -171,6 +174,14 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
             _vg.EndFrame();
 
             Gdi32.SwapBuffers(_hdc);
+
+            frameCount++;
+            if (fpsTimer.ElapsedMilliseconds >= 1000)
+            {
+                Console.WriteLine($"FPS: {frameCount * 1000.0 / fpsTimer.ElapsedMilliseconds:F1}");
+                frameCount = 0;
+                fpsTimer.Restart();
+            }
         }
     }
 
