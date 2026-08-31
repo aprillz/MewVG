@@ -21,6 +21,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\MewVG.Core\MewVG.Core.csproj" />
+    <ProjectReference Include="..\..\src\MewVG.GL\MewVG.GL.csproj" />
   </ItemGroup>
 
 </Project>
