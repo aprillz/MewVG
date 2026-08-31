@@ -25,7 +25,17 @@ public sealed class NanoVGGL : NanoVG
         => _gl.CreateTexture(NVGtextureType.RGBA, width, height, imageFlags, data);
 
     public override int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
-        => _gl.CreateTexture(NVGtextureType.BGRA, width, height, imageFlags, data);
+    {
+        // Without native BGRA upload the base implementation swaps to RGBA on the CPU.
+        if (GL.SupportsBgraUpload)
+        {
+            return _gl.CreateTexture(NVGtextureType.BGRA, width, height, imageFlags, data);
+        }
+        else
+        {
+            return base.CreateImageBGRA(width, height, imageFlags, data);
+        }
+    }
 
     public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
         => _gl.CreateTexture(NVGtextureType.Alpha, width, height, imageFlags, data);
@@ -42,10 +52,17 @@ public sealed class NanoVGGL : NanoVG
 
     public override bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
     {
-        // GL UpdateTexture dispatches on the stored NVGtextureType set at creation. The image
-        // must have been created via CreateImageBGRA for this to write the correct format;
-        // mismatched types fall through the existing UpdateImage path.
-        return UpdateImage(image, data);
+        // GL UpdateTexture dispatches on the stored NVGtextureType set at creation. With native
+        // BGRA upload the image was created BGRA so the raw bytes pass through; otherwise it was
+        // created RGBA (see CreateImageBGRA) and the base implementation swaps on the CPU first.
+        if (GL.SupportsBgraUpload)
+        {
+            return UpdateImage(image, data);
+        }
+        else
+        {
+            return base.UpdateImageBGRA(image, data);
+        }
     }
 
     public override bool ImageSize(int image, out int width, out int height) => _gl.GetTextureSize(image, out width, out height);

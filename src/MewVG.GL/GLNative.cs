@@ -215,6 +215,12 @@ internal static unsafe class GL
 
     public static NanoVGGLProfile Profile => _profile;
 
+    // Capability view of the profile: call sites branch on what a surface can do, not on which
+    // surface it is, so adding a profile only touches the derivations here.
+
+    /// <summary>Whether GL_BGRA + UNSIGNED_INT_8_8_8_8_REV upload is available (GLES3/WebGL2 has neither).</summary>
+    public static bool SupportsBgraUpload => _profile == NanoVGGLProfile.Gl3Core;
+
     private static delegate* unmanaged<uint, void> _glUseProgram;
     private static delegate* unmanaged<uint, void> _glEnable;
     private static delegate* unmanaged<uint, void> _glDisable;
