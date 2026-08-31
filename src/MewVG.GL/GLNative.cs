@@ -29,15 +29,12 @@ internal enum TextureUnit : int
 
 internal enum TextureTarget : int
 {
-    Texture2D = 0x0DE1,
-    TextureBuffer = 0x8C2A
+    Texture2D = 0x0DE1
 }
 
 internal enum BufferTarget : int
 {
-    ArrayBuffer = 0x8892,
-    TextureBuffer = 0x8C2A,
-    UniformBuffer = 0x8A11
+    ArrayBuffer = 0x8892
 }
 
 internal enum BufferUsageHint : int
@@ -61,8 +58,7 @@ internal enum PixelStoreParameter : int
 internal enum PixelInternalFormat : int
 {
     Rgba = 0x1908,
-    R8 = 0x8229,
-    Rgba32f = 0x8814
+    R8 = 0x8229
 }
 
 internal enum PixelFormat : int
@@ -191,8 +187,7 @@ internal enum GetPName : int
     MaxTextureSize = 0x0D33,
     Viewport = 0x0BA2,
     MaxRenderbufferSize = 0x84E8,
-    FramebufferBinding = 0x8CA6,
-    MaxUniformBlockSize = 0x8A30
+    FramebufferBinding = 0x8CA6
 }
 
 internal enum BlendEquationMode : int
@@ -279,10 +274,6 @@ internal static unsafe class GL
     private static delegate* unmanaged<int, int, int, int, void> _glScissor;
     private static delegate* unmanaged<int, int, int, int, void> _glViewport;
     private static delegate* unmanaged<void> _glFinish;
-    private static delegate* unmanaged<uint, byte*, uint> _glGetUniformBlockIndex;
-    private static delegate* unmanaged<uint, uint, uint, void> _glUniformBlockBinding;
-    private static delegate* unmanaged<uint, uint, uint, void> _glBindBufferBase;
-    private static delegate* unmanaged<uint, uint, uint, void> _glTexBuffer;
 
     public static void Initialize(Func<string, nint> getProcAddress, NanoVGGLProfile profile)
     {
@@ -386,10 +377,6 @@ internal static unsafe class GL
         _glScissor = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glScissor");
         _glViewport = (delegate* unmanaged<int, int, int, int, void>)LoadProc("glViewport");
         _glFinish = (delegate* unmanaged<void>)LoadProc("glFinish");
-        _glGetUniformBlockIndex = (delegate* unmanaged<uint, byte*, uint>)LoadProc("glGetUniformBlockIndex");
-        _glUniformBlockBinding = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glUniformBlockBinding");
-        _glBindBufferBase = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glBindBufferBase");
-        _glTexBuffer = (delegate* unmanaged<uint, uint, uint, void>)LoadProc("glTexBuffer");
     }
 
     public static void UseProgram(int program) => _glUseProgram((uint)program);
@@ -669,24 +656,6 @@ internal static unsafe class GL
     public static void Viewport(int x, int y, int width, int height) => _glViewport(x, y, width, height);
 
     public static void Finish() => _glFinish();
-
-    public static int GetUniformBlockIndex(int program, string name)
-    {
-        var utf8 = Encoding.UTF8.GetBytes(name);
-        fixed (byte* pName = utf8)
-        {
-            return (int)_glGetUniformBlockIndex((uint)program, pName);
-        }
-    }
-
-    public static void UniformBlockBinding(int program, int blockIndex, int bindingPoint)
-        => _glUniformBlockBinding((uint)program, (uint)blockIndex, (uint)bindingPoint);
-
-    public static void BindBufferBase(BufferTarget target, int index, int buffer)
-        => _glBindBufferBase((uint)target, (uint)index, (uint)buffer);
-
-    public static void TexBuffer(TextureTarget target, PixelInternalFormat internalFormat, int buffer)
-        => _glTexBuffer((uint)target, (uint)internalFormat, (uint)buffer);
 
     public static void BufferData(BufferTarget target, int size, ReadOnlySpan<float> data, BufferUsageHint usage)
     {
