@@ -109,7 +109,32 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     // MEWVG_GL_DEBUG=1 turns on the glGetError check after each state change.
     private static readonly bool _debugChecks = Environment.GetEnvironmentVariable("MEWVG_GL_DEBUG") == "1";
-    private GLNVGShader _shader;
+    // Fill programs: the variants that drop the branches a draw does not need, then the uber shader
+    // that handles every combination (see GLNVGShaderSource). Variants compile on first use.
+    private const int VARIANT_FLAG_SCISSOR = 1;
+    private const int VARIANT_FLAG_CLIP = 2;
+    private const int VARIANT_FLAG_MASK = 4;
+    private const int VARIANT_FLAG_COUNT = 8;
+    private const int VARIANT_PAINT_SOLID = 1;
+    private const int VARIANT_PAINT_IMAGE = 2;
+    private const int VARIANT_PAINT_IMAGE_TRIANGLES = 3;
+    private const int VARIANT_PAINT_BOX_GRADIENT = 4;
+    private const int VARIANT_PAINT_LINEAR_GRADIENT = 5;
+    private const int VARIANT_PAINT_RADIAL_GRADIENT = 6;
+    private const int VARIANT_PAINT_SIMPLE = 7;
+    private const int VARIANT_PAINT_COVERAGE_OUTPUT = 8;
+    private const int VARIANT_PAINT_COVERAGE_COMPOSITE = 9;
+    private const int VARIANT_PAINT_COVERAGE_SOLID = 10;
+    private const int VARIANT_PAINT_COUNT = 11;
+    private const int UBER_SHADER = VARIANT_PAINT_COUNT * VARIANT_FLAG_COUNT;
+    // MEWVG_GL_UBERSHADER=1 draws everything with the uber shader (A/B comparison, driver workaround).
+    private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_GL_UBERSHADER") == "1";
+    private readonly GLNVGShader[] _programs = new GLNVGShader[UBER_SHADER + 1];
+    // Flush in which each program last had its per-flush uniforms set.
+    private readonly int[] _programFlush = new int[UBER_SHADER + 1];
+    private readonly bool[] _variantFailed = new bool[UBER_SHADER];
+    private int _flushNumber;
+    private int _currentProgram = -1;
 
     private int _vao;
     private int _vbo;
@@ -248,7 +273,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             return;
         }
 
-        GL.UseProgram(_shader.Program);
+        _flushNumber++;
+        _currentProgram = -1;
+        UseProgram(UBER_SHADER);
 
         GL.Enable(EnableCap.CullFace);
         GL.CullFace(CullFaceMode.Back);
@@ -288,12 +315,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.EnableVertexAttribArray(1);
         GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, vertexSize, 0);
         GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, vertexSize, sizeof(float) * 2);
-
-        GL.Uniform1(_shader.LocTex, 0);
-        GL.Uniform1(_shader.LocClipTex, 1);
-        GL.Uniform1(_shader.LocMaskTex, 2);
-        GL.Uniform1(_shader.LocMaskEnabled, 0);
-        GL.Uniform2(_shader.LocViewSize, 1, _view);
 
         _clipMaskActive = false;
         _clipMaskEmpty = false;
@@ -335,6 +356,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         GL.Disable(EnableCap.CullFace);
         GL.UseProgram(0);
+        _currentProgram = -1;
         BindTexture(0);
 
         // Release the clip and mask units too. Desktop GL tolerates a texture that stays bound while
@@ -808,22 +830,23 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         GL.Disable(EnableCap.CullFace);
-        SetUniforms(call.UniformOffset, call.Image);
+        SetUniforms(call.UniformOffset, call.Image, mask: true);
 
+        ref var shader = ref _programs[_currentProgram];
         ref var mask = ref _textures[maskIndex];
         GL.ActiveTexture(TextureUnit.Texture2);
         GL.BindTexture(TextureTarget.Texture2D, mask.Tex);
         GL.ActiveTexture(TextureUnit.Texture0);
-        GL.Uniform1(_shader.LocMaskEnabled, 1);
+        GL.Uniform1(shader.LocMaskEnabled, 1);
         Span<float> origin = stackalloc float[2] { call.MaskOriginX, call.MaskOriginY };
         Span<float> size = stackalloc float[2] { mask.Width, mask.Height };
-        GL.Uniform2(_shader.LocMaskOrigin, 1, origin);
-        GL.Uniform2(_shader.LocMaskSize, 1, size);
-        GL.Uniform1(_shader.LocMaskScale, _devicePixelRatio);
+        GL.Uniform2(shader.LocMaskOrigin, 1, origin);
+        GL.Uniform2(shader.LocMaskSize, 1, size);
+        GL.Uniform1(shader.LocMaskScale, _devicePixelRatio);
 
         GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
 
-        GL.Uniform1(_shader.LocMaskEnabled, 0);
+        GL.Uniform1(shader.LocMaskEnabled, 0);
         GL.Enable(EnableCap.CullFace);
     }
 
@@ -1223,7 +1246,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         GL.Enable(EnableCap.ScissorTest);
         GL.Scissor(0, 0, clipWidth, clipHeight);
-        SetUniforms(call.UniformOffset, 0, applyClipMask: false);
+        SetUniforms(call.UniformOffset, 0, applyClipMask: false, callerBindsClip: previousActive);
         if (previousActive)
         {
             BindClipMask(_clipMaskX - clipX, _clipMaskY - clipY, _clipMaskWidth, _clipMaskHeight);
@@ -1497,7 +1520,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private void SetCoverageOrigin(int x, int y)
     {
         Span<float> origin = stackalloc float[2] { x, y };
-        GL.Uniform2(_shader.LocCoverageOrigin, 1, origin);
+        GL.Uniform2(_programs[_currentProgram].LocCoverageOrigin, 1, origin);
     }
 
     private static void SetSimpleUniform(float[] frag, ref NVGscissorState scissor, float fringe)
@@ -1563,9 +1586,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BlendFuncSeparate(blend.SrcRGB, blend.DstRGB, blend.SrcAlpha, blend.DstAlpha);
     }
 
-    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true)
+    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true, bool mask = false, bool callerBindsClip = false)
     {
-        GL.Uniform4(_shader.LocFrag, UniformArraySize, _uniforms[uniformOffset].Data);
+        var frag = _uniforms[uniformOffset].Data;
+        var clip = applyClipMask && _clipMaskActive;
+        // A caller that binds a clip itself (a nested clip reading the previous one) needs a program that samples it.
+        UseProgram(callerBindsClip ? SelectProgram(frag, true, mask, clipEmpty: false) : SelectProgram(frag, clip, mask, _clipMaskEmpty));
+        GL.Uniform4(_programs[_currentProgram].LocFrag, UniformArraySize, frag);
 
         if (bindTexture)
         {
@@ -1583,15 +1610,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             BindTexture(index >= 0 ? _textures[index].Tex : 0);
         }
 
-        var useClipMask = applyClipMask && _clipMaskActive;
-        if (!useClipMask)
+        if (!clip)
         {
-            GL.Uniform1(_shader.LocClipEnabled, 0);
+            GL.Uniform1(_programs[_currentProgram].LocClipEnabled, 0);
             UnbindClipMask();
         }
         else if (_clipMaskEmpty)
         {
-            GL.Uniform1(_shader.LocClipEnabled, 2);
+            GL.Uniform1(_programs[_currentProgram].LocClipEnabled, 2);
             UnbindClipMask();
         }
         else
@@ -1617,14 +1643,15 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private void BindClipMask(int originX, int originY, int width, int height)
     {
-        GL.Uniform1(_shader.LocClipEnabled, 1);
+        ref var shader = ref _programs[_currentProgram];
+        GL.Uniform1(shader.LocClipEnabled, 1);
         GL.ActiveTexture(TextureUnit.Texture1);
         GL.BindTexture(TextureTarget.Texture2D, _clipMaskTextures[_clipMaskIndex]);
         GL.ActiveTexture(TextureUnit.Texture0);
         Span<float> origin = stackalloc float[2] { originX, originY };
         Span<float> size = stackalloc float[2] { width, height };
-        GL.Uniform2(_shader.LocClipOrigin, 1, origin);
-        GL.Uniform2(_shader.LocClipSize, 1, size);
+        GL.Uniform2(shader.LocClipOrigin, 1, origin);
+        GL.Uniform2(shader.LocClipSize, 1, size);
     }
 
     private static void SetUniformValue(float[] data, int vecIndex, int component, float value) => data[vecIndex * 4 + component] = value;
@@ -1932,8 +1959,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         var header = GLNVGShaderSource.Header(GL.Profile);
 
-        _shader = CreateShader("shader", header, string.Empty, GLNVGShaderSource.FILL_VERT_SHADER, GLNVGShaderSource.FILL_FRAG_SHADER);
-        GetUniforms(ref _shader);
+        _programs[UBER_SHADER] = CreateShader("shader", header, string.Empty, GLNVGShaderSource.FILL_VERT_SHADER, GLNVGShaderSource.FILL_FRAG_SHADER);
+        GetUniforms(ref _programs[UBER_SHADER]);
 
         _vao = GL.GenVertexArray();
         _vbo = GL.GenBuffer();
@@ -1990,6 +2017,136 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         };
     }
 
+    /// <summary>
+    /// Picks the program for a draw from its uniforms and the flush state: a variant when one draws
+    /// it exactly as the uber shader would, the uber shader otherwise.
+    /// </summary>
+    private int SelectProgram(float[] frag, bool clip, bool mask, bool clipEmpty)
+    {
+        // An empty clip is drawn by the uber shader (clipEnabled 2); the variants have no such state.
+        if (_uberShaderOnly || (clip && clipEmpty))
+        {
+            return UBER_SHADER;
+        }
+
+        // The variants leave out the discard, which only a non-negative stroke threshold can trigger.
+        if (frag[12 * 4 + 1] >= 0.0f)
+        {
+            return UBER_SHADER;
+        }
+
+        var paint = (GLNVGShaderType)(int)frag[12 * 4 + 3] switch
+        {
+            GLNVGShaderType.FillGrad => IsSolidPaint(frag) ? VARIANT_PAINT_SOLID : VARIANT_PAINT_BOX_GRADIENT,
+            GLNVGShaderType.FillImg => VARIANT_PAINT_IMAGE,
+            GLNVGShaderType.Img => VARIANT_PAINT_IMAGE_TRIANGLES,
+            GLNVGShaderType.GradientLinear => VARIANT_PAINT_LINEAR_GRADIENT,
+            GLNVGShaderType.GradientRadial => VARIANT_PAINT_RADIAL_GRADIENT,
+            GLNVGShaderType.Simple => VARIANT_PAINT_SIMPLE,
+            GLNVGShaderType.CoverageOutput => VARIANT_PAINT_COVERAGE_OUTPUT,
+            GLNVGShaderType.CoverageComposite => IsSolidPaint(frag) ? VARIANT_PAINT_COVERAGE_SOLID : VARIANT_PAINT_COVERAGE_COMPOSITE,
+            _ => 0,
+        };
+        if (paint == 0)
+        {
+            return UBER_SHADER;
+        }
+
+        var flags = (HasScissor(frag) ? VARIANT_FLAG_SCISSOR : 0) |
+                    (clip ? VARIANT_FLAG_CLIP : 0) |
+                    (mask ? VARIANT_FLAG_MASK : 0);
+        var index = paint * VARIANT_FLAG_COUNT + flags;
+        return _variantFailed[index] ? UBER_SHADER : index;
+    }
+
+    /// <summary>True when the box gradient's inner and outer colours match, so it is that colour everywhere.</summary>
+    private static bool IsSolidPaint(float[] frag)
+        => frag[24] == frag[28] && frag[25] == frag[29] && frag[26] == frag[30] && frag[27] == frag[31];
+
+    /// <summary>
+    /// False for the zero matrix and unit extent/scale ConvertPaint writes when no scissor is set, which
+    /// make scissorMask 1 everywhere.
+    /// </summary>
+    private static bool HasScissor(float[] frag)
+        => frag[0] != 0.0f || frag[1] != 0.0f || frag[2] != 0.0f ||
+           frag[4] != 0.0f || frag[5] != 0.0f || frag[6] != 0.0f ||
+           frag[8] != 0.0f || frag[9] != 0.0f || frag[10] != 0.0f ||
+           frag[32] != 1.0f || frag[33] != 1.0f || frag[34] != 1.0f || frag[35] != 1.0f;
+
+    /// <summary>Makes <paramref name="index"/> the current program, compiling it on first use.</summary>
+    private void UseProgram(int index)
+    {
+        if (index == _currentProgram)
+        {
+            return;
+        }
+
+        if (_programs[index].Program == 0 && !TryCreateVariant(index))
+        {
+            // A driver that rejects a variant draws that combination with the uber shader for good.
+            _variantFailed[index] = true;
+            index = UBER_SHADER;
+            if (index == _currentProgram)
+            {
+                return;
+            }
+        }
+
+        ref var shader = ref _programs[index];
+
+        GL.UseProgram(shader.Program);
+        _currentProgram = index;
+
+        // Sampler units and the view size are program state, set once per flush for each program used.
+        if (_programFlush[index] != _flushNumber)
+        {
+            _programFlush[index] = _flushNumber;
+            GL.Uniform1(shader.LocTex, 0);
+            GL.Uniform1(shader.LocClipTex, 1);
+            GL.Uniform1(shader.LocMaskTex, 2);
+            GL.Uniform1(shader.LocMaskEnabled, 0);
+            GL.Uniform2(shader.LocViewSize, 1, _view);
+        }
+    }
+
+    private bool TryCreateVariant(int index)
+    {
+        try
+        {
+            _programs[index] = CreateShader("variant", GLNVGShaderSource.Header(GL.Profile), VariantDefines(index),
+                GLNVGShaderSource.FILL_VERT_SHADER, GLNVGShaderSource.FILL_FRAG_SHADER);
+            GetUniforms(ref _programs[index]);
+            return true;
+        }
+        catch (InvalidOperationException)
+        {
+            _programs[index] = default;
+            return false;
+        }
+    }
+
+    private static string VariantDefines(int index)
+    {
+        var paint = (index / VARIANT_FLAG_COUNT) switch
+        {
+            VARIANT_PAINT_SOLID => "#define PAINT_SOLID\n",
+            VARIANT_PAINT_IMAGE => "#define PAINT_IMAGE\n",
+            VARIANT_PAINT_IMAGE_TRIANGLES => "#define PAINT_IMAGE_TRIANGLES\n",
+            VARIANT_PAINT_BOX_GRADIENT => "#define PAINT_BOX_GRADIENT\n",
+            VARIANT_PAINT_LINEAR_GRADIENT => "#define PAINT_LINEAR_GRADIENT\n",
+            VARIANT_PAINT_RADIAL_GRADIENT => "#define PAINT_RADIAL_GRADIENT\n",
+            VARIANT_PAINT_SIMPLE => "#define PAINT_SIMPLE\n",
+            VARIANT_PAINT_COVERAGE_OUTPUT => "#define PAINT_COVERAGE_OUTPUT\n",
+            VARIANT_PAINT_COVERAGE_COMPOSITE => "#define PAINT_COVERAGE_COMPOSITE\n",
+            _ => "#define PAINT_COVERAGE_SOLID\n",
+        };
+        var flags = index % VARIANT_FLAG_COUNT;
+        return "#define VARIANT\n" + paint +
+               ((flags & VARIANT_FLAG_SCISSOR) != 0 ? "#define SCISSOR\n" : string.Empty) +
+               ((flags & VARIANT_FLAG_CLIP) != 0 ? "#define CLIP\n" : string.Empty) +
+               ((flags & VARIANT_FLAG_MASK) != 0 ? "#define MASK\n" : string.Empty);
+    }
+
     private static void GetUniforms(ref GLNVGShader shader)
     {
         shader.LocViewSize = GL.GetUniformLocation(shader.Program, "viewSize");
@@ -2016,19 +2173,22 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         _disposed = true;
 
-        if (_shader.Program != 0)
+        foreach (var shader in _programs)
         {
-            GL.DeleteProgram(_shader.Program);
-        }
+            if (shader.Program != 0)
+            {
+                GL.DeleteProgram(shader.Program);
+            }
 
-        if (_shader.Vert != 0)
-        {
-            GL.DeleteShader(_shader.Vert);
-        }
+            if (shader.Vert != 0)
+            {
+                GL.DeleteShader(shader.Vert);
+            }
 
-        if (_shader.Frag != 0)
-        {
-            GL.DeleteShader(_shader.Frag);
+            if (shader.Frag != 0)
+            {
+                GL.DeleteShader(shader.Frag);
+            }
         }
 
         if (_vao != 0)
