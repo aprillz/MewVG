@@ -120,7 +120,7 @@ public class CoverageMaskFillTests
         Assert.Contains(direct, value => value == 255);
     }
 
-    private static void EmitTiles(NanoVG vg, List<Vector2[]> contours)
+    private static void EmitTiles(MewVGContext vg, List<Vector2[]> contours)
     {
         vg.BeginPath();
         foreach (var contour in contours)
@@ -138,12 +138,12 @@ public class CoverageMaskFillTests
     public void ManyInteractingContours_TakeTheMaskPath()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         vg.BeginFrame(600, 600, 1f);
         EmitTiles(vg, contours);
-        vg.FillRule(NVGfillRule.EvenOdd);
+        vg.FillRule(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
         vg.Fill();
         vg.EndFrame();
@@ -162,7 +162,7 @@ public class CoverageMaskFillTests
     public void FewPoints_KeepTheTessellationPath()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
 
         // A rounded border ring with a zero-width top: boundaries interact, but the point
         // count is far below the mask floor.
@@ -170,7 +170,7 @@ public class CoverageMaskFillTests
         vg.BeginPath();
         vg.Rect(10, 10, 100, 50);
         vg.Rect(20, 10, 80, 40);
-        vg.FillRule(NVGfillRule.EvenOdd);
+        vg.FillRule(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
         vg.Fill();
         vg.EndFrame();
@@ -183,7 +183,7 @@ public class CoverageMaskFillTests
     public void FrozenFill_ReusesTheMaskUntilTheTransformChanges()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         vg.BeginFrame(600, 600, 1f);
@@ -211,7 +211,7 @@ public class CoverageMaskFillTests
     public void FrozenFill_RebuildsTheMaskWhenTheScissorWidens()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
         var contours = TangentTiles(TILE_SIDE, PITCH);
 
         // Built under a scissor that cuts the geometry: the mask covers only the visible part.

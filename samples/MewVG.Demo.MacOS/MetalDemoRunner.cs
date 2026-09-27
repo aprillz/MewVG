@@ -10,7 +10,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 {
     private static nint _device;
     private static nint _commandQueue;
-    private static NanoVGMetal? _vg;
+    private static MewVGMetal? _vg;
     private static nint _contentView;
     private static nint _metalLayer;
     private static nint _layerDelegate;
@@ -27,7 +27,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
             throw new InvalidOperationException("Metal device creation failed.");
         }
 
-        _vg = new NanoVGMetal(_device);
+        _vg = new MewVGMetal(_device);
         _vg.PixelFormat = MTLPixelFormat.BGRA8Unorm;
     }
 
@@ -93,7 +93,7 @@ internal sealed unsafe partial class MetalDemoRunner : DemoRunner
 
     // ─── Rendering ──────────────────────────────────────────────────────────
 
-    private static void RenderFrame(nint drawable, nint drawableTexture, NanoVGMetal vg, nint commandQueue, int width, int height, float dpr)
+    private static void RenderFrame(nint drawable, nint drawableTexture, MewVGMetal vg, nint commandQueue, int width, int height, float dpr)
     {
         if (dpr <= 0.0f)
         {

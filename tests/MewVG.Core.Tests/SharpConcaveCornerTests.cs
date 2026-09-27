@@ -40,8 +40,8 @@ public class SharpConcaveCornerTests
         context.LineTo(190f, 10f);
         context.ClosePath();
 
-        context.FillColor(NVGcolor.RGBA(80, 141, 254, 255));
-        context.FillRule(NVGfillRule.NonZero);
+        context.FillColor(MewVGColor.RGBA(80, 141, 254, 255));
+        context.FillRule(MewVGFillRule.NonZero);
         context.Fill();
 
         var call = Assert.Single(renderer.FillCalls);

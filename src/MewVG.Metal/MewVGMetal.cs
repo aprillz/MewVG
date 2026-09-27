@@ -1,4 +1,3 @@
-// Aprillz NanoVG .NET - Public API
 // Metal NanoVG .NET by Olli Wang
 // Original: https://github.com/niclasolofsson/MetalNanoVG
 
@@ -7,17 +6,17 @@ using Aprillz.MewVG.Interop;
 namespace Aprillz.MewVG;
 
 /// <summary>
-/// Main NanoVG API for Metal rendering
+/// MewVG context that renders with Metal.
 /// </summary>
-public sealed class NanoVGMetal : NanoVG
+public sealed class MewVGMetal : MewVGContext
 {
     private readonly MNVGcontext _context;
 
     /// <summary>
-    /// Creates a new NanoVG context with Metal backend
+    /// Creates a context that renders with Metal.
     /// </summary>
     /// <param name="device">Metal device (id&lt;MTLDevice&gt;)</param>
-    public NanoVGMetal(IntPtr device)
+    public MewVGMetal(IntPtr device)
         : base(CreateRenderer(device, out var context))
     {
         _context = context;
@@ -80,14 +79,14 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="imageFlags">Image flags</param>
     /// <param name="data">RGBA pixel data</param>
     /// <returns>Image handle, or 0 on failure</returns>
-    public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.RGBA, width, height, (int)imageFlags, data);
+    public override int CreateImageRGBA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.RGBA, width, height, (int)imageFlags, data);
 
     /// <summary>
     /// Creates an image from BGRA byte-order data. The Metal backend uses
     /// <c>MTLPixelFormat.BGRA8Unorm</c> for the texture so the GPU interprets the storage
     /// as BGRA bytes and returns RGBA-ordered float4 to the shader on sample - no CPU swap.
     /// </summary>
-    public override int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.BGRA, width, height, (int)imageFlags, data);
+    public override int CreateImageBGRA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.BGRA, width, height, (int)imageFlags, data);
 
     /// <summary>
     /// Creates an image from alpha data
@@ -97,7 +96,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="imageFlags">Image flags</param>
     /// <param name="data">Alpha pixel data</param>
     /// <returns>Image handle, or 0 on failure</returns>
-    public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.Alpha, width, height, (int)imageFlags, data);
+    public override int CreateImageAlpha(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data) => _context.CreateTexture((int)NVGtexture.Alpha, width, height, (int)imageFlags, data);
 
     /// <summary>
     /// Updates image data
@@ -130,23 +129,23 @@ public sealed class NanoVGMetal : NanoVG
     /// </summary>
     public override void DeleteImage(int image) => _context.DeleteTexture(image);
 
-    public override int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags)
+    public override int CreateImageFromHandle(int textureId, int width, int height, MewVGImageFlags flags)
         => throw new NotSupportedException("Metal backend does not support creating images from a 32-bit texture handle. Use CreateImageFromMtlTexture(nint mtlTexture, ...) with a native MTLTexture pointer instead.");
 
     /// <summary>
     /// Wraps an externally-owned MTLTexture as an NVG image without copying. Caller
-    /// MUST set <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/> - the
+    /// MUST set <see cref="MewVGImageFlags.NoDelete"/> in <paramref name="flags"/> - the
     /// texture is retained by its owner and DeleteImage must only drop NVG's
     /// bookkeeping, not release the MTL resource.
     /// </summary>
     /// <param name="mtlTexture">Pointer to a live MTLTexture (must outlive the returned image id).</param>
     /// <param name="width">Texture width in pixels.</param>
     /// <param name="height">Texture height in pixels.</param>
-    /// <param name="flags">Image flags; must include <see cref="NVGimageFlags.NoDelete"/>.</param>
-    public int CreateImageFromMtlTexture(nint mtlTexture, int width, int height, NVGimageFlags flags)
+    /// <param name="flags">Image flags; must include <see cref="MewVGImageFlags.NoDelete"/>.</param>
+    public int CreateImageFromMtlTexture(nint mtlTexture, int width, int height, MewVGImageFlags flags)
         => _context.CreateTextureFromHandle(mtlTexture, width, height, (int)flags);
 
-    public override int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, NVGimageFlags flags)
+    public override int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, MewVGImageFlags flags)
         => _context.CreateTextureFromHandle(nativeHandle, width, height, (int)flags);
 
     public override int ImageHandle(int image)
@@ -172,7 +171,7 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="h">Hue (0-1)</param>
     /// <param name="s">Saturation (0-1)</param>
     /// <param name="l">Lightness (0-1)</param>
-    public static NVGcolor HSL(float h, float s, float l) => NVGcolor.HSL(h, s, l);
+    public static MewVGColor HSL(float h, float s, float l) => MewVGColor.HSL(h, s, l);
 
     /// <summary>
     /// Creates a color from HSLA values
@@ -181,36 +180,36 @@ public sealed class NanoVGMetal : NanoVG
     /// <param name="s">Saturation (0-1)</param>
     /// <param name="l">Lightness (0-1)</param>
     /// <param name="a">Alpha (0-1)</param>
-    public static NVGcolor HSLA(float h, float s, float l, float a)
+    public static MewVGColor HSLA(float h, float s, float l, float a)
     {
         a = Math.Clamp(a, 0.0f, 1.0f);
-        return NVGcolor.HSLA(h, s, l, (byte)(a * 255.0f));
+        return MewVGColor.HSLA(h, s, l, (byte)(a * 255.0f));
     }
 
     /// <summary>
     /// Creates a color from RGB values (0-255)
     /// </summary>
-    public static NVGcolor RGB(byte r, byte g, byte b) => NVGcolor.RGB(r, g, b);
+    public static MewVGColor RGB(byte r, byte g, byte b) => MewVGColor.RGB(r, g, b);
 
     /// <summary>
     /// Creates a color from RGBA values (0-255)
     /// </summary>
-    public static NVGcolor RGBA(byte r, byte g, byte b, byte a) => NVGcolor.RGBA(r, g, b, a);
+    public static MewVGColor RGBA(byte r, byte g, byte b, byte a) => MewVGColor.RGBA(r, g, b, a);
 
     /// <summary>
     /// Creates a color from RGB float values (0.0-1.0)
     /// </summary>
-    public static NVGcolor RGBf(float r, float g, float b) => NVGcolor.RGBf(r, g, b);
+    public static MewVGColor RGBf(float r, float g, float b) => MewVGColor.RGBf(r, g, b);
 
     /// <summary>
     /// Creates a color from RGBA float values (0.0-1.0)
     /// </summary>
-    public static NVGcolor RGBAf(float r, float g, float b, float a) => NVGcolor.RGBAf(r, g, b, a);
+    public static MewVGColor RGBAf(float r, float g, float b, float a) => MewVGColor.RGBAf(r, g, b, a);
 
     /// <summary>
     /// Linearly interpolates between two colors
     /// </summary>
-    public static NVGcolor LerpRGBA(NVGcolor c0, NVGcolor c1, float u) => NVGcolor.Lerp(c0, c1, u);
+    public static MewVGColor LerpRGBA(MewVGColor c0, MewVGColor c1, float u) => MewVGColor.Lerp(c0, c1, u);
 
     #endregion
 

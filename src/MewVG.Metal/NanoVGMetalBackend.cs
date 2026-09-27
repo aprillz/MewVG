@@ -6,13 +6,13 @@ public sealed class NanoVGMetalBackend : INanoVGBackend
 
     public bool IsSupported(NanoVGBackendOptions options) => options.MetalDevice != IntPtr.Zero;
 
-    public NanoVG Create(NanoVGBackendOptions options)
+    public MewVGContext Create(NanoVGBackendOptions options)
     {
         if (options.MetalDevice == IntPtr.Zero)
         {
             throw new ArgumentException("MetalDevice must be provided for Metal backend.", nameof(options));
         }
 
-        return new NanoVGMetal(options.MetalDevice);
+        return new MewVGMetal(options.MetalDevice);
     }
 }

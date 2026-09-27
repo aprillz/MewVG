@@ -67,8 +67,8 @@ public unsafe struct MNVGfragUniforms
 {
     public Buffer12<float> scissorMat;     // 48 bytes - float3x4 (3 columns of float4)
     public Buffer12<float> paintMat;       // 48 bytes - float3x4
-    public NVGcolor innerCol;              // 16 bytes
-    public NVGcolor outerCol;              // 16 bytes
+    public MewVGColor innerCol;              // 16 bytes
+    public MewVGColor outerCol;              // 16 bytes
     public Buffer2<float> scissorExt;      // 8 bytes
     public Buffer2<float> scissorScale;    // 8 bytes
     public Buffer2<float> extent;          // 8 bytes
@@ -608,7 +608,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         // textures it references: an image may be deleted any time but rewritten only once every
         // frame that drew with it has been overtaken.
         _maskImages = new MaskImageCache(
-            (width, height, coverage) => CreateTexture((int)NVGtexture.Alpha, width, height, (int)NVGimageFlags.Nearest, coverage),
+            (width, height, coverage) => CreateTexture((int)NVGtexture.Alpha, width, height, (int)MewVGImageFlags.Nearest, coverage),
             (image, width, height, coverage) => UpdateTexture(image, 0, 0, width, height, coverage),
             DeleteTexture,
             framesInFlight: MNVG_INIT_BUFFER_COUNT);
@@ -957,7 +957,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <c>HasTransparency(paint)</c>. Image paints are excluded (they have a separate
     /// fragment path that doesn't produce the same overlap artifact).
     /// </summary>
-    private static bool PaintHasTransparency(in NVGpaint paint)
+    private static bool PaintHasTransparency(in MewVGPaint paint)
     {
         if (paint.Image != 0) return false;
         const float opaqueThreshold = 0.999f;
@@ -1883,7 +1883,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             (ulong)pixelFormat,
             (nuint)width,
             (nuint)height,
-            (imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0
+            (imageFlags & (int)MewVGImageFlags.GenerateMipmaps) != 0
         );
 
         ObjCRuntime.SendMessage(
@@ -1917,7 +1917,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 );
             }
 
-            if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
+            if ((imageFlags & (int)MewVGImageFlags.GenerateMipmaps) != 0)
             {
                 GenerateMipmaps(tex.tex);
             }
@@ -1927,13 +1927,13 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         var samplerDescriptorClass = ObjCRuntime.GetClass("MTLSamplerDescriptor");
         var samplerDescriptor = ObjCRuntime.New(samplerDescriptorClass);
 
-        var nearest = (imageFlags & (int)NVGimageFlags.Nearest) != 0;
+        var nearest = (imageFlags & (int)MewVGImageFlags.Nearest) != 0;
         var filter = nearest ? MTLSamplerMinMagFilter.Nearest : MTLSamplerMinMagFilter.Linear;
 
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMinFilter, (ulong)filter);
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMagFilter, (ulong)filter);
 
-        if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
+        if ((imageFlags & (int)MewVGImageFlags.GenerateMipmaps) != 0)
         {
             ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMipFilter, (ulong)MTLSamplerMipFilter.Linear);
             // Use explicit float P/Invoke - LibraryImport float overload appears to
@@ -1941,8 +1941,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             ObjCRuntime.SendMessageFloat(samplerDescriptor, Metal.Sel.SetLodMaxClamp, 2.0f);
         }
 
-        var repeatX = (imageFlags & (int)NVGimageFlags.RepeatX) != 0;
-        var repeatY = (imageFlags & (int)NVGimageFlags.RepeatY) != 0;
+        var repeatX = (imageFlags & (int)MewVGImageFlags.RepeatX) != 0;
+        var repeatY = (imageFlags & (int)MewVGImageFlags.RepeatY) != 0;
 
         ObjCRuntime.SendMessage(
             samplerDescriptor,
@@ -1963,7 +1963,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Deletes a texture. Honors <see cref="NVGimageFlags.NoDelete"/>: when set, the
+    /// Deletes a texture. Honors <see cref="MewVGImageFlags.NoDelete"/>: when set, the
     /// MTLTexture is externally owned (e.g. wrapped via <c>CreateTextureFromHandle</c>)
     /// and only the slot + sampler are released here - the texture pointer is dropped
     /// without sending <c>release</c>.
@@ -1981,7 +1981,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             return;
         }
 
-        bool noDelete = (tex.flags & (int)NVGimageFlags.NoDelete) != 0;
+        bool noDelete = (tex.flags & (int)MewVGImageFlags.NoDelete) != 0;
         if (tex.tex != IntPtr.Zero)
         {
             if (!noDelete)
@@ -2003,7 +2003,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// <summary>
     /// Allocates an NVG texture slot wrapping an externally-owned MTLTexture. The
     /// texture pointer is stored as-is (no retain) and is NOT released on
-    /// <see cref="DeleteTexture"/> - caller must include <see cref="NVGimageFlags.NoDelete"/>
+    /// <see cref="DeleteTexture"/> - caller must include <see cref="MewVGImageFlags.NoDelete"/>
     /// in <paramref name="imageFlags"/>. Sampler is allocated based on flags, just like
     /// <see cref="CreateTexture"/>. Returned id can be used with <c>nvgImagePattern</c> /
     /// <c>nvgFillPaint</c> exactly like a normal NVG image.
@@ -2040,23 +2040,23 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         tex.type = (int)NVGtexture.RGBA;
         // Force NoDelete - caller should have set it but enforce here so an accidental
         // miss doesn't leak into a release of an externally-owned texture.
-        tex.flags = imageFlags | (int)NVGimageFlags.NoDelete;
+        tex.flags = imageFlags | (int)MewVGImageFlags.NoDelete;
         tex.tex = mtlTexture;
 
         // Sampler - mirror CreateTexture's logic without uploading data.
         var samplerDescriptorClass = ObjCRuntime.GetClass("MTLSamplerDescriptor");
         var samplerDescriptor = ObjCRuntime.New(samplerDescriptorClass);
 
-        var nearest = (imageFlags & (int)NVGimageFlags.Nearest) != 0;
+        var nearest = (imageFlags & (int)MewVGImageFlags.Nearest) != 0;
         var filter = nearest ? MTLSamplerMinMagFilter.Nearest : MTLSamplerMinMagFilter.Linear;
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMinFilter, (ulong)filter);
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMagFilter, (ulong)filter);
-        if ((imageFlags & (int)NVGimageFlags.GenerateMipmaps) != 0)
+        if ((imageFlags & (int)MewVGImageFlags.GenerateMipmaps) != 0)
         {
             ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setMipFilter, (ulong)MTLSamplerMipFilter.Linear);
         }
-        var repeatX = (imageFlags & (int)NVGimageFlags.RepeatX) != 0;
-        var repeatY = (imageFlags & (int)NVGimageFlags.RepeatY) != 0;
+        var repeatX = (imageFlags & (int)MewVGImageFlags.RepeatX) != 0;
+        var repeatY = (imageFlags & (int)MewVGImageFlags.RepeatY) != 0;
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setSAddressMode,
             (ulong)(repeatX ? MTLSamplerAddressMode.Repeat : MTLSamplerAddressMode.ClampToEdge));
         ObjCRuntime.SendMessage(samplerDescriptor, MetalSelectors.setTAddressMode,
@@ -2340,7 +2340,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         => RenderClip(ref scissor, fringe, bounds, paths, verts);
 
     void INVGRenderer.ResetClip() => ResetClip();
-    void INVGRenderer.RenderMaskFill(ref NVGpaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
+    void INVGRenderer.RenderMaskFill(ref MewVGPaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
         => RenderMaskFill(ref paint, compositeOperation, ref scissor, fringe, bounds, coverage, maskWidth, maskHeight, maskOriginX, maskOriginY, cacheKey, cacheVersion);
 
     /// <summary>
@@ -2352,7 +2352,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// Render fill paths from NVGContext
     /// </summary>
     internal void RenderFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -2489,7 +2489,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// Render stroke paths from NVGContext
     /// </summary>
     internal void RenderStroke(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -2591,7 +2591,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// Render triangles (for text)
     /// </summary>
     internal void RenderTriangles(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         ReadOnlySpan<NVGvertex> verts,
@@ -2624,7 +2624,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     internal void RenderMaskFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -2766,7 +2766,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     }
 
-    private void ConvertPaint(MNVGfragUniforms* frag, ref NVGpaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
+    private void ConvertPaint(MNVGfragUniforms* frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
     {
         Span<float> invxform = stackalloc float[6];
 
@@ -2861,7 +2861,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
             if (GetTextureSize(paint.Image, out var tw, out var th))
             {
                 ref var tex = ref FindTexture(paint.Image);
-                if ((tex.flags & (int)NVGimageFlags.FlipY) != 0)
+                if ((tex.flags & (int)MewVGImageFlags.FlipY) != 0)
                 {
                     Span<float> m1 = stackalloc float[6];
                     Span<float> m2 = stackalloc float[6];
@@ -2884,7 +2884,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
                 // Only Alpha textures need texType=2 (replicate red channel to all).
                 if (tex.type == (int)NVGtexture.RGBA || tex.type == (int)NVGtexture.BGRA)
                 {
-                    frag->texType = (tex.flags & (int)NVGimageFlags.Premultiplied) != 0 ? 0 : 1;
+                    frag->texType = (tex.flags & (int)MewVGImageFlags.Premultiplied) != 0 ? 0 : 1;
                 }
                 else
                 {
@@ -2926,8 +2926,8 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         frag->outerCol = PremultiplyColor(paint.OuterColor);
     }
 
-    private static NVGcolor PremultiplyColor(NVGcolor color)
-        => new NVGcolor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
+    private static MewVGColor PremultiplyColor(MewVGColor color)
+        => new MewVGColor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
 
     private int AllocUniforms(int count)
     {
@@ -2979,7 +2979,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     void INVGRenderer.RenderFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -2989,7 +2989,7 @@ public unsafe class MNVGcontext : IDisposable, INVGRenderer
         => RenderFill(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts);
 
     void INVGRenderer.RenderStroke(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,

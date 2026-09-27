@@ -5,7 +5,7 @@ using Xunit;
 namespace MewVG.Core.Tests;
 
 /// <summary>
-/// Regression coverage for plan Phase 1.3: NanoVG.Rect (public facade) must emit
+/// Regression coverage for plan Phase 1.3: MewVGContext.Rect (public facade) must emit
 /// the exact same point order/winding as the internal NVGContext.Rect it wraps.
 /// </summary>
 public class RectWindingTests
@@ -18,11 +18,11 @@ public class RectWindingTests
         internalContext.BeginFrame(200, 200, 1.0f);
         internalContext.BeginPath();
         internalContext.Rect(10, 20, 30, 40);
-        internalContext.FillColor(NVGcolor.RGBA(255, 0, 0, 255));
+        internalContext.FillColor(MewVGColor.RGBA(255, 0, 0, 255));
         internalContext.Fill();
 
         var facadeRenderer = new FakeRenderer();
-        using var facade = new TestNanoVG(facadeRenderer);
+        using var facade = new TestMewVGContext(facadeRenderer);
         facade.BeginFrame(200, 200, 1.0f);
         facade.BeginPath();
         facade.Rect(10, 20, 30, 40);
@@ -66,8 +66,8 @@ public class RectWindingTests
         context.LineTo(25, 75);
         context.ClosePath();
 
-        context.FillColor(NVGcolor.RGBA(0, 128, 255, 255));
-        context.FillRule(NVGfillRule.NonZero);
+        context.FillColor(MewVGColor.RGBA(0, 128, 255, 255));
+        context.FillRule(MewVGFillRule.NonZero);
         context.Fill();
 
         Assert.Single(renderer.FillCalls);
@@ -95,8 +95,8 @@ public class RectWindingTests
         // Thickness (3, 0, 2, 1): the inner and outer top arcs meet at (180, 0).
         AppendRoundedRect(context, 3, 0, 185, 99, 7, 10, 8, 9, clockwise: false);
 
-        context.FillColor(NVGcolor.RGBA(80, 141, 254, 255));
-        context.FillRule(NVGfillRule.NonZero);
+        context.FillColor(MewVGColor.RGBA(80, 141, 254, 255));
+        context.FillRule(MewVGFillRule.NonZero);
         context.Fill();
 
         var call = Assert.Single(renderer.FillCalls);

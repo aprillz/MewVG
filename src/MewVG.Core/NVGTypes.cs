@@ -8,10 +8,10 @@ using System.Runtime.InteropServices;
 namespace Aprillz.MewVG;
 
 /// <summary>
-/// Image flags for NanoVG.
+/// Image flags for MewVG images.
 /// </summary>
 [Flags]
-public enum NVGimageFlags
+public enum MewVGImageFlags
 {
     /// <summary>
     /// No flags.
@@ -97,7 +97,7 @@ public enum NVGpaintKind
 /// <summary>
 /// Winding direction.
 /// </summary>
-public enum NVGwinding
+public enum MewVGWinding
 {
     /// <summary>
     /// Counter-clockwise winding for solid shapes.
@@ -113,7 +113,7 @@ public enum NVGwinding
 /// <summary>
 /// Fill rule used for path topology resolution.
 /// </summary>
-public enum NVGfillRule
+public enum MewVGFillRule
 {
     /// <summary>
     /// Non-zero winding rule.
@@ -145,7 +145,7 @@ public enum NVGsolidity
 /// <summary>
 /// Line cap styles.
 /// </summary>
-public enum NVGlineCap
+public enum MewVGLineCap
 {
     /// <summary>
     /// Butt line cap.
@@ -166,7 +166,7 @@ public enum NVGlineCap
 /// <summary>
 /// Line join styles.
 /// </summary>
-public enum NVGlineJoin
+public enum MewVGLineJoin
 {
     /// <summary>
     /// Round line join.
@@ -247,7 +247,7 @@ public enum NVGblendFactor
 /// <summary>
 /// Composite operations.
 /// </summary>
-public enum NVGcompositeOperation
+public enum MewVGCompositeOperation
 {
     SourceOver,
     SourceIn,
@@ -266,14 +266,14 @@ public enum NVGcompositeOperation
 /// RGBA color structure.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGcolor
+public struct MewVGColor
 {
     public float R;
     public float G;
     public float B;
     public float A;
 
-    public NVGcolor(float r, float g, float b, float a)
+    public MewVGColor(float r, float g, float b, float a)
     {
         R = r;
         G = g;
@@ -281,17 +281,17 @@ public struct NVGcolor
         A = a;
     }
 
-    public static NVGcolor RGB(byte r, byte g, byte b) => RGBA(r, g, b, 255);
+    public static MewVGColor RGB(byte r, byte g, byte b) => RGBA(r, g, b, 255);
 
-    public static NVGcolor RGBf(float r, float g, float b) => RGBAf(r, g, b, 1.0f);
+    public static MewVGColor RGBf(float r, float g, float b) => RGBAf(r, g, b, 1.0f);
 
-    public static NVGcolor RGBA(byte r, byte g, byte b, byte a) => new NVGcolor(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+    public static MewVGColor RGBA(byte r, byte g, byte b, byte a) => new MewVGColor(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
 
-    public static NVGcolor RGBAf(float r, float g, float b, float a) => new NVGcolor(r, g, b, a);
+    public static MewVGColor RGBAf(float r, float g, float b, float a) => new MewVGColor(r, g, b, a);
 
-    public static NVGcolor HSL(float h, float s, float l) => HSLA(h, s, l, 255);
+    public static MewVGColor HSL(float h, float s, float l) => HSLA(h, s, l, 255);
 
-    public static NVGcolor HSLA(float h, float s, float l, byte a)
+    public static MewVGColor HSLA(float h, float s, float l, byte a)
     {
         float hueToRgb(float p, float q, float t)
         {
@@ -346,44 +346,44 @@ public struct NVGcolor
             b = hueToRgb(p, q, h - 1.0f / 3.0f);
         }
 
-        return new NVGcolor(r, g, b, a / 255.0f);
+        return new MewVGColor(r, g, b, a / 255.0f);
     }
 
-    public static NVGcolor Lerp(NVGcolor c0, NVGcolor c1, float t)
+    public static MewVGColor Lerp(MewVGColor c0, MewVGColor c1, float t)
     {
         t = Math.Clamp(t, 0.0f, 1.0f);
         var oneminu = 1.0f - t;
-        return new NVGcolor(
+        return new MewVGColor(
             c0.R * oneminu + c1.R * t,
             c0.G * oneminu + c1.G * t,
             c0.B * oneminu + c1.B * t,
             c0.A * oneminu + c1.A * t);
     }
 
-    public NVGcolor WithAlpha(byte a) => new NVGcolor(R, G, B, a / 255.0f);
+    public MewVGColor WithAlpha(byte a) => new MewVGColor(R, G, B, a / 255.0f);
 
-    public NVGcolor WithAlphaf(float a) => new NVGcolor(R, G, B, a);
+    public MewVGColor WithAlphaf(float a) => new MewVGColor(R, G, B, a);
 
     public Vector4 ToVector4() => new Vector4(R, G, B, A);
 
     public Vector4 ToPremultiplied() => new Vector4(R * A, G * A, B * A, A);
 
-    public static readonly NVGcolor White = new(1.0f, 1.0f, 1.0f, 1.0f);
-    public static readonly NVGcolor Black = new(0.0f, 0.0f, 0.0f, 1.0f);
-    public static readonly NVGcolor Transparent = new(0.0f, 0.0f, 0.0f, 0.0f);
+    public static readonly MewVGColor White = new(1.0f, 1.0f, 1.0f, 1.0f);
+    public static readonly MewVGColor Black = new(0.0f, 0.0f, 0.0f, 1.0f);
+    public static readonly MewVGColor Transparent = new(0.0f, 0.0f, 0.0f, 0.0f);
 }
 
 /// <summary>
 /// Paint style for fills and strokes.
 /// </summary>
-public struct NVGpaint
+public struct MewVGPaint
 {
     public Buffer6<float> Xform; // [6] - 2x3 transform matrix
     public Buffer2<float> Extent; // [2] - extent
     public float Radius;
     public float Feather;
-    public NVGcolor InnerColor;
-    public NVGcolor OuterColor;
+    public MewVGColor InnerColor;
+    public MewVGColor OuterColor;
     public int Image;
     public Buffer2<float> Center; // [2] - center for radial gradients
     public Buffer2<float> Focal; // [2] - normalized focal point for radial gradients

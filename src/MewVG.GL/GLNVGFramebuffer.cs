@@ -6,7 +6,7 @@ public sealed class GLNVGFramebuffer : IDisposable
 {
     private int _defaultFbo = -1;
 
-    private readonly NanoVGGL _ctx;
+    private readonly MewVGGL _ctx;
     private bool _disposed;
 
     public int Framebuffer { get; private set; }
@@ -15,19 +15,19 @@ public sealed class GLNVGFramebuffer : IDisposable
 
     public int Image { get; private set; }
 
-    private GLNVGFramebuffer(NanoVGGL ctx)
+    private GLNVGFramebuffer(MewVGGL ctx)
     {
         _ctx = ctx;
     }
 
-    public static GLNVGFramebuffer? Create(NanoVGGL ctx, int width, int height, NVGimageFlags imageFlags)
+    public static GLNVGFramebuffer? Create(MewVGGL ctx, int width, int height, MewVGImageFlags imageFlags)
     {
         GL.EnsureLoaded();
         var fb = new GLNVGFramebuffer(ctx);
 
         var defaultFbo = GL.GetInteger(GetPName.FramebufferBinding);
 
-        fb.Image = ctx.CreateImageRGBA(width, height, imageFlags | NVGimageFlags.FlipY | NVGimageFlags.Premultiplied, ReadOnlySpan<byte>.Empty);
+        fb.Image = ctx.CreateImageRGBA(width, height, imageFlags | MewVGImageFlags.FlipY | MewVGImageFlags.Premultiplied, ReadOnlySpan<byte>.Empty);
         fb.Texture = ctx.ImageHandle(fb.Image);
 
         fb.Framebuffer = GL.GenFramebuffer();

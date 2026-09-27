@@ -9,7 +9,7 @@ public class GLShaderSourceTests
     [Fact]
     public void Gl3CoreHeaderTargetsGlsl140()
     {
-        var header = GLNVGShaderSource.Header(NanoVGGLProfile.Gl3Core);
+        var header = GLNVGShaderSource.Header(MewVGGLProfile.Gl3Core);
 
         Assert.StartsWith("#version 140\n", header);
         Assert.DoesNotContain("precision", header);
@@ -19,7 +19,7 @@ public class GLShaderSourceTests
     [Fact]
     public void Gles3HeaderTargetsGlslEs300WithExplicitPrecision()
     {
-        var header = GLNVGShaderSource.Header(NanoVGGLProfile.Gles3);
+        var header = GLNVGShaderSource.Header(MewVGGLProfile.Gles3);
 
         Assert.StartsWith("#version 300 es\n", header);
         Assert.Contains("precision highp float;", header);

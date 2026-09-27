@@ -4,10 +4,10 @@ namespace MewVG.Demo;
 
 internal static class DemoScene
 {
-    private static readonly NVGlineJoin[] LineJoins = { NVGlineJoin.Miter, NVGlineJoin.Round, NVGlineJoin.Bevel };
-    private static readonly NVGlineCap[] LineCaps = { NVGlineCap.Butt, NVGlineCap.Round, NVGlineCap.Square };
+    private static readonly MewVGLineJoin[] LineJoins = { MewVGLineJoin.Miter, MewVGLineJoin.Round, MewVGLineJoin.Bevel };
+    private static readonly MewVGLineCap[] LineCaps = { MewVGLineCap.Butt, MewVGLineCap.Round, MewVGLineCap.Square };
 
-    public static void DrawDemo(NanoVG vg, float width, float height)
+    public static void DrawDemo(MewVGContext vg, float width, float height)
     {
         // Background
         vg.BeginPath();
@@ -43,15 +43,15 @@ internal static class DemoScene
         DrawEditBox(vg, x, y, 280, 28);
         y += 38;
         DrawCheckBox(vg, x, y, 140, 28, true);
-        DrawButton(vg, x + 138, y, 140, 28, NVGcolor.RGBA(0, 96, 128, 255));
+        DrawButton(vg, x + 138, y, 140, 28, MewVGColor.RGBA(0, 96, 128, 255));
         y += 45;
 
         DrawEditBoxBase(vg, x + 180, y, 100, 28);
         DrawSlider(vg, x, y, 170, 28, 0.4f);
         y += 55;
 
-        DrawButton(vg, x, y, 160, 28, NVGcolor.RGBA(128, 16, 8, 255));
-        DrawButton(vg, x + 170, y, 110, 28, NVGcolor.RGBA(0, 0, 0, 0));
+        DrawButton(vg, x, y, 160, 28, MewVGColor.RGBA(128, 16, 8, 255));
+        DrawButton(vg, x + 170, y, 110, 28, MewVGColor.RGBA(0, 0, 0, 0));
 
         DrawThumbnailsNoImages(vg, 365, 95 + 14 - 30, 160, 300, 12, t);
     }
@@ -65,7 +65,7 @@ internal static class DemoScene
     private static readonly int FillLayers =
         int.TryParse(Environment.GetEnvironmentVariable("MEWVG_DEMO_FILL_LAYERS"), out var fillLayers) ? fillLayers : 0;
 
-    private static NanoVG? _checkImagesOwner;
+    private static MewVGContext? _checkImagesOwner;
     private static int _premultipliedImage;
     private static int _straightImage;
     private static int _alphaImage;
@@ -76,7 +76,7 @@ internal static class DemoScene
     /// texture kind, gradients, coverage mask fill), each plain, scissored, rotated, clipped and
     /// translucent, so a capture exercises every variant against the uber shader.
     /// </summary>
-    public static void DrawShaderVariantChecks(NanoVG vg, float x, float y)
+    public static void DrawShaderVariantChecks(MewVGContext vg, float x, float y)
     {
         EnsureCheckImages(vg);
 
@@ -178,7 +178,7 @@ internal static class DemoScene
                 {
                     0 => vg.GradientLinear(gradient, cx + 30, cy, cx + 70, cy, column % 3, _gradientLut),
                     1 => vg.GradientRadial(gradient, cx + 55, cy + 35, cx + 40, cy + 30, 30, 20, column % 3, _gradientLut),
-                    _ => vg.BoxGradient(cx + 10, cy + 50, 90, 14, 6, 10, NVGcolor.RGBA(250, 250, 250, 220), NVGcolor.RGBA(20, 60, 140, 160)),
+                    _ => vg.BoxGradient(cx + 10, cy + 50, 90, 14, 6, 10, MewVGColor.RGBA(250, 250, 250, 220), MewVGColor.RGBA(20, 60, 140, 160)),
                 });
                 vg.Fill();
             }
@@ -248,7 +248,7 @@ internal static class DemoScene
     /// Draws the MEWVG_DEMO_FILL_LAYERS window-sized fills, alternating a solid colour and an image
     /// pattern, so a frame is bound by per-pixel shading rather than by draw submission.
     /// </summary>
-    public static void DrawFillLayers(NanoVG vg, float width, float height)
+    public static void DrawFillLayers(MewVGContext vg, float width, float height)
     {
         if (FillLayers <= 0)
         {
@@ -273,7 +273,7 @@ internal static class DemoScene
         }
     }
 
-    private static void EnsureCheckImages(NanoVG vg)
+    private static void EnsureCheckImages(MewVGContext vg)
     {
         if (ReferenceEquals(_checkImagesOwner, vg))
         {
@@ -308,8 +308,8 @@ internal static class DemoScene
             premultiplied[i + 2] = (byte)(premultiplied[i + 2] * a / 255);
         }
 
-        var repeat = NVGimageFlags.RepeatX | NVGimageFlags.RepeatY;
-        _premultipliedImage = vg.CreateImageRGBA(SIZE, SIZE, repeat | NVGimageFlags.Premultiplied, premultiplied);
+        var repeat = MewVGImageFlags.RepeatX | MewVGImageFlags.RepeatY;
+        _premultipliedImage = vg.CreateImageRGBA(SIZE, SIZE, repeat | MewVGImageFlags.Premultiplied, premultiplied);
         _straightImage = vg.CreateImageRGBA(SIZE, SIZE, repeat, rgba);
         _alphaImage = vg.CreateImageAlpha(SIZE, SIZE, repeat, alpha);
 
@@ -325,12 +325,12 @@ internal static class DemoScene
             lut[i * 4 + 3] = a;
         }
 
-        _gradientLut = vg.CreateImageRGBA(LUT_SIZE, 1, NVGimageFlags.Premultiplied, lut);
+        _gradientLut = vg.CreateImageRGBA(LUT_SIZE, 1, MewVGImageFlags.Premultiplied, lut);
     }
 
     private static float Clamp(float a, float mn, float mx) => a < mn ? mn : (a > mx ? mx : a);
 
-    private static void DrawWindow(NanoVG vg, float x, float y, float w, float h)
+    private static void DrawWindow(MewVGContext vg, float x, float y, float w, float h)
     {
         var r = 3.0f;
 
@@ -342,16 +342,16 @@ internal static class DemoScene
         vg.Fill();
 
         var shadow = vg.BoxGradient(x, y + 2, w, h, r * 2, 10,
-            NVGcolor.RGBA(0, 0, 0, 128), NVGcolor.RGBA(0, 0, 0, 0));
+            MewVGColor.RGBA(0, 0, 0, 128), MewVGColor.RGBA(0, 0, 0, 0));
         vg.BeginPath();
         vg.Rect(x - 10, y - 10, w + 20, h + 30);
         vg.RoundedRect(x, y, w, h, r);
-        vg.PathWinding(NVGwinding.CW);
+        vg.PathWinding(MewVGWinding.CW);
         vg.FillPaint(shadow);
         vg.Fill();
 
         var header = vg.LinearGradient(x, y, x, y + 15,
-            NVGcolor.RGBA(255, 255, 255, 8), NVGcolor.RGBA(0, 0, 0, 16));
+            MewVGColor.RGBA(255, 255, 255, 8), MewVGColor.RGBA(0, 0, 0, 16));
         vg.BeginPath();
         vg.RoundedRect(x + 1, y + 1, w - 2, 30, r - 1);
         vg.FillPaint(header);
@@ -366,22 +366,22 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawSearchBox(NanoVG vg, float x, float y, float w, float h)
+    private static void DrawSearchBox(MewVGContext vg, float x, float y, float w, float h)
     {
         var r = h / 2 - 1;
         var bg = vg.BoxGradient(x, y + 1.5f, w, h, h / 2, 5,
-            NVGcolor.RGBA(0, 0, 0, 16), NVGcolor.RGBA(0, 0, 0, 92));
+            MewVGColor.RGBA(0, 0, 0, 16), MewVGColor.RGBA(0, 0, 0, 92));
         vg.BeginPath();
         vg.RoundedRect(x, y, w, h, r);
         vg.FillPaint(bg);
         vg.Fill();
     }
 
-    private static void DrawDropDown(NanoVG vg, float x, float y, float w, float h)
+    private static void DrawDropDown(MewVGContext vg, float x, float y, float w, float h)
     {
         var r = 4.0f;
         var bg = vg.LinearGradient(x, y, x, y + h,
-            NVGcolor.RGBA(255, 255, 255, 16), NVGcolor.RGBA(0, 0, 0, 16));
+            MewVGColor.RGBA(255, 255, 255, 16), MewVGColor.RGBA(0, 0, 0, 16));
         vg.BeginPath();
         vg.RoundedRect(x + 1, y + 1, w - 2, h - 2, r - 1);
         vg.FillPaint(bg);
@@ -393,10 +393,10 @@ internal static class DemoScene
         vg.Stroke();
     }
 
-    private static void DrawEditBoxBase(NanoVG vg, float x, float y, float w, float h)
+    private static void DrawEditBoxBase(MewVGContext vg, float x, float y, float w, float h)
     {
         var bg = vg.BoxGradient(x + 1, y + 2.5f, w - 2, h - 2, 3, 4,
-            NVGcolor.RGBA(255, 255, 255, 32), NVGcolor.RGBA(32, 32, 32, 32));
+            MewVGColor.RGBA(255, 255, 255, 32), MewVGColor.RGBA(32, 32, 32, 32));
         vg.BeginPath();
         vg.RoundedRect(x + 1, y + 1, w - 2, h - 2, 3);
         vg.FillPaint(bg);
@@ -408,13 +408,13 @@ internal static class DemoScene
         vg.Stroke();
     }
 
-    private static void DrawEditBox(NanoVG vg, float x, float y, float w, float h)
+    private static void DrawEditBox(MewVGContext vg, float x, float y, float w, float h)
         => DrawEditBoxBase(vg, x, y, w, h);
 
-    private static void DrawCheckBox(NanoVG vg, float x, float y, float w, float h, bool checkedOn)
+    private static void DrawCheckBox(MewVGContext vg, float x, float y, float w, float h, bool checkedOn)
     {
         var bg = vg.BoxGradient(x + 1, y + (int)(h * 0.5f) - 9 + 1, 18, 18, 3, 3,
-            NVGcolor.RGBA(0, 0, 0, 32), NVGcolor.RGBA(0, 0, 0, 92));
+            MewVGColor.RGBA(0, 0, 0, 32), MewVGColor.RGBA(0, 0, 0, 92));
         vg.BeginPath();
         vg.RoundedRect(x + 1, y + (int)(h * 0.5f) - 9, 18, 18, 3);
         vg.FillPaint(bg);
@@ -433,12 +433,12 @@ internal static class DemoScene
         }
     }
 
-    private static void DrawButton(NanoVG vg, float x, float y, float w, float h, NVGcolor col)
+    private static void DrawButton(MewVGContext vg, float x, float y, float w, float h, MewVGColor col)
     {
         var r = 4.0f;
         var bg = vg.LinearGradient(x, y, x, y + h,
-            NVGcolor.RGBA(255, 255, 255, IsBlack(col) ? (byte)16 : (byte)32),
-            NVGcolor.RGBA(0, 0, 0, IsBlack(col) ? (byte)16 : (byte)32));
+            MewVGColor.RGBA(255, 255, 255, IsBlack(col) ? (byte)16 : (byte)32),
+            MewVGColor.RGBA(0, 0, 0, IsBlack(col) ? (byte)16 : (byte)32));
         vg.BeginPath();
         vg.RoundedRect(x + 1, y + 1, w - 2, h - 2, r - 1);
         if (!IsBlack(col))
@@ -455,9 +455,9 @@ internal static class DemoScene
         vg.Stroke();
     }
 
-    private static bool IsBlack(NVGcolor col) => col.R == 0 && col.G == 0 && col.B == 0 && col.A == 0;
+    private static bool IsBlack(MewVGColor col) => col.R == 0 && col.G == 0 && col.B == 0 && col.A == 0;
 
-    private static void DrawEyes(NanoVG vg, float x, float y, float w, float h, float mx, float my, float t)
+    private static void DrawEyes(MewVGContext vg, float x, float y, float w, float h, float mx, float my, float t)
     {
         var ex = w * 0.23f;
         var ey = h * 0.5f;
@@ -469,7 +469,7 @@ internal static class DemoScene
         var blink = 1 - MathF.Pow(MathF.Sin(t * 0.5f), 200) * 0.8f;
 
         var bg = vg.LinearGradient(x, y + h * 0.5f, x + w * 0.1f, y + h,
-            NVGcolor.RGBA(0, 0, 0, 32), NVGcolor.RGBA(0, 0, 0, 16));
+            MewVGColor.RGBA(0, 0, 0, 32), MewVGColor.RGBA(0, 0, 0, 16));
         vg.BeginPath();
         vg.Ellipse(lx + 3.0f, ly + 16.0f, ex, ey);
         vg.Ellipse(rx + 3.0f, ry + 16.0f, ex, ey);
@@ -477,7 +477,7 @@ internal static class DemoScene
         vg.Fill();
 
         bg = vg.LinearGradient(x, y + h * 0.25f, x + w * 0.1f, y + h,
-            NVGcolor.RGBA(220, 220, 220, 255), NVGcolor.RGBA(128, 128, 128, 255));
+            MewVGColor.RGBA(220, 220, 220, 255), MewVGColor.RGBA(128, 128, 128, 255));
         vg.BeginPath();
         vg.Ellipse(lx, ly, ex, ey);
         vg.Ellipse(rx, ry, ex, ey);
@@ -505,21 +505,21 @@ internal static class DemoScene
         vg.Fill();
 
         var gloss = vg.RadialGradient(lx - ex * 0.25f, ly - ey * 0.5f, ex * 0.1f, ex * 0.75f,
-            NVGcolor.RGBA(255, 255, 255, 128), NVGcolor.RGBA(255, 255, 255, 0));
+            MewVGColor.RGBA(255, 255, 255, 128), MewVGColor.RGBA(255, 255, 255, 0));
         vg.BeginPath();
         vg.Ellipse(lx, ly, ex, ey);
         vg.FillPaint(gloss);
         vg.Fill();
 
         gloss = vg.RadialGradient(rx - ex * 0.25f, ry - ey * 0.5f, ex * 0.1f, ex * 0.75f,
-            NVGcolor.RGBA(255, 255, 255, 128), NVGcolor.RGBA(255, 255, 255, 0));
+            MewVGColor.RGBA(255, 255, 255, 128), MewVGColor.RGBA(255, 255, 255, 0));
         vg.BeginPath();
         vg.Ellipse(rx, ry, ex, ey);
         vg.FillPaint(gloss);
         vg.Fill();
     }
 
-    private static void DrawGraph(NanoVG vg, float x, float y, float w, float h, float t)
+    private static void DrawGraph(MewVGContext vg, float x, float y, float w, float h, float t)
     {
         Span<float> samples = stackalloc float[6];
         Span<float> sx = stackalloc float[6];
@@ -539,7 +539,7 @@ internal static class DemoScene
             sy[i] = y + h * samples[i] * 0.8f;
         }
 
-        var bg = vg.LinearGradient(x, y, x, y + h, NVGcolor.RGBA(0, 160, 192, 0), NVGcolor.RGBA(0, 160, 192, 64));
+        var bg = vg.LinearGradient(x, y, x, y + h, MewVGColor.RGBA(0, 160, 192, 0), MewVGColor.RGBA(0, 160, 192, 64));
         vg.BeginPath();
         vg.MoveTo(sx[0], sy[0]);
         for (var i = 1; i < 6; i++)
@@ -576,7 +576,7 @@ internal static class DemoScene
 
         for (var i = 0; i < 6; i++)
         {
-            bg = vg.RadialGradient(sx[i], sy[i] + 2, 3.0f, 8.0f, NVGcolor.RGBA(0, 0, 0, 32), NVGcolor.RGBA(0, 0, 0, 0));
+            bg = vg.RadialGradient(sx[i], sy[i] + 2, 3.0f, 8.0f, MewVGColor.RGBA(0, 0, 0, 32), MewVGColor.RGBA(0, 0, 0, 0));
             vg.BeginPath();
             vg.Rect(sx[i] - 10, sy[i] - 10 + 2, 20, 20);
             vg.FillPaint(bg);
@@ -604,7 +604,7 @@ internal static class DemoScene
         vg.StrokeWidth(1.0f);
     }
 
-    private static void DrawSpinner(NanoVG vg, float cx, float cy, float r, float t)
+    private static void DrawSpinner(MewVGContext vg, float cx, float cy, float r, float t)
     {
         var a0 = 0.0f + t * 6;
         var a1 = MathF.PI + t * 6;
@@ -613,20 +613,20 @@ internal static class DemoScene
 
         vg.Save();
         vg.BeginPath();
-        vg.Arc(cx, cy, r0, a0, a1, NVGwinding.CW);
-        vg.Arc(cx, cy, r1, a1, a0, NVGwinding.CCW);
+        vg.Arc(cx, cy, r0, a0, a1, MewVGWinding.CW);
+        vg.Arc(cx, cy, r1, a1, a0, MewVGWinding.CCW);
         vg.ClosePath();
         var ax = cx + MathF.Cos(a0) * (r0 + r1) * 0.5f;
         var ay = cy + MathF.Sin(a0) * (r0 + r1) * 0.5f;
         var bx = cx + MathF.Cos(a1) * (r0 + r1) * 0.5f;
         var by = cy + MathF.Sin(a1) * (r0 + r1) * 0.5f;
-        var paint = vg.LinearGradient(ax, ay, bx, by, NVGcolor.RGBA(0, 0, 0, 0), NVGcolor.RGBA(0, 0, 0, 128));
+        var paint = vg.LinearGradient(ax, ay, bx, by, MewVGColor.RGBA(0, 0, 0, 0), MewVGColor.RGBA(0, 0, 0, 128));
         vg.FillPaint(paint);
         vg.Fill();
         vg.Restore();
     }
 
-    private static void DrawThumbnailsNoImages(NanoVG vg, float x, float y, float w, float h, int nimages, float t)
+    private static void DrawThumbnailsNoImages(MewVGContext vg, float x, float y, float w, float h, int nimages, float t)
     {
         var cornerRadius = 3.0f;
         var thumb = 60.0f;
@@ -638,11 +638,11 @@ internal static class DemoScene
         vg.Save();
 
         var shadow = vg.BoxGradient(x, y + 4, w, h, cornerRadius * 2, 20,
-            NVGcolor.RGBA(0, 0, 0, 128), NVGcolor.RGBA(0, 0, 0, 0));
+            MewVGColor.RGBA(0, 0, 0, 128), MewVGColor.RGBA(0, 0, 0, 0));
         vg.BeginPath();
         vg.Rect(x - 10, y - 10, w + 20, h + 30);
         vg.RoundedRect(x, y, w, h, cornerRadius);
-        vg.PathWinding(NVGwinding.CW);
+        vg.PathWinding(MewVGWinding.CW);
         vg.FillPaint(shadow);
         vg.Fill();
 
@@ -672,18 +672,18 @@ internal static class DemoScene
             }
 
             var imgPaint = vg.BoxGradient(tx, ty, thumb, thumb, 5, 8,
-                NVGcolor.RGBA(255, 255, 255, 64), NVGcolor.RGBA(0, 0, 0, 32));
+                MewVGColor.RGBA(255, 255, 255, 64), MewVGColor.RGBA(0, 0, 0, 32));
             vg.BeginPath();
             vg.RoundedRect(tx, ty, thumb, thumb, 5);
             vg.FillPaint(imgPaint);
             vg.Fill();
 
             var edge = vg.BoxGradient(tx - 1, ty, thumb + 2, thumb + 2, 5, 3,
-                NVGcolor.RGBA(0, 0, 0, 128), NVGcolor.RGBA(0, 0, 0, 0));
+                MewVGColor.RGBA(0, 0, 0, 128), MewVGColor.RGBA(0, 0, 0, 0));
             vg.BeginPath();
             vg.Rect(tx - 5, ty - 5, thumb + 10, thumb + 10);
             vg.RoundedRect(tx, ty, thumb, thumb, 6);
-            vg.PathWinding(NVGwinding.CW);
+            vg.PathWinding(MewVGWinding.CW);
             vg.FillPaint(edge);
             vg.Fill();
 
@@ -696,20 +696,20 @@ internal static class DemoScene
 
         vg.Restore();
 
-        var fade = vg.LinearGradient(x, y, x, y + 6, NVGcolor.RGBA(200, 200, 200, 255), NVGcolor.RGBA(200, 200, 200, 0));
+        var fade = vg.LinearGradient(x, y, x, y + 6, MewVGColor.RGBA(200, 200, 200, 255), MewVGColor.RGBA(200, 200, 200, 0));
         vg.BeginPath();
         vg.Rect(x + 4, y, w - 8, 6);
         vg.FillPaint(fade);
         vg.Fill();
 
-        fade = vg.LinearGradient(x, y + h, x, y + h - 6, NVGcolor.RGBA(200, 200, 200, 255), NVGcolor.RGBA(200, 200, 200, 0));
+        fade = vg.LinearGradient(x, y + h, x, y + h - 6, MewVGColor.RGBA(200, 200, 200, 255), MewVGColor.RGBA(200, 200, 200, 0));
         vg.BeginPath();
         vg.Rect(x + 4, y + h - 6, w - 8, 6);
         vg.FillPaint(fade);
         vg.Fill();
 
         var barBg = vg.BoxGradient(x + w - 12 + 1, y + 4 + 1, 8, h - 8, 3, 4,
-            NVGcolor.RGBA(0, 0, 0, 32), NVGcolor.RGBA(0, 0, 0, 92));
+            MewVGColor.RGBA(0, 0, 0, 32), MewVGColor.RGBA(0, 0, 0, 92));
         vg.BeginPath();
         vg.RoundedRect(x + w - 12, y + 4, 8, h - 8, 3);
         vg.FillPaint(barBg);
@@ -717,7 +717,7 @@ internal static class DemoScene
 
         var scrollh = h / stackh * (h - 8);
         var bar = vg.BoxGradient(x + w - 12 - 1, y + 4 + (h - 8 - scrollh) * u - 1, 8, scrollh, 3, 4,
-            NVGcolor.RGBA(220, 220, 220, 255), NVGcolor.RGBA(128, 128, 128, 255));
+            MewVGColor.RGBA(220, 220, 220, 255), MewVGColor.RGBA(128, 128, 128, 255));
         vg.BeginPath();
         vg.RoundedRect(x + w - 12 + 1, y + 4 + 1 + (h - 8 - scrollh) * u, 6, scrollh - 2, 2);
         vg.FillPaint(bar);
@@ -726,7 +726,7 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawLines(NanoVG vg, float x, float y, float w, float h, float t)
+    private static void DrawLines(MewVGContext vg, float x, float y, float w, float h, float t)
     {
         var pad = 5.0f;
         var s = w / 9.0f - pad * 2;
@@ -762,8 +762,8 @@ internal static class DemoScene
                 vg.LineTo(fx + pts[6], fy + pts[7]);
                 vg.Stroke();
 
-                vg.LineCap(NVGlineCap.Butt);
-                vg.LineJoin(NVGlineJoin.Bevel);
+                vg.LineCap(MewVGLineCap.Butt);
+                vg.LineJoin(MewVGLineJoin.Bevel);
                 vg.StrokeWidth(1.0f);
                 vg.StrokeColor(0, 192, 255, 255);
                 vg.BeginPath();
@@ -778,7 +778,7 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawWidths(NanoVG vg, float x, float y, float width)
+    private static void DrawWidths(MewVGContext vg, float x, float y, float width)
     {
         vg.Save();
         vg.StrokeColor(0, 0, 0, 255);
@@ -795,7 +795,7 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawCaps(NanoVG vg, float x, float y, float width)
+    private static void DrawCaps(MewVGContext vg, float x, float y, float width)
     {
         var lineWidth = 8.0f;
 
@@ -823,7 +823,7 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawScissor(NanoVG vg, float x, float y, float t)
+    private static void DrawScissor(MewVGContext vg, float x, float y, float t)
     {
         vg.Save();
         vg.Translate(x, y);
@@ -854,14 +854,14 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawSlider(NanoVG vg, float x, float y, float w, float h, float pos)
+    private static void DrawSlider(MewVGContext vg, float x, float y, float w, float h, float pos)
     {
         vg.Save();
         var cy = y + (int)(h * 0.5f);
         float kr = (int)(h * 0.25f);
 
         var bg = vg.BoxGradient(x, cy - 2, w, 4, 2, 2,
-            NVGcolor.RGBA(0, 0, 0, 32), NVGcolor.RGBA(0, 0, 0, 128));
+            MewVGColor.RGBA(0, 0, 0, 32), MewVGColor.RGBA(0, 0, 0, 128));
 
         vg.BeginPath();
         vg.RoundedRect(x, cy - 2, w, 4, 2);
@@ -869,17 +869,17 @@ internal static class DemoScene
         vg.Fill();
 
         var knobShadow = vg.RadialGradient(x + (int)(pos * w), cy + 1, kr - 3, kr + 3,
-            NVGcolor.RGBA(0, 0, 0, 64), NVGcolor.RGBA(0, 0, 0, 0));
+            MewVGColor.RGBA(0, 0, 0, 64), MewVGColor.RGBA(0, 0, 0, 0));
 
         vg.BeginPath();
         vg.Rect(x + (int)(pos * w) - kr - 5, cy - kr - 5, kr * 2 + 10, kr * 2 + 13);
         vg.Circle(x + (int)(pos * w), cy, kr);
-        vg.PathWinding(NVGwinding.CW);
+        vg.PathWinding(MewVGWinding.CW);
         vg.FillPaint(knobShadow);
         vg.Fill();
 
         var knob = vg.LinearGradient(x, cy - kr, x, cy + kr,
-            NVGcolor.RGBA(255, 255, 255, 32), NVGcolor.RGBA(0, 0, 0, 48));
+            MewVGColor.RGBA(255, 255, 255, 32), MewVGColor.RGBA(0, 0, 0, 48));
 
         vg.BeginPath();
         vg.Circle(x + (int)(pos * w), cy, kr - 1);
@@ -896,7 +896,7 @@ internal static class DemoScene
         vg.Restore();
     }
 
-    private static void DrawColorWheel(NanoVG vg, float x, float y, float w, float h, float t)
+    private static void DrawColorWheel(MewVGContext vg, float x, float y, float w, float h, float t)
     {
         vg.Save();
 
@@ -912,16 +912,16 @@ internal static class DemoScene
             var a0 = i / 6.0f * MathF.PI * 2.0f - aeps;
             var a1 = (i + 1.0f) / 6.0f * MathF.PI * 2.0f + aeps;
             vg.BeginPath();
-            vg.Arc(cx, cy, r0, a0, a1, NVGwinding.CW);
-            vg.Arc(cx, cy, r1, a1, a0, NVGwinding.CCW);
+            vg.Arc(cx, cy, r0, a0, a1, MewVGWinding.CW);
+            vg.Arc(cx, cy, r1, a1, a0, MewVGWinding.CCW);
             vg.ClosePath();
             var ax = cx + MathF.Cos(a0) * (r0 + r1) * 0.5f;
             var ay = cy + MathF.Sin(a0) * (r0 + r1) * 0.5f;
             var bx = cx + MathF.Cos(a1) * (r0 + r1) * 0.5f;
             var by = cy + MathF.Sin(a1) * (r0 + r1) * 0.5f;
             var paint = vg.LinearGradient(ax, ay, bx, by,
-                NVGcolor.HSLA(a0 / (MathF.PI * 2), 1.0f, 0.55f, 255),
-                NVGcolor.HSLA(a1 / (MathF.PI * 2), 1.0f, 0.55f, 255));
+                MewVGColor.HSLA(a0 / (MathF.PI * 2), 1.0f, 0.55f, 255),
+                MewVGColor.HSLA(a1 / (MathF.PI * 2), 1.0f, 0.55f, 255));
             vg.FillPaint(paint);
             vg.Fill();
         }
@@ -944,11 +944,11 @@ internal static class DemoScene
         vg.Stroke();
 
         var paint2 = vg.BoxGradient(r0 - 3, -5, r1 - r0 + 6, 10, 2, 4,
-            NVGcolor.RGBA(0, 0, 0, 128), NVGcolor.RGBA(0, 0, 0, 0));
+            MewVGColor.RGBA(0, 0, 0, 128), MewVGColor.RGBA(0, 0, 0, 0));
         vg.BeginPath();
         vg.Rect(r0 - 2 - 10, -4 - 10, r1 - r0 + 4 + 20, 8 + 20);
         vg.Rect(r0 - 2, -4, r1 - r0 + 4, 8);
-        vg.PathWinding(NVGwinding.CW);
+        vg.PathWinding(MewVGWinding.CW);
         vg.FillPaint(paint2);
         vg.Fill();
 
@@ -962,10 +962,10 @@ internal static class DemoScene
         vg.LineTo(ax2, ay2);
         vg.LineTo(bx2, by2);
         vg.ClosePath();
-        paint2 = vg.LinearGradient(r, 0, ax2, ay2, NVGcolor.HSLA(hue, 1.0f, 0.5f, 255), NVGcolor.RGBA(255, 255, 255, 255));
+        paint2 = vg.LinearGradient(r, 0, ax2, ay2, MewVGColor.HSLA(hue, 1.0f, 0.5f, 255), MewVGColor.RGBA(255, 255, 255, 255));
         vg.FillPaint(paint2);
         vg.Fill();
-        paint2 = vg.LinearGradient((r + ax2) * 0.5f, (0 + ay2) * 0.5f, bx2, by2, NVGcolor.RGBA(0, 0, 0, 0), NVGcolor.RGBA(0, 0, 0, 255));
+        paint2 = vg.LinearGradient((r + ax2) * 0.5f, (0 + ay2) * 0.5f, bx2, by2, MewVGColor.RGBA(0, 0, 0, 0), MewVGColor.RGBA(0, 0, 0, 255));
         vg.FillPaint(paint2);
         vg.Fill();
         vg.StrokeColor(0, 0, 0, 64);
@@ -979,11 +979,11 @@ internal static class DemoScene
         vg.StrokeColor(255, 255, 255, 192);
         vg.Stroke();
 
-        paint2 = vg.RadialGradient(ax2, ay2, 7, 9, NVGcolor.RGBA(0, 0, 0, 64), NVGcolor.RGBA(0, 0, 0, 0));
+        paint2 = vg.RadialGradient(ax2, ay2, 7, 9, MewVGColor.RGBA(0, 0, 0, 64), MewVGColor.RGBA(0, 0, 0, 0));
         vg.BeginPath();
         vg.Rect(ax2 - 20, ay2 - 20, 40, 40);
         vg.Circle(ax2, ay2, 7);
-        vg.PathWinding(NVGwinding.CW);
+        vg.PathWinding(MewVGWinding.CW);
         vg.FillPaint(paint2);
         vg.Fill();
 

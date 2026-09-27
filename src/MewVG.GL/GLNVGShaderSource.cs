@@ -9,10 +9,10 @@ namespace Aprillz.MewVG;
 /// </summary>
 internal static class GLNVGShaderSource
 {
-    internal static string Header(NanoVGGLProfile profile)
+    internal static string Header(MewVGGLProfile profile)
     {
         // GLSL ES has no default float precision in fragment shaders.
-        if (profile == NanoVGGLProfile.Gles3)
+        if (profile == MewVGGLProfile.Gles3)
         {
             return "#version 300 es\n" +
                    "precision highp float;\n" +
