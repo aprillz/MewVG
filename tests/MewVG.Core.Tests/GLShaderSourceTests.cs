@@ -48,6 +48,18 @@ public class GLShaderSourceTests
     }
 
     [Fact]
+    public void FragmentShaderConditionalsAreBalanced()
+    {
+        // The variants are the same source compiled with defines, so every conditional block must close.
+        var lines = GLNVGShaderSource.FILL_FRAG_SHADER.Split('\n');
+        var opened = lines.Count(line => line.StartsWith("#if"));
+        var closed = lines.Count(line => line.StartsWith("#endif"));
+
+        Assert.True(opened > 0);
+        Assert.Equal(opened, closed);
+    }
+
+    [Fact]
     public void FragmentShaderDeclaresItsOwnOutput()
     {
         Assert.Contains("out vec4 outColor;", GLNVGShaderSource.FILL_FRAG_SHADER);
