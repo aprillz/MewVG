@@ -8,7 +8,7 @@ namespace Aprillz.MewVG.Tess;
 /// NativeAOT-safe tessellator backed by vendored LibTessDotNet
 /// (full libtess2 algorithm port in C#).
 /// </summary>
-public sealed class Tessellator
+internal sealed class Tessellator
 {
     private const float MaxInput = 1 << 23;
     private const float MinInput = -MaxInput;

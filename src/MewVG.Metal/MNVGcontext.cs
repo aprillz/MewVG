@@ -32,7 +32,7 @@ namespace Aprillz.MewVG;
 /// <summary>
 /// Shader types matching the Metal shader uniforms
 /// </summary>
-public enum MNVGshaderType
+internal enum MNVGshaderType
 {
     MNVG_SHADER_FILLGRAD = 0,
     MNVG_SHADER_FILLIMG = 1,
@@ -47,7 +47,7 @@ public enum MNVGshaderType
 /// <summary>
 /// Call types for rendering
 /// </summary>
-public enum MNVGcallType
+internal enum MNVGcallType
 {
     MNVG_NONE = 0,
     MNVG_FILL = 1,
@@ -63,7 +63,7 @@ public enum MNVGcallType
 /// Size must be 208 bytes to match the shader's expectations
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct MNVGfragUniforms
+internal unsafe struct MNVGfragUniforms
 {
     public Buffer12<float> scissorMat;     // 48 bytes - float3x4 (3 columns of float4)
     public Buffer12<float> paintMat;       // 48 bytes - float3x4
@@ -96,7 +96,7 @@ public unsafe struct MNVGfragUniforms
 /// Draw call structure
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct MNVGcall
+internal struct MNVGcall
 {
     public MNVGcallType type;
     public int image;
@@ -117,7 +117,7 @@ public struct MNVGcall
 /// Path structure
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct MNVGpath
+internal struct MNVGpath
 {
     public int fillOffset;
     public int fillCount;
@@ -129,7 +129,7 @@ public struct MNVGpath
 /// Buffer structure for Metal resources
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct MNVGbuffers
+internal unsafe struct MNVGbuffers
 {
     public IntPtr vertBuffer;      // id<MTLBuffer>
     public int nverts;
@@ -142,7 +142,7 @@ public unsafe struct MNVGbuffers
 /// Texture structure
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct MNVGtexture
+internal struct MNVGtexture
 {
     public int id;
     public IntPtr tex;       // id<MTLTexture>
@@ -164,7 +164,7 @@ public struct MNVGtexture
 /// semaphore starves after <see cref="MNVG_INIT_BUFFER_COUNT"/> frames in flight.</item>
 /// </list>
 /// </summary>
-public unsafe class MNVGcontext : IDisposable, INVGRenderer
+internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 {
     // Constants
     public const int MNVG_INIT_BUFFER_COUNT = 4;

@@ -38,7 +38,7 @@ using System.Diagnostics;
 using Real = System.Single;
 namespace LibTessDotNet
 {
-    public partial class Tess
+    internal partial class Tess
     {
         internal class ActiveRegion : Pooled<ActiveRegion>
         {

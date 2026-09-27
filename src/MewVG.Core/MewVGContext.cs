@@ -142,12 +142,12 @@ public abstract class MewVGContext : IDisposable
     /// Build an object-space tessellation cache from the current path commands.
     /// Call after BeginPath + path commands with identity transform active.
     /// </summary>
-    public FrozenFillCache BuildFillCache(Tess.TessWindingRule windingRule) => _nvg.BuildFillCache(windingRule);
+    public FrozenFillCache BuildFillCache(MewVGFillRule fillRule) => _nvg.BuildFillCache(NVGContext.MapFillRuleToTess(fillRule));
 
     /// <summary>
     /// Render a fill using cached object-space tessellation + current transform.
     /// </summary>
-    public void FillFromCache(FrozenFillCache cache, Tess.TessWindingRule windingRule) => _nvg.FillFromCache(cache, windingRule);
+    public void FillFromCache(FrozenFillCache cache, MewVGFillRule fillRule) => _nvg.FillFromCache(cache, NVGContext.MapFillRuleToTess(fillRule));
 
     #endregion
 

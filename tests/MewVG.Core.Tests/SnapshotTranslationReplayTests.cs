@@ -21,7 +21,7 @@ public sealed class SnapshotTranslationReplayTests
         vg.Rect(20, 10, 80, 40);
         vg.FillRule(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
-        return vg.BuildFillCache(TessWindingRule.Odd);
+        return vg.BuildFillCache(MewVGFillRule.EvenOdd);
     }
 
     [Fact]
@@ -32,12 +32,12 @@ public sealed class SnapshotTranslationReplayTests
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         Assert.True(cache.SnapshotValid);
         float storedTx = cache.SnapshotXform[4];
 
         vg.Translate(3, 7);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.EndFrame();
 
         Assert.Empty(renderer.MaskFillCalls);
@@ -59,11 +59,11 @@ public sealed class SnapshotTranslationReplayTests
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.Translate(3, 0);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.Translate(3, 0);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.EndFrame();
 
         // The third draw sits at +6 from the original: shifting from the stored snapshot each
@@ -79,11 +79,11 @@ public sealed class SnapshotTranslationReplayTests
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         float storedScale = cache.SnapshotXform[0];
 
         vg.Scale(0.5f, 0.5f);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.EndFrame();
 
         Assert.Equal(2, renderer.FillCalls.Count);

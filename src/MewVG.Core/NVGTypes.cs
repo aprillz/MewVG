@@ -57,7 +57,7 @@ public enum MewVGImageFlags
 /// <summary>
 /// Texture types.
 /// </summary>
-public enum NVGtextureType
+internal enum NVGtextureType
 {
     /// <summary>
     /// Alpha texture.
@@ -80,14 +80,14 @@ public enum NVGtextureType
 /// <summary>
 /// Legacy texture enum used by older ports.
 /// </summary>
-public enum NVGtexture
+internal enum NVGtexture
 {
     Alpha = 0,
     RGBA = 1,
     BGRA = 2,
 }
 
-public enum NVGpaintKind
+internal enum NVGpaintKind
 {
     Default = 0,
     GradientRadial = 1,
@@ -129,7 +129,7 @@ public enum MewVGFillRule
 /// <summary>
 /// Solidity types.
 /// </summary>
-public enum NVGsolidity
+internal enum NVGsolidity
 {
     /// <summary>
     /// Solid shape (CCW).
@@ -188,7 +188,7 @@ public enum MewVGLineJoin
 /// Text horizontal alignment.
 /// </summary>
 [Flags]
-public enum NVGalign
+internal enum NVGalign
 {
     /// <summary>
     /// Default, align text horizontally to left.
@@ -229,7 +229,7 @@ public enum NVGalign
 /// <summary>
 /// Blend factors for composite operations.
 /// </summary>
-public enum NVGblendFactor
+internal enum NVGblendFactor
 {
     Zero = 1 << 0,
     One = 1 << 1,
@@ -378,25 +378,25 @@ public struct MewVGColor
 /// </summary>
 public struct MewVGPaint
 {
-    public Buffer6<float> Xform; // [6] - 2x3 transform matrix
-    public Buffer2<float> Extent; // [2] - extent
-    public float Radius;
-    public float Feather;
-    public MewVGColor InnerColor;
-    public MewVGColor OuterColor;
-    public int Image;
-    public Buffer2<float> Center; // [2] - center for radial gradients
-    public Buffer2<float> Focal; // [2] - normalized focal point for radial gradients
-    public Buffer2<float> Radius2; // [2] - radii for radial gradients
-    public int SpreadMethod;
-    public int PaintKind;
+    internal Buffer6<float> Xform; // [6] - 2x3 transform matrix
+    internal Buffer2<float> Extent; // [2] - extent
+    internal float Radius;
+    internal float Feather;
+    internal MewVGColor InnerColor;
+    internal MewVGColor OuterColor;
+    internal int Image;
+    internal Buffer2<float> Center; // [2] - center for radial gradients
+    internal Buffer2<float> Focal; // [2] - normalized focal point for radial gradients
+    internal Buffer2<float> Radius2; // [2] - radii for radial gradients
+    internal int SpreadMethod;
+    internal int PaintKind;
 }
 
 /// <summary>
 /// Composite operation state.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGcompositeOperationState
+internal struct NVGcompositeOperationState
 {
     public int SrcRGB;
     public int DstRGB;
@@ -408,7 +408,7 @@ public struct NVGcompositeOperationState
 /// Glyph position info.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGglyphPosition
+internal struct NVGglyphPosition
 {
     /// <summary>
     /// Pointer to the input string.
@@ -430,7 +430,7 @@ public struct NVGglyphPosition
 /// Text row info.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGtextRow
+internal struct NVGtextRow
 {
     /// <summary>
     /// Pointer to the input text where the row starts.
@@ -462,7 +462,7 @@ public struct NVGtextRow
 /// Vertex structure used internally.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGvertex
+internal struct NVGvertex
 {
     public float X;
     public float Y;
@@ -482,7 +482,7 @@ public struct NVGvertex
 /// Path structure used internally.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public unsafe struct NVGpath
+internal unsafe struct NVGpath
 {
     public int First;
     public int Count;
@@ -500,7 +500,7 @@ public unsafe struct NVGpath
 /// Scissor structure used internally.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
-public struct NVGscissor
+internal struct NVGscissor
 {
     public Buffer6<float> Transform;
     public Buffer2<float> Extent;

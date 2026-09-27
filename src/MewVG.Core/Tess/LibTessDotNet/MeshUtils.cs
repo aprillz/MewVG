@@ -39,7 +39,7 @@ using System.Runtime.CompilerServices;
 using Real = System.Single;
 namespace LibTessDotNet
 {
-    public struct Vec3
+    internal struct Vec3
     {
         public readonly static Vec3 Zero = new Vec3();
 
@@ -103,13 +103,13 @@ namespace LibTessDotNet
         }
     }
 
-    public interface ITypePool
+    internal interface ITypePool
     {
         object Get();
         void Return(object obj);
     }
 
-    public class DefaultTypePool<T> : ITypePool where T: class, Pooled<T>, new()
+    internal class DefaultTypePool<T> : ITypePool where T: class, Pooled<T>, new()
     {
         private T[] _items = new T[64];
         private int _count;
@@ -153,7 +153,7 @@ namespace LibTessDotNet
         }
     }
 
-    public abstract class IPool
+    internal abstract class IPool
     {
         public IPool()
         {
@@ -169,7 +169,7 @@ namespace LibTessDotNet
         public abstract void Return<T>(ref T obj) where T : class, Pooled<T>, new();
     }
 
-    public class DefaultPool : IPool
+    internal class DefaultPool : IPool
     {
         private static class TypePoolCache<T> where T : class, Pooled<T>, new()
         {
@@ -239,7 +239,7 @@ namespace LibTessDotNet
         }
     }
 
-    public interface Pooled<T> where T : class, Pooled<T>, new()
+    internal interface Pooled<T> where T : class, Pooled<T>, new()
     {
         void Init(IPool pool);
         void Reset(IPool pool);
