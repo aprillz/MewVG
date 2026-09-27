@@ -26,22 +26,22 @@ public sealed class FrozenFillCache
     /// <summary>
     /// Returns true if this cache no longer matches the current draw request, meaning it
     /// should be rebuilt via <see cref="MewVGContext.BuildFillCache"/>. A cache is stale when the
-    /// bezier flatten tolerance changed (e.g. DPI changed), the winding rule used to build
+    /// bezier flatten tolerance changed (e.g. DPI changed), the fill rule used to build
     /// the cached tessellation differs from the one requested now, or the current transform
     /// scale exceeds the scale the cache was tessellated for (the baked-in bezier flattening
     /// and fringe inset would be too coarse for a larger scale).
     /// </summary>
-    public bool IsStale(float currentTessTol, Tess.TessWindingRule currentWindingRule, float currentScale)
+    public bool IsStale(float currentTessTol, MewVGFillRule currentFillRule, float currentScale)
     {
         const float scaleEpsilon = 1.001f;
         return TessTol != currentTessTol
-            || WindingRule != currentWindingRule
+            || WindingRule != NVGContext.MapFillRuleToTess(currentFillRule)
             || currentScale > BuildScale * scaleEpsilon;
     }
 
     /// <summary>
     /// Partial staleness check comparing only the tessellation tolerance; prefer the
-    /// 3-argument overload for a full check (winding rule and scale changes too).
+    /// 3-argument overload for a full check (fill rule and scale changes too).
     /// </summary>
     public bool IsStale(float currentTessTol) => TessTol != currentTessTol;
 

@@ -43,7 +43,7 @@ namespace LibTessDotNet
     /// See OpenGL Programming Guide (section "Winding Numbers and Winding Rules") for description of the winding rules.
     /// http://www.glprogramming.com/red/chapter11.html
     /// </summary>
-    public enum WindingRule
+    internal enum WindingRule
     {
         EvenOdd,
         NonZero,
@@ -55,7 +55,7 @@ namespace LibTessDotNet
     /// <summary>
     /// The element type determines the contents of <see cref="Tess.Elements"/>.
     /// </summary>
-    public enum ElementType
+    internal enum ElementType
     {
         /// <summary>
         /// Each element in <see cref="Tess.Elements"/> is a polygon defined as 'polySize' number of vertex indices.
@@ -76,14 +76,14 @@ namespace LibTessDotNet
         BoundaryContours
     }
 
-    public enum ContourOrientation
+    internal enum ContourOrientation
     {
         Original,
         Clockwise,
         CounterClockwise
     }
 
-    public struct ContourVertex
+    internal struct ContourVertex
     {
         public Vec3 Position;
         public object Data;
@@ -100,7 +100,7 @@ namespace LibTessDotNet
         }
     }
 
-    public delegate object CombineCallback(Vec3 position, object[] data, Real[] weights);
+    internal delegate object CombineCallback(Vec3 position, object[] data, Real[] weights);
 
     /// <summary>
     /// Tessellator, the main class to use
@@ -123,7 +123,7 @@ namespace LibTessDotNet
     /// Vec3 v2 = tess.Vertices[tess.Elements[2]].Position;
     /// Console.WriteLine("Triangle: ({0}) ({1}) ({2})", v0, v1, v2);
     /// </example>
-    public partial class Tess
+    internal partial class Tess
     {
         private IPool _pool;
         private Mesh _mesh;

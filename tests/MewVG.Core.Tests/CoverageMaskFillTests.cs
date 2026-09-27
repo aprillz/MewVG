@@ -98,10 +98,11 @@ public class CoverageMaskFillTests
     }
 
     [Theory]
-    [InlineData(TessWindingRule.Odd)]
-    [InlineData(TessWindingRule.NonZero)]
-    public void Mask_MatchesTessellatorResolution(TessWindingRule rule)
+    [InlineData(MewVGFillRule.EvenOdd)]
+    [InlineData(MewVGFillRule.NonZero)]
+    public void Mask_MatchesTessellatorResolution(MewVGFillRule fillRule)
     {
+        var rule = NVGContext.MapFillRuleToTess(fillRule);
         var contours = TangentTiles(TILE_SIDE, PITCH);
         var size = (int)(TILE_SIDE * PITCH) + 8;
 
@@ -188,12 +189,12 @@ public class CoverageMaskFillTests
 
         vg.BeginFrame(600, 600, 1f);
         EmitTiles(vg, contours);
-        var cache = vg.BuildFillCache(TessWindingRule.Odd);
+        var cache = vg.BuildFillCache(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.Translate(3, 0);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.EndFrame();
 
         Assert.Equal(3, renderer.MaskFillCalls.Count);
@@ -217,17 +218,17 @@ public class CoverageMaskFillTests
         // Built under a scissor that cuts the geometry: the mask covers only the visible part.
         vg.BeginFrame(600, 600, 1f);
         EmitTiles(vg, contours);
-        var cache = vg.BuildFillCache(TessWindingRule.Odd);
+        var cache = vg.BuildFillCache(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
         vg.Scissor(0, 0, 150, 150);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         var clipped = Assert.Single(renderer.MaskFillCalls);
 
         // The same transform with a wider scissor exposes more of the geometry than the cut mask
         // holds, so the mask is rasterized again rather than reused.
         vg.ResetScissor();
         vg.Scissor(0, 0, 400, 400);
-        vg.FillFromCache(cache, TessWindingRule.Odd);
+        vg.FillFromCache(cache, MewVGFillRule.EvenOdd);
         vg.EndFrame();
 
         Assert.Equal(2, renderer.MaskFillCalls.Count);

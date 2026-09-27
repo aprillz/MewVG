@@ -22,10 +22,10 @@ public sealed class MewVGMetal : MewVGContext
         _context = context;
     }
 
-    /// <summary>
-    /// Gets the underlying Metal context
-    /// </summary>
-    public MNVGcontext Context => _context;
+    /// <summary>Number of vertex and uniform buffer sets the context rotates through, one per frame in flight.</summary>
+    public const int BufferCount = MNVGcontext.MNVG_INIT_BUFFER_COUNT;
+
+    internal MNVGcontext Context => _context;
 
     /// <summary>
     /// Gets or sets the pixel format for rendering

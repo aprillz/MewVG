@@ -6,7 +6,7 @@ namespace Aprillz.MewVG.Tess;
 /// C# counterpart of libtess2 winding rules.
 /// Designed for NativeAOT-safe usage (no native interop).
 /// </summary>
-public enum TessWindingRule
+internal enum TessWindingRule
 {
     Odd = 0,
     NonZero = 1,
@@ -18,14 +18,14 @@ public enum TessWindingRule
 /// <summary>
 /// C# counterpart of libtess2 element output modes.
 /// </summary>
-public enum TessElementType
+internal enum TessElementType
 {
     Polygons = 0,
     ConnectedPolygons = 1,
     BoundaryContours = 2
 }
 
-public enum TessStatus
+internal enum TessStatus
 {
     Ok = 0,
     InvalidInput = 1,
@@ -36,12 +36,12 @@ public enum TessStatus
 /// <summary>
 /// Flattened contour used by the managed tessellator.
 /// </summary>
-public readonly record struct TessContour(ReadOnlyMemory<Vector2> Points);
+internal readonly record struct TessContour(ReadOnlyMemory<Vector2> Points);
 
 /// <summary>
 /// Triangulation output. Indices are triangle list (3*n).
 /// </summary>
-public sealed class TessResult
+internal sealed class TessResult
 {
     public TessStatus Status { get; init; } = TessStatus.Ok;
 

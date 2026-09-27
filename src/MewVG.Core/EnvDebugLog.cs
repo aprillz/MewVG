@@ -36,7 +36,7 @@ internal static class EnvDebugSwitches
 /// Tagged debug logger controlled by an environment variable.
 /// Interpolated string logging avoids formatting work when disabled.
 /// </summary>
-public sealed class EnvDebugLogger
+internal sealed class EnvDebugLogger
 {
     private readonly string _envVar;
     private readonly string _tag;

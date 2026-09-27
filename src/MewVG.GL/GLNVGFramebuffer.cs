@@ -2,7 +2,7 @@
 
 namespace Aprillz.MewVG;
 
-public sealed class GLNVGFramebuffer : IDisposable
+internal sealed class GLNVGFramebuffer : IDisposable
 {
     private int _defaultFbo = -1;
 

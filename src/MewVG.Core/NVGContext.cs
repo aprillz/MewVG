@@ -72,19 +72,19 @@ internal struct NVGstate
 }
 
 [InlineArray(12)]
-public struct Buffer12<T>
+internal struct Buffer12<T>
 {
     private T _element0;
 }
 
 [InlineArray(2)]
-public struct Buffer2<T>
+internal struct Buffer2<T>
 {
     private T _element0;
 }
 
 [InlineArray(6)]
-public struct Buffer6<T>
+internal struct Buffer6<T>
 {
     private T _element0;
 }
@@ -1958,7 +1958,7 @@ internal sealed class NVGContext
     private void ApplyPathTolerances() => RefreshTolerances(Maxf(_devicePxRatio, 0.0001f));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static TessWindingRule MapFillRuleToTess(MewVGFillRule rule)
+    internal static TessWindingRule MapFillRuleToTess(MewVGFillRule rule)
         => rule == MewVGFillRule.EvenOdd ? TessWindingRule.Odd : TessWindingRule.NonZero;
 
     public void Fill()
