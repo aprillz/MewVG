@@ -15,7 +15,7 @@ internal static class DemoScene
         vg.FillColor(28, 30, 34, 128);
         vg.Fill();
 
-        var t = (float)(Environment.TickCount64 % 100000) / 1000.0f;
+        var t = FixedTime ?? (float)(Environment.TickCount64 % 100000) / 1000.0f;
         var mx = width * 0.5f;
         var my = height * 0.5f;
 
@@ -54,6 +54,278 @@ internal static class DemoScene
         DrawButton(vg, x + 170, y, 110, 28, NVGcolor.RGBA(0, 0, 0, 0));
 
         DrawThumbnailsNoImages(vg, 365, 95 + 14 - 30, 160, 300, 12, t);
+    }
+
+    // MEWVG_DEMO_TIME freezes the animation clock so two runs draw the same frame (capture comparison).
+    private static readonly float? FixedTime =
+        float.TryParse(Environment.GetEnvironmentVariable("MEWVG_DEMO_TIME"), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out var fixedTime) ? fixedTime : null;
+
+    // MEWVG_DEMO_FILL_LAYERS=<n> adds n translucent window-sized fills per frame (fill-rate benchmark).
+    private static readonly int FillLayers =
+        int.TryParse(Environment.GetEnvironmentVariable("MEWVG_DEMO_FILL_LAYERS"), out var fillLayers) ? fillLayers : 0;
+
+    private static NanoVG? _checkImagesOwner;
+    private static int _premultipliedImage;
+    private static int _straightImage;
+    private static int _alphaImage;
+    private static int _gradientLut;
+
+    /// <summary>
+    /// Draws one of each paint the GL backend can route to a shader variant (solid, image of every
+    /// texture kind, gradients, coverage mask fill), each plain, scissored, rotated, clipped and
+    /// translucent, so a capture exercises every variant against the uber shader.
+    /// </summary>
+    public static void DrawShaderVariantChecks(NanoVG vg, float x, float y)
+    {
+        EnsureCheckImages(vg);
+
+        int[] images = { 0, _premultipliedImage, _straightImage, _alphaImage };
+        for (var row = 0; row < images.Length; row++)
+        {
+            for (var column = 0; column < 6; column++)
+            {
+                var cx = x + column * 130;
+                var cy = y + row * 90;
+                vg.Save();
+                switch (column)
+                {
+                    case 1:
+                        vg.Scissor(cx + 10, cy + 10, 70, 45);
+                        break;
+                    case 2:
+                        vg.Translate(cx + 55, cy + 35);
+                        vg.Rotate(0.35f);
+                        vg.Translate(-(cx + 55), -(cy + 35));
+                        vg.Scissor(cx + 5, cy + 5, 90, 55);
+                        break;
+                    case 3:
+                        vg.BeginPath();
+                        vg.Circle(cx + 55, cy + 35, 32);
+                        vg.Clip();
+                        break;
+                    case 4:
+                        vg.GlobalAlpha(0.45f);
+                        break;
+                    case 5:
+                        vg.Scissor(cx + 15, cy, 80, 70);
+                        vg.BeginPath();
+                        vg.Ellipse(cx + 55, cy + 35, 50, 28);
+                        vg.Clip();
+                        vg.GlobalAlpha(0.7f);
+                        break;
+                }
+
+                vg.BeginPath();
+                vg.RoundedRect(cx, cy, 110, 70, 12);
+                if (images[row] == 0)
+                {
+                    vg.FillColor(40, 170, 220, 200);
+                }
+                else
+                {
+                    vg.FillPaint(vg.ImagePattern(cx, cy, 32, 32, 0.0f, images[row], 1.0f));
+                }
+
+                vg.Fill();
+
+                vg.BeginPath();
+                vg.Circle(cx + 20, cy + 55, 9);
+                vg.StrokeColor(250, 220, 40, 230);
+                vg.StrokeWidth(2.5f);
+                vg.Stroke();
+
+                if (column == 3 || column == 5)
+                {
+                    vg.ResetClip();
+                }
+
+                vg.Restore();
+            }
+        }
+
+        // Gradient paints: LUT linear (each spread), LUT radial with a focal point, and box gradients,
+        // plain, scissored, inside a clip nested in another clip, and translucent.
+        for (var column = 0; column < 6; column++)
+        {
+            var cx = x + column * 130;
+            var cy = y + 4 * 90;
+            vg.Save();
+            switch (column)
+            {
+                case 3:
+                    vg.Scissor(cx + 12, cy + 8, 80, 50);
+                    break;
+                case 4:
+                    vg.BeginPath();
+                    vg.Circle(cx + 55, cy + 35, 38);
+                    vg.Clip();
+                    vg.BeginPath();
+                    vg.Rect(cx + 30, cy, 60, 70);
+                    vg.Clip();
+                    break;
+                case 5:
+                    vg.GlobalAlpha(0.5f);
+                    break;
+            }
+
+            var gradient = System.Numerics.Matrix3x2.Identity;
+            for (var band = 0; band < 3; band++)
+            {
+                vg.BeginPath();
+                vg.Rect(cx, cy + band * 24, 110, 22);
+                vg.FillPaint(band switch
+                {
+                    0 => vg.GradientLinear(gradient, cx + 30, cy, cx + 70, cy, column % 3, _gradientLut),
+                    1 => vg.GradientRadial(gradient, cx + 55, cy + 35, cx + 40, cy + 30, 30, 20, column % 3, _gradientLut),
+                    _ => vg.BoxGradient(cx + 10, cy + 50, 90, 14, 6, 10, NVGcolor.RGBA(250, 250, 250, 220), NVGcolor.RGBA(20, 60, 140, 160)),
+                });
+                vg.Fill();
+            }
+
+            if (column == 4)
+            {
+                vg.ResetClip();
+            }
+
+            vg.Restore();
+        }
+
+        // A dense self-intersecting polygon, which the core rasterizes into a coverage mask.
+        // Passes: solid, image, then both again under a scissor and a clip.
+        for (var pass = 0; pass < 4; pass++)
+        {
+            var cx = x + 820 + pass % 2 * 170;
+            var cy = y + 90 + pass / 2 * 170;
+            vg.Save();
+            if (pass >= 2)
+            {
+                vg.Scissor(cx - 70, cy - 60, 150, 110);
+                vg.BeginPath();
+                vg.Circle(cx, cy, 62);
+                vg.Clip();
+            }
+
+            vg.BeginPath();
+            const int POINTS = 3000;
+            for (var i = 0; i < POINTS; i++)
+            {
+                var angle = i * MathF.PI * 2 * 7 / POINTS;
+                var radius = 75 * (0.55f + 0.45f * MathF.Sin(i * 0.37f));
+                var px = cx + MathF.Cos(angle) * radius;
+                var py = cy + MathF.Sin(angle) * radius;
+                if (i == 0)
+                {
+                    vg.MoveTo(px, py);
+                }
+                else
+                {
+                    vg.LineTo(px, py);
+                }
+            }
+
+            vg.ClosePath();
+            if (pass % 2 == 0)
+            {
+                vg.FillColor(230, 90, 60, 220);
+            }
+            else
+            {
+                vg.FillPaint(vg.ImagePattern(cx, cy, 24, 24, 0.0f, _straightImage, 1.0f));
+            }
+
+            vg.Fill();
+            if (pass >= 2)
+            {
+                vg.ResetClip();
+            }
+
+            vg.Restore();
+        }
+    }
+
+    /// <summary>
+    /// Draws the MEWVG_DEMO_FILL_LAYERS window-sized fills, alternating a solid colour and an image
+    /// pattern, so a frame is bound by per-pixel shading rather than by draw submission.
+    /// </summary>
+    public static void DrawFillLayers(NanoVG vg, float width, float height)
+    {
+        if (FillLayers <= 0)
+        {
+            return;
+        }
+
+        EnsureCheckImages(vg);
+        for (var layer = 0; layer < FillLayers; layer++)
+        {
+            vg.BeginPath();
+            vg.Rect(0, 0, width, height);
+            if (layer % 2 == 0)
+            {
+                vg.FillColor(20, 40, 80, 8);
+            }
+            else
+            {
+                vg.FillPaint(vg.ImagePattern(0, 0, 64, 64, 0.0f, _straightImage, 0.03f));
+            }
+
+            vg.Fill();
+        }
+    }
+
+    private static void EnsureCheckImages(NanoVG vg)
+    {
+        if (ReferenceEquals(_checkImagesOwner, vg))
+        {
+            return;
+        }
+
+        _checkImagesOwner = vg;
+        const int SIZE = 32;
+        var rgba = new byte[SIZE * SIZE * 4];
+        var alpha = new byte[SIZE * SIZE];
+        for (var py = 0; py < SIZE; py++)
+        {
+            for (var px = 0; px < SIZE; px++)
+            {
+                var index = py * SIZE + px;
+                var on = ((px / 8) + (py / 8)) % 2 == 0;
+                var a = (byte)(on ? 255 : 110);
+                rgba[index * 4] = (byte)(on ? 240 : 30);
+                rgba[index * 4 + 1] = (byte)(px * 8);
+                rgba[index * 4 + 2] = (byte)(py * 8);
+                rgba[index * 4 + 3] = a;
+                alpha[index] = (byte)((px + py) * 4);
+            }
+        }
+
+        var premultiplied = (byte[])rgba.Clone();
+        for (var i = 0; i < premultiplied.Length; i += 4)
+        {
+            var a = premultiplied[i + 3];
+            premultiplied[i] = (byte)(premultiplied[i] * a / 255);
+            premultiplied[i + 1] = (byte)(premultiplied[i + 1] * a / 255);
+            premultiplied[i + 2] = (byte)(premultiplied[i + 2] * a / 255);
+        }
+
+        var repeat = NVGimageFlags.RepeatX | NVGimageFlags.RepeatY;
+        _premultipliedImage = vg.CreateImageRGBA(SIZE, SIZE, repeat | NVGimageFlags.Premultiplied, premultiplied);
+        _straightImage = vg.CreateImageRGBA(SIZE, SIZE, repeat, rgba);
+        _alphaImage = vg.CreateImageAlpha(SIZE, SIZE, repeat, alpha);
+
+        // Gradient lookup table (premultiplied, one row) as the LUT gradient paints expect.
+        const int LUT_SIZE = 256;
+        var lut = new byte[LUT_SIZE * 4];
+        for (var i = 0; i < LUT_SIZE; i++)
+        {
+            var a = (byte)(120 + i / 2);
+            lut[i * 4] = (byte)(i * a / 255);
+            lut[i * 4 + 1] = (byte)((255 - i) * a / 255);
+            lut[i * 4 + 2] = (byte)(90 * a / 255);
+            lut[i * 4 + 3] = a;
+        }
+
+        _gradientLut = vg.CreateImageRGBA(LUT_SIZE, 1, NVGimageFlags.Premultiplied, lut);
     }
 
     private static float Clamp(float a, float mn, float mx) => a < mn ? mn : (a > mx ? mx : a);
