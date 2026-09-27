@@ -13,7 +13,7 @@ public interface INanoVGBackend
 
     bool IsSupported(NanoVGBackendOptions options);
 
-    NanoVG Create(NanoVGBackendOptions options);
+    MewVGContext Create(NanoVGBackendOptions options);
 }
 
 public static class NanoVGFactory
@@ -34,7 +34,7 @@ public static class NanoVGFactory
         }
     }
 
-    public static NanoVG Create(NanoVGBackendOptions? options = null)
+    public static MewVGContext Create(NanoVGBackendOptions? options = null)
     {
         options ??= new NanoVGBackendOptions();
 
@@ -54,7 +54,7 @@ public static class NanoVGFactory
                 }
                 else if (supported.Length > 1)
                 {
-                    throw new InvalidOperationException("Multiple NanoVG backends are available. Set PreferredBackend to select one: " +
+                    throw new InvalidOperationException("Multiple MewVGContext backends are available. Set PreferredBackend to select one: " +
                                                         string.Join(", ", supported.Select(b => b.Name)));
                 }
             }
@@ -63,12 +63,12 @@ public static class NanoVGFactory
         if (backend == null)
         {
             var names = string.Join(", ", GetRegisteredBackendNames());
-            throw new InvalidOperationException("No suitable NanoVG backend found. Registered backends: " + names);
+            throw new InvalidOperationException("No suitable MewVGContext backend found. Registered backends: " + names);
         }
 
         if (!backend.IsSupported(options))
         {
-            throw new InvalidOperationException($"NanoVG backend '{backend.Name}' is not supported for the provided options.");
+            throw new InvalidOperationException($"MewVGContext backend '{backend.Name}' is not supported for the provided options.");
         }
 
         return backend.Create(options);

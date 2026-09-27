@@ -4,7 +4,7 @@ namespace Aprillz.MewVG;
 
 /// <summary>
 /// Stores object-space tessellation data for a frozen PathGeometry.
-/// Created by <see cref="NanoVG.BuildFillCache"/> and consumed by <see cref="NanoVG.FillFromCache"/>.
+/// Created by <see cref="MewVGContext.BuildFillCache"/> and consumed by <see cref="MewVGContext.FillFromCache"/>.
 /// All contour/tessellation data is in object-space (identity transform).
 /// </summary>
 public sealed class FrozenFillCache
@@ -25,7 +25,7 @@ public sealed class FrozenFillCache
 
     /// <summary>
     /// Returns true if this cache no longer matches the current draw request, meaning it
-    /// should be rebuilt via <see cref="NanoVG.BuildFillCache"/>. A cache is stale when the
+    /// should be rebuilt via <see cref="MewVGContext.BuildFillCache"/>. A cache is stale when the
     /// bezier flatten tolerance changed (e.g. DPI changed), the winding rule used to build
     /// the cached tessellation differs from the one requested now, or the current transform
     /// scale exceeds the scale the cache was tessellated for (the baked-in bezier flattening

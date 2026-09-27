@@ -11,7 +11,7 @@ internal interface INVGRenderer
     void Flush();
 
     void RenderFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -20,7 +20,7 @@ internal interface INVGRenderer
         ReadOnlySpan<NVGvertex> verts);
 
     void RenderStroke(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -45,7 +45,7 @@ internal interface INVGRenderer
     /// the upload on the device and reuse it while <paramref name="cacheVersion"/> is unchanged; a
     /// null key is a mask for this draw only. <paramref name="coverage"/> is valid only during the call.</summary>
     void RenderMaskFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,

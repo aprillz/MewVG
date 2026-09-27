@@ -15,7 +15,7 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
     private readonly nint _hglrc;
     private readonly nint _opengl32;
     private GLMinimal? _gl;
-    private NanoVGGL? _vg;
+    private MewVGGL? _vg;
     private int _winw = DefaultWidth;
     private int _winh = DefaultHeight;
     private bool _running = true;
@@ -144,11 +144,11 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
     {
         Func<string, nint> getProcAddress = ResolveGLProc;
 
-        NanoVGGL.Initialize(getProcAddress);
+        MewVGGL.Initialize(getProcAddress);
 
         _gl = new GLMinimal(getProcAddress);
         Console.WriteLine($"GL renderer: {_gl.Renderer}");
-        _vg = new NanoVGGL();
+        _vg = new MewVGGL();
     }
 
     protected override void Execute()

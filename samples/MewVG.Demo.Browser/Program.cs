@@ -30,7 +30,7 @@ internal static partial class WebGLNative
 internal static partial class Program
 {
     private static GLMinimal? _gl;
-    private static NanoVGGL? _vg;
+    private static MewVGGL? _vg;
 
     // Entry point only; initialization runs through InitializeDemo so the runtime is not torn
     // down when Main returns (dotnet.run() exits the runtime after Main).
@@ -56,9 +56,9 @@ internal static partial class Program
             throw new InvalidOperationException($"WebGL2 context creation failed (EMSCRIPTEN_RESULT {result}).");
         }
 
-        NanoVGGL.Initialize(WebGLNative.GetProcAddress, NanoVGGLProfile.Gles3);
+        MewVGGL.Initialize(WebGLNative.GetProcAddress, MewVGGLProfile.Gles3);
         _gl = new GLMinimal(WebGLNative.GetProcAddress);
-        _vg = new NanoVGGL();
+        _vg = new MewVGGL();
 
         Console.WriteLine("MewVG WebGL2 demo initialized.");
     }

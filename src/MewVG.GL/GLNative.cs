@@ -210,16 +210,16 @@ internal enum All : int
 internal static unsafe class GL
 {
     private static bool _initialized;
-    private static NanoVGGLProfile _profile;
+    private static MewVGGLProfile _profile;
     private static Func<string, nint>? _getProcAddress;
 
-    public static NanoVGGLProfile Profile => _profile;
+    public static MewVGGLProfile Profile => _profile;
 
     // Capability view of the profile: call sites branch on what a surface can do, not on which
     // surface it is, so adding a profile only touches the derivations here.
 
     /// <summary>Whether GL_BGRA + UNSIGNED_INT_8_8_8_8_REV upload is available (GLES3/WebGL2 has neither).</summary>
-    public static bool SupportsBgraUpload => _profile == NanoVGGLProfile.Gl3Core;
+    public static bool SupportsBgraUpload => _profile == MewVGGLProfile.Gl3Core;
 
     private static delegate* unmanaged<uint, void> _glUseProgram;
     private static delegate* unmanaged<uint, void> _glEnable;
@@ -280,7 +280,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<int, int, int, int, void> _glScissor;
     private static delegate* unmanaged<int, int, int, int, void> _glViewport;
 
-    public static void Initialize(Func<string, nint> getProcAddress, NanoVGGLProfile profile)
+    public static void Initialize(Func<string, nint> getProcAddress, MewVGGLProfile profile)
     {
         if (_initialized)
         {
@@ -289,7 +289,7 @@ internal static unsafe class GL
             if (profile != _profile)
             {
                 throw new InvalidOperationException(
-                    $"NanoVGGL is already initialized with profile {_profile}; it cannot be re-initialized with {profile}.");
+                    $"MewVGGL is already initialized with profile {_profile}; it cannot be re-initialized with {profile}.");
             }
 
             return;
@@ -306,7 +306,7 @@ internal static unsafe class GL
     {
         if (!_initialized)
         {
-            throw new InvalidOperationException("OpenGL is not initialized. Call NanoVGGL.Initialize(...) after creating a GL context.");
+            throw new InvalidOperationException("OpenGL is not initialized. Call MewVGGL.Initialize(...) after creating a GL context.");
         }
     }
 

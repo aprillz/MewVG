@@ -12,14 +12,14 @@ namespace MewVG.Core.Tests;
 /// </summary>
 public sealed class SnapshotTranslationReplayTests
 {
-    private static FrozenFillCache EmitRing(TestNanoVG vg)
+    private static FrozenFillCache EmitRing(TestMewVGContext vg)
     {
         // The FewPoints ring: boundaries interact so the fill is winding-resolved and stores a
         // device snapshot, while the point count stays far below the mask floor.
         vg.BeginPath();
         vg.Rect(10, 10, 100, 50);
         vg.Rect(20, 10, 80, 40);
-        vg.FillRule(NVGfillRule.EvenOdd);
+        vg.FillRule(MewVGFillRule.EvenOdd);
         vg.FillColor(0, 0, 0);
         return vg.BuildFillCache(TessWindingRule.Odd);
     }
@@ -28,7 +28,7 @@ public sealed class SnapshotTranslationReplayTests
     public void Translation_ReplaysTheSnapshotShifted()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);
@@ -55,7 +55,7 @@ public sealed class SnapshotTranslationReplayTests
     public void RepeatedPans_ShiftFromTheStoredSnapshot()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);
@@ -75,7 +75,7 @@ public sealed class SnapshotTranslationReplayTests
     public void ScaleChange_FallsBackAndStoresANewSnapshot()
     {
         var renderer = new FakeRenderer();
-        using var vg = new TestNanoVG(renderer);
+        using var vg = new TestMewVGContext(renderer);
 
         vg.BeginFrame(600, 600, 1f);
         var cache = EmitRing(vg);

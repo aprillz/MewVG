@@ -51,7 +51,7 @@ internal sealed class FakeRenderer : INVGRenderer
     public void Flush() => FlushCount++;
 
     public void RenderFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -63,7 +63,7 @@ internal sealed class FakeRenderer : INVGRenderer
     }
 
     public void RenderStroke(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -101,7 +101,7 @@ internal sealed class FakeRenderer : INVGRenderer
     public List<MaskFillCall> MaskFillCalls { get; } = new();
 
     public void RenderMaskFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -119,19 +119,19 @@ internal sealed class FakeRenderer : INVGRenderer
 }
 
 /// <summary>
-/// Minimal concrete NanoVG subclass so tests can drive the public facade without
+/// Minimal concrete MewVGContext subclass so tests can drive the public facade without
 /// a real GL/Metal backend. Image operations are no-ops; tests only exercise
 /// path/fill/stroke.
 /// </summary>
-internal sealed class TestNanoVG : NanoVG
+internal sealed class TestMewVGContext : MewVGContext
 {
-    public TestNanoVG(INVGRenderer renderer) : base(renderer)
+    public TestMewVGContext(INVGRenderer renderer) : base(renderer)
     {
     }
 
-    public override int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => 0;
+    public override int CreateImageRGBA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data) => 0;
 
-    public override int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data) => 0;
+    public override int CreateImageAlpha(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data) => 0;
 
     public override bool UpdateImage(int image, ReadOnlySpan<byte> data) => false;
 
@@ -146,7 +146,7 @@ internal sealed class TestNanoVG : NanoVG
     {
     }
 
-    public override int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags) => 0;
+    public override int CreateImageFromHandle(int textureId, int width, int height, MewVGImageFlags flags) => 0;
 
     public override int ImageHandle(int image) => 0;
 

@@ -1,16 +1,15 @@
-// NanoVG shared public API (core wrapper)
-
 using System.Numerics;
 
 namespace Aprillz.MewVG;
 
-public abstract class NanoVG : IDisposable
+/// <summary>Draws paths, paints and images into the current frame; each backend derives its own context.</summary>
+public abstract class MewVGContext : IDisposable
 {
     private bool _disposed;
     private readonly NVGContext _nvg;
     private readonly List<int> _ownedImages = [];
 
-    internal NanoVG(INVGRenderer renderer)
+    internal MewVGContext(INVGRenderer renderer)
     {
         _nvg = new NVGContext(renderer);
     }
@@ -31,33 +30,33 @@ public abstract class NanoVG : IDisposable
 
     public void Restore() => _nvg.Restore();
 
-    public void FillColor(NVGcolor color) => _nvg.FillColor(color);
+    public void FillColor(MewVGColor color) => _nvg.FillColor(color);
 
-    public void FillColor(byte r, byte g, byte b, byte a = 255) => _nvg.FillColor(NVGcolor.RGBA(r, g, b, a));
+    public void FillColor(byte r, byte g, byte b, byte a = 255) => _nvg.FillColor(MewVGColor.RGBA(r, g, b, a));
 
-    public void FillColor(float r, float g, float b, float a = 1.0f) => _nvg.FillColor(NVGcolor.RGBAf(r, g, b, a));
+    public void FillColor(float r, float g, float b, float a = 1.0f) => _nvg.FillColor(MewVGColor.RGBAf(r, g, b, a));
 
-    public void StrokeColor(NVGcolor color) => _nvg.StrokeColor(color);
+    public void StrokeColor(MewVGColor color) => _nvg.StrokeColor(color);
 
-    public void StrokeColor(byte r, byte g, byte b, byte a = 255) => _nvg.StrokeColor(NVGcolor.RGBA(r, g, b, a));
+    public void StrokeColor(byte r, byte g, byte b, byte a = 255) => _nvg.StrokeColor(MewVGColor.RGBA(r, g, b, a));
 
-    public void StrokeColor(float r, float g, float b, float a = 1.0f) => _nvg.StrokeColor(NVGcolor.RGBAf(r, g, b, a));
+    public void StrokeColor(float r, float g, float b, float a = 1.0f) => _nvg.StrokeColor(MewVGColor.RGBAf(r, g, b, a));
 
     public void StrokeWidth(float width) => _nvg.StrokeWidth(width);
 
     public void MiterLimit(float limit) => _nvg.MiterLimit(limit);
 
-    public void LineCap(NVGlineCap cap) => _nvg.LineCap(cap);
+    public void LineCap(MewVGLineCap cap) => _nvg.LineCap(cap);
 
-    public void LineJoin(NVGlineJoin join) => _nvg.LineJoin(join);
+    public void LineJoin(MewVGLineJoin join) => _nvg.LineJoin(join);
 
     public void ShapeAntiAlias(bool enabled) => _nvg.ShapeAntiAlias(enabled);
 
     public void GlobalAlpha(float alpha) => _nvg.GlobalAlpha(alpha);
 
-    public void GlobalCompositeOperation(NVGcompositeOperation op) => _nvg.GlobalCompositeOperation(op);
+    public void GlobalCompositeOperation(MewVGCompositeOperation op) => _nvg.GlobalCompositeOperation(op);
 
-    public void FillRule(NVGfillRule rule) => _nvg.FillRule(rule);
+    public void FillRule(MewVGFillRule rule) => _nvg.FillRule(rule);
 
     #endregion
 
@@ -117,9 +116,9 @@ public abstract class NanoVG : IDisposable
 
     public void ArcTo(float x1, float y1, float x2, float y2, float radius) => _nvg.ArcTo(x1, y1, x2, y2, radius);
 
-    public void Arc(float cx, float cy, float r, float a0, float a1, NVGwinding dir) => _nvg.Arc(cx, cy, r, a0, a1, dir);
+    public void Arc(float cx, float cy, float r, float a0, float a1, MewVGWinding dir) => _nvg.Arc(cx, cy, r, a0, a1, dir);
 
-    public void PathWinding(NVGwinding dir) => _nvg.PathWinding(dir);
+    public void PathWinding(MewVGWinding dir) => _nvg.PathWinding(dir);
 
     public void Rect(float x, float y, float w, float h) => _nvg.Rect(x, y, w, h);
 
@@ -154,9 +153,9 @@ public abstract class NanoVG : IDisposable
 
     #region Images
 
-    public abstract int CreateImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data);
+    public abstract int CreateImageRGBA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data);
 
-    public int CreateOwnedImageRGBA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
+    public int CreateOwnedImageRGBA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data)
     {
         var image = CreateImageRGBA(width, height, imageFlags, data);
         if (image != 0)
@@ -167,7 +166,7 @@ public abstract class NanoVG : IDisposable
         return image;
     }
 
-    public abstract int CreateImageAlpha(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data);
+    public abstract int CreateImageAlpha(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data);
 
     /// <summary>
     /// Creates an image from BGRA byte-order pixel data (B, G, R, A per pixel). Backends that
@@ -181,7 +180,7 @@ public abstract class NanoVG : IDisposable
     /// format is natively BGRA. Using this avoids the per-frame swap + extra buffer that
     /// <see cref="CreateImageRGBA"/> implicitly forces such callers to pay.
     /// </remarks>
-    public virtual int CreateImageBGRA(int width, int height, NVGimageFlags imageFlags, ReadOnlySpan<byte> data)
+    public virtual int CreateImageBGRA(int width, int height, MewVGImageFlags imageFlags, ReadOnlySpan<byte> data)
     {
         if (data.IsEmpty)
         {
@@ -245,14 +244,14 @@ public abstract class NanoVG : IDisposable
 
     public abstract void DeleteImage(int image);
 
-    public abstract int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags);
+    public abstract int CreateImageFromHandle(int textureId, int width, int height, MewVGImageFlags flags);
 
     /// <summary>Backend-agnostic external-texture wrapper. The handle is interpreted per
     /// the active backend: GL → cast to int (texture id), Metal → MTLTexture pointer,
     /// etc. Default implementation returns 0 (unsupported); concrete backends override
     /// when they support zero-copy external texture wrapping. Caller MUST include
-    /// <see cref="NVGimageFlags.NoDelete"/> in <paramref name="flags"/>.</summary>
-    public virtual int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, NVGimageFlags flags) => 0;
+    /// <see cref="MewVGImageFlags.NoDelete"/> in <paramref name="flags"/>.</summary>
+    public virtual int CreateImageFromNativeHandle(nint nativeHandle, int width, int height, MewVGImageFlags flags) => 0;
 
     public abstract int ImageHandle(int image);
 
@@ -260,27 +259,27 @@ public abstract class NanoVG : IDisposable
 
     #region Paints
 
-    public NVGpaint LinearGradient(float sx, float sy, float ex, float ey, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint LinearGradient(float sx, float sy, float ex, float ey, MewVGColor icol, MewVGColor ocol)
         => _nvg.LinearGradient(sx, sy, ex, ey, icol, ocol);
 
-    public NVGpaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
+    public MewVGPaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
         => _nvg.GradientLinear(in gradientTransform, startX, startY, endX, endY, spreadMethod, image);
 
-    public NVGpaint RadialGradient(float cx, float cy, float inr, float outr, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint RadialGradient(float cx, float cy, float inr, float outr, MewVGColor icol, MewVGColor ocol)
         => _nvg.RadialGradient(cx, cy, inr, outr, icol, ocol);
 
-    public NVGpaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
+    public MewVGPaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
         => _nvg.GradientRadial(in gradientTransform, centerX, centerY, focalX, focalY, radiusX, radiusY, spreadMethod, image);
 
-    public NVGpaint BoxGradient(float x, float y, float w, float h, float r, float f, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint BoxGradient(float x, float y, float w, float h, float r, float f, MewVGColor icol, MewVGColor ocol)
         => _nvg.BoxGradient(x, y, w, h, r, f, icol, ocol);
 
-    public NVGpaint ImagePattern(float ox, float oy, float ex, float ey, float angle, int image, float alpha)
+    public MewVGPaint ImagePattern(float ox, float oy, float ex, float ey, float angle, int image, float alpha)
         => _nvg.ImagePattern(ox, oy, ex, ey, angle, image, alpha);
 
-    public void FillPaint(NVGpaint paint) => _nvg.FillPaint(paint);
+    public void FillPaint(MewVGPaint paint) => _nvg.FillPaint(paint);
 
-    public void StrokePaint(NVGpaint paint) => _nvg.StrokePaint(paint);
+    public void StrokePaint(MewVGPaint paint) => _nvg.StrokePaint(paint);
 
     #endregion
 

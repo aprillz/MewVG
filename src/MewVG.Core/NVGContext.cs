@@ -1,4 +1,4 @@
-﻿// NanoVG Internal Context
+﻿// MewVGContext Internal Context
 // Ported from nanovg.c
 // This file contains the core path rendering, state management, and tessellation logic
 
@@ -58,13 +58,13 @@ internal struct NVGstate
 {
     public NVGcompositeOperationState CompositeOperation;
     public bool ShapeAntiAlias;
-    public NVGfillRule FillRule;
-    public NVGpaint Fill;
-    public NVGpaint Stroke;
+    public MewVGFillRule FillRule;
+    public MewVGPaint Fill;
+    public MewVGPaint Stroke;
     public float StrokeWidth;
     public float MiterLimit;
-    public NVGlineCap LineCap;
-    public NVGlineJoin LineJoin;
+    public MewVGLineCap LineCap;
+    public MewVGLineJoin LineJoin;
     public float Alpha;
     public Buffer6<float> Xform; // [6]
     public NVGscissorState Scissor;
@@ -156,7 +156,7 @@ internal struct NVGpathData
     public int NFill;
     public int StrokeOffset;
     public int NStroke;
-    public NVGwinding Winding;
+    public MewVGWinding Winding;
     public bool Convex;
 }
 
@@ -509,18 +509,18 @@ internal sealed class NVGContext
         ref var state = ref GetState();
 
         state.Fill = default;
-        SetPaintColor(ref state.Fill, NVGcolor.RGBA(255, 255, 255, 255));
+        SetPaintColor(ref state.Fill, MewVGColor.RGBA(255, 255, 255, 255));
 
         state.Stroke = default;
-        SetPaintColor(ref state.Stroke, NVGcolor.RGBA(0, 0, 0, 255));
+        SetPaintColor(ref state.Stroke, MewVGColor.RGBA(0, 0, 0, 255));
 
-        state.CompositeOperation = CompositeOperationState(NVGcompositeOperation.SourceOver);
+        state.CompositeOperation = CompositeOperationState(MewVGCompositeOperation.SourceOver);
         state.ShapeAntiAlias = true;
-        state.FillRule = NVGfillRule.NonZero;
+        state.FillRule = MewVGFillRule.NonZero;
         state.StrokeWidth = 1.0f;
         state.MiterLimit = 10.0f;
-        state.LineCap = NVGlineCap.Butt;
-        state.LineJoin = NVGlineJoin.Miter;
+        state.LineCap = MewVGLineCap.Butt;
+        state.LineJoin = MewVGLineJoin.Miter;
         state.Alpha = 1.0f;
 
         TransformIdentity(state.Xform);
@@ -537,7 +537,7 @@ internal sealed class NVGContext
         }
     }
 
-    private static void SetPaintColor(ref NVGpaint p, NVGcolor color)
+    private static void SetPaintColor(ref MewVGPaint p, MewVGColor color)
     {
         p = default;
         TransformIdentity(p.Xform);
@@ -547,63 +547,63 @@ internal sealed class NVGContext
         p.OuterColor = color;
     }
 
-    private static NVGcompositeOperationState CompositeOperationState(NVGcompositeOperation op)
+    private static NVGcompositeOperationState CompositeOperationState(MewVGCompositeOperation op)
     {
         int sfactor, dfactor;
 
         switch (op)
         {
-            case NVGcompositeOperation.SourceOver:
+            case MewVGCompositeOperation.SourceOver:
                 sfactor = (int)NVGblendFactor.One;
                 dfactor = (int)NVGblendFactor.OneMinusSrcAlpha;
                 break;
 
-            case NVGcompositeOperation.SourceIn:
+            case MewVGCompositeOperation.SourceIn:
                 sfactor = (int)NVGblendFactor.DstAlpha;
                 dfactor = (int)NVGblendFactor.Zero;
                 break;
 
-            case NVGcompositeOperation.SourceOut:
+            case MewVGCompositeOperation.SourceOut:
                 sfactor = (int)NVGblendFactor.OneMinusDstAlpha;
                 dfactor = (int)NVGblendFactor.Zero;
                 break;
 
-            case NVGcompositeOperation.Atop:
+            case MewVGCompositeOperation.Atop:
                 sfactor = (int)NVGblendFactor.DstAlpha;
                 dfactor = (int)NVGblendFactor.OneMinusSrcAlpha;
                 break;
 
-            case NVGcompositeOperation.DestinationOver:
+            case MewVGCompositeOperation.DestinationOver:
                 sfactor = (int)NVGblendFactor.OneMinusDstAlpha;
                 dfactor = (int)NVGblendFactor.One;
                 break;
 
-            case NVGcompositeOperation.DestinationIn:
+            case MewVGCompositeOperation.DestinationIn:
                 sfactor = (int)NVGblendFactor.Zero;
                 dfactor = (int)NVGblendFactor.SrcAlpha;
                 break;
 
-            case NVGcompositeOperation.DestinationOut:
+            case MewVGCompositeOperation.DestinationOut:
                 sfactor = (int)NVGblendFactor.Zero;
                 dfactor = (int)NVGblendFactor.OneMinusSrcAlpha;
                 break;
 
-            case NVGcompositeOperation.DestinationAtop:
+            case MewVGCompositeOperation.DestinationAtop:
                 sfactor = (int)NVGblendFactor.OneMinusDstAlpha;
                 dfactor = (int)NVGblendFactor.SrcAlpha;
                 break;
 
-            case NVGcompositeOperation.Lighter:
+            case MewVGCompositeOperation.Lighter:
                 sfactor = (int)NVGblendFactor.One;
                 dfactor = (int)NVGblendFactor.One;
                 break;
 
-            case NVGcompositeOperation.Copy:
+            case MewVGCompositeOperation.Copy:
                 sfactor = (int)NVGblendFactor.One;
                 dfactor = (int)NVGblendFactor.Zero;
                 break;
 
-            case NVGcompositeOperation.Xor:
+            case MewVGCompositeOperation.Xor:
                 sfactor = (int)NVGblendFactor.OneMinusDstAlpha;
                 dfactor = (int)NVGblendFactor.OneMinusSrcAlpha;
                 break;
@@ -633,7 +633,7 @@ internal sealed class NVGContext
         state.ShapeAntiAlias = enabled;
     }
 
-    public void FillRule(NVGfillRule rule)
+    public void FillRule(MewVGFillRule rule)
     {
         ref var state = ref GetState();
         state.FillRule = rule;
@@ -651,13 +651,13 @@ internal sealed class NVGContext
         state.MiterLimit = limit;
     }
 
-    public void LineCap(NVGlineCap cap)
+    public void LineCap(MewVGLineCap cap)
     {
         ref var state = ref GetState();
         state.LineCap = cap;
     }
 
-    public void LineJoin(NVGlineJoin join)
+    public void LineJoin(MewVGLineJoin join)
     {
         ref var state = ref GetState();
         state.LineJoin = join;
@@ -669,7 +669,7 @@ internal sealed class NVGContext
         state.Alpha = alpha;
     }
 
-    public void GlobalCompositeOperation(NVGcompositeOperation op)
+    public void GlobalCompositeOperation(MewVGCompositeOperation op)
     {
         ref var state = ref GetState();
         state.CompositeOperation = CompositeOperationState(op);
@@ -768,26 +768,26 @@ internal sealed class NVGContext
 
     #region Fill & Stroke Style
 
-    public void StrokeColor(NVGcolor color)
+    public void StrokeColor(MewVGColor color)
     {
         ref var state = ref GetState();
         SetPaintColor(ref state.Stroke, color);
     }
 
-    public void StrokePaint(NVGpaint paint)
+    public void StrokePaint(MewVGPaint paint)
     {
         ref var state = ref GetState();
         state.Stroke = paint;
         TransformMultiply(state.Stroke.Xform, state.Xform);
     }
 
-    public void FillColor(NVGcolor color)
+    public void FillColor(MewVGColor color)
     {
         ref var state = ref GetState();
         SetPaintColor(ref state.Fill, color);
     }
 
-    public void FillPaint(NVGpaint paint)
+    public void FillPaint(MewVGPaint paint)
     {
         ref var state = ref GetState();
         state.Fill = paint;
@@ -887,7 +887,7 @@ internal sealed class NVGContext
 
         // The clip becomes a coverage mask, so it takes the same inset body and AA fringe as a
         // fill. The renderer needs geometry here, never a CPU mask in its place.
-        ExpandFill(fillFringe, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule), allowMask: false);
+        ExpandFill(fillFringe, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule), allowMask: false);
 
         var clip = RentClipBuffer(_clipStack.Count);
         CaptureClipSnapshot(clip, state.Scissor, fillFringe);
@@ -1145,7 +1145,7 @@ internal sealed class NVGContext
         }
 
         float cx, cy, a0, a1;
-        NVGwinding dir;
+        MewVGWinding dir;
 
         if (Cross(dx0, dy0, dx1, dy1) > 0.0f)
         {
@@ -1153,7 +1153,7 @@ internal sealed class NVGContext
             cy = y1 + dy0 * d + -dx0 * radius;
             a0 = Atan2f(dx0, -dy0);
             a1 = Atan2f(-dx1, dy1);
-            dir = NVGwinding.CW;
+            dir = MewVGWinding.CW;
         }
         else
         {
@@ -1161,7 +1161,7 @@ internal sealed class NVGContext
             cy = y1 + dy0 * d + dx0 * radius;
             a0 = Atan2f(-dx0, dy0);
             a1 = Atan2f(dx1, -dy1);
-            dir = NVGwinding.CCW;
+            dir = MewVGWinding.CCW;
         }
 
         Arc(cx, cy, radius, a0, a1, dir);
@@ -1173,16 +1173,16 @@ internal sealed class NVGContext
         AppendCommands(vals);
     }
 
-    public void PathWinding(NVGwinding dir)
+    public void PathWinding(MewVGWinding dir)
     {
         Span<float> vals = stackalloc float[] { (float)NVGcommands.Winding, (float)dir };
         AppendCommands(vals);
     }
 
-    public void Arc(float cx, float cy, float r, float a0, float a1, NVGwinding dir)
+    public void Arc(float cx, float cy, float r, float a0, float a1, MewVGWinding dir)
     {
         var da = a1 - a0;
-        if (dir == NVGwinding.CW)
+        if (dir == MewVGWinding.CW)
         {
             if (Absf(da) >= NVG_PI * 2)
             {
@@ -1216,7 +1216,7 @@ internal sealed class NVGContext
         var hda = da / (float)ndivs / 2.0f;
         var kappa = Absf(4.0f / 3.0f * (1.0f - Cosf(hda)) / Sinf(hda));
 
-        if (dir == NVGwinding.CCW)
+        if (dir == MewVGWinding.CCW)
         {
             kappa = -kappa;
         }
@@ -1487,7 +1487,7 @@ internal sealed class NVGContext
     }
 
     private void SubmitMaskFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         ref NVGstate state,
         ReadOnlySpan<byte> coverage,
         int maskWidth,
@@ -1605,7 +1605,7 @@ internal sealed class NVGContext
         _cache.Paths[_cache.NPaths] = new NVGpathData
         {
             First = _cache.NPoints,
-            Winding = NVGwinding.CCW
+            Winding = MewVGWinding.CCW
         };
         _cache.NPaths++;
     }
@@ -1667,7 +1667,7 @@ internal sealed class NVGContext
         path.Closed = true;
     }
 
-    private void PathWindingInternal(NVGwinding winding)
+    private void PathWindingInternal(MewVGWinding winding)
     {
         if (_cache.NPaths <= 0)
         {
@@ -1769,7 +1769,7 @@ internal sealed class NVGContext
                     break;
 
                 case NVGcommands.Winding:
-                    PathWindingInternal((NVGwinding)(int)_commands[i + 1]);
+                    PathWindingInternal((MewVGWinding)(int)_commands[i + 1]);
                     i += 2;
                     break;
 
@@ -1811,12 +1811,12 @@ internal sealed class NVGContext
             if (enforceWinding && path.Count > 2)
             {
                 var area = PolyArea(pts);
-                if (path.Winding == NVGwinding.CCW && area < 0.0f)
+                if (path.Winding == MewVGWinding.CCW && area < 0.0f)
                 {
                     PolyReverse(pts);
                 }
 
-                if (path.Winding == NVGwinding.CW && area > 0.0f)
+                if (path.Winding == MewVGWinding.CW && area > 0.0f)
                 {
                     PolyReverse(pts);
                 }
@@ -1958,8 +1958,8 @@ internal sealed class NVGContext
     private void ApplyPathTolerances() => RefreshTolerances(Maxf(_devicePxRatio, 0.0001f));
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static TessWindingRule MapFillRuleToTess(NVGfillRule rule)
-        => rule == NVGfillRule.EvenOdd ? TessWindingRule.Odd : TessWindingRule.NonZero;
+    private static TessWindingRule MapFillRuleToTess(MewVGFillRule rule)
+        => rule == MewVGFillRule.EvenOdd ? TessWindingRule.Odd : TessWindingRule.NonZero;
 
     public void Fill()
     {
@@ -1973,11 +1973,11 @@ internal sealed class NVGContext
         if (useFringeAa)
         {
             var fillFringe = _fringeWidth;
-            ExpandFill(fillFringe, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
+            ExpandFill(fillFringe, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
+            ExpandFill(0.0f, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
         }
 
         if (_lastFillUsedMask)
@@ -2083,7 +2083,7 @@ internal sealed class NVGContext
                 {
                     cache.IsDirectConvex = true;
                     onlyPath.Closed = true;
-                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? NVGwinding.CCW : NVGwinding.CW;
+                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? MewVGWinding.CCW : MewVGWinding.CW;
                 }
             }
         }
@@ -2123,7 +2123,7 @@ internal sealed class NVGContext
 
             // Compute joins + fringe signs in object-space for inset tessellation.
             // fringeSigns are topology-dependent (inside/outside), transform-invariant.
-            CalculateJoins(fringeWidthObj, NVGlineJoin.Miter, FillExpandMiterLimit);
+            CalculateJoins(fringeWidthObj, MewVGLineJoin.Miter, FillExpandMiterLimit);
 
             var sourcePathCount = _cache.NPaths;
             Span<float> fringeSigns = sourcePathCount <= 128
@@ -2235,11 +2235,11 @@ internal sealed class NVGContext
         // Run ExpandFill with cached tessellation (skips NormalizeContoursForFill + tessellation)
         if (useFringeAa)
         {
-            ExpandFill(_fringeWidth, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
+            ExpandFill(_fringeWidth, MewVGLineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
         }
         else
         {
-            ExpandFill(0.0f, NVGlineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
+            ExpandFill(0.0f, MewVGLineJoin.Miter, FillExpandMiterLimit, windingRule, tessCache: cache);
         }
 
         if (_lastFillUsedMask)
@@ -2299,7 +2299,7 @@ internal sealed class NVGContext
         TessWindingRule windingRule,
         float fringe,
         ref NVGstate state,
-        NVGpaint fillPaint)
+        MewVGPaint fillPaint)
     {
         if (!cache.SnapshotValid ||
             cache.SnapshotFringe != fringe ||
@@ -2525,7 +2525,7 @@ internal sealed class NVGContext
 
     #region Expand Fill/Stroke (Simplified)
 
-    private void ExpandFill(float w, NVGlineJoin lineJoin, float miterLimit, TessWindingRule tessWindingRule,
+    private void ExpandFill(float w, MewVGLineJoin lineJoin, float miterLimit, TessWindingRule tessWindingRule,
         FrozenFillCache? tessCache = null, bool allowMask = true)
     {
         var fastSingleConvex = false;
@@ -2545,7 +2545,7 @@ internal sealed class NVGContext
                     // (single convex shape), skipping normalization+tessellation work.
                     fastSingleConvex = true;
                     onlyPath.Closed = true;
-                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? NVGwinding.CCW : NVGwinding.CW;
+                    onlyPath.Winding = PolyArea(pts) >= 0.0f ? MewVGWinding.CCW : MewVGWinding.CW;
                 }
             }
         }
@@ -3252,7 +3252,7 @@ internal sealed class NVGContext
                 First = destinationFirst,
                 Count = count,
                 Closed = true,
-                Winding = signedArea2 >= 0.0 ? NVGwinding.CCW : NVGwinding.CW,
+                Winding = signedArea2 >= 0.0 ? MewVGWinding.CCW : MewVGWinding.CW,
             };
         }
 
@@ -3388,7 +3388,7 @@ internal sealed class NVGContext
             if (!resolved)
             {
                 // Ambiguous - fall back to signed-area winding.
-                signs[i] = path.Winding == NVGwinding.CW ? 1f : -1f;
+                signs[i] = path.Winding == MewVGWinding.CW ? 1f : -1f;
             }
         }
     }
@@ -3531,12 +3531,12 @@ internal sealed class NVGContext
             : (crossings & 1) != 0;
     }
 
-    private void ExpandStroke(float w, float fringe, NVGlineCap lineCap, NVGlineJoin lineJoin, float miterLimit)
+    private void ExpandStroke(float w, float fringe, MewVGLineCap lineCap, MewVGLineJoin lineJoin, float miterLimit)
     {
         var aa = fringe;
         float u0 = 0.0f, u1 = 1.0f;
         var ncap = CurveDivs(w, NVG_PI, _tessTol);
-        if (lineJoin == NVGlineJoin.Round || lineCap == NVGlineCap.Round)
+        if (lineJoin == MewVGLineJoin.Round || lineCap == MewVGLineCap.Round)
         {
             ncap = Maxi(ncap, 12);
         }
@@ -3558,7 +3558,7 @@ internal sealed class NVGContext
         {
             ref var path = ref _cache.Paths[i];
             var loop = path.Closed;
-            if (lineJoin == NVGlineJoin.Round)
+            if (lineJoin == MewVGLineJoin.Round)
             {
                 cverts += (path.Count + path.NBevel * (ncap + 2) + 1) * 2;
             }
@@ -3570,7 +3570,7 @@ internal sealed class NVGContext
             if (!loop)
             {
                 // Space for caps
-                if (lineCap == NVGlineCap.Round)
+                if (lineCap == MewVGLineCap.Round)
                 {
                     cverts += (ncap * 2 + 2) * 2;
                 }
@@ -3617,15 +3617,15 @@ internal sealed class NVGContext
                 var dy = p1.Y - p0.Y;
                 Normalize(ref dx, ref dy);
 
-                if (lineCap == NVGlineCap.Butt)
+                if (lineCap == MewVGLineCap.Butt)
                 {
                     ButtCapStart(ref vertOffset, ref p0, dx, dy, w, -aa * 0.5f, aa, u0, u1);
                 }
-                else if (lineCap == NVGlineCap.Square)
+                else if (lineCap == MewVGLineCap.Square)
                 {
                     ButtCapStart(ref vertOffset, ref p0, dx, dy, w, w - aa, aa, u0, u1);
                 }
-                else if (lineCap == NVGlineCap.Round)
+                else if (lineCap == MewVGLineCap.Round)
                 {
                     RoundCapStart(ref vertOffset, ref p0, dx, dy, w, ncap, u0, u1);
                 }
@@ -3638,7 +3638,7 @@ internal sealed class NVGContext
 
                 if ((p1.Flags & (NVGpointFlags.Bevel | NVGpointFlags.InnerBevel)) != 0)
                 {
-                    if (lineJoin == NVGlineJoin.Round)
+                    if (lineJoin == MewVGLineJoin.Round)
                     {
                         RoundJoin(ref vertOffset, ref p0, ref p1, w, w, u0, u1, ncap);
                     }
@@ -3672,15 +3672,15 @@ internal sealed class NVGContext
                 var dy = p1.Y - p0.Y;
                 Normalize(ref dx, ref dy);
 
-                if (lineCap == NVGlineCap.Butt)
+                if (lineCap == MewVGLineCap.Butt)
                 {
                     ButtCapEnd(ref vertOffset, ref p1, dx, dy, w, -aa * 0.5f, aa, u0, u1);
                 }
-                else if (lineCap == NVGlineCap.Square)
+                else if (lineCap == MewVGLineCap.Square)
                 {
                     ButtCapEnd(ref vertOffset, ref p1, dx, dy, w, w - aa, aa, u0, u1);
                 }
-                else if (lineCap == NVGlineCap.Round)
+                else if (lineCap == MewVGLineCap.Round)
                 {
                     RoundCapEnd(ref vertOffset, ref p1, dx, dy, w, ncap, u0, u1);
                 }
@@ -3690,7 +3690,7 @@ internal sealed class NVGContext
         }
     }
 
-    private void CalculateJoins(float w, NVGlineJoin lineJoin, float miterLimit)
+    private void CalculateJoins(float w, MewVGLineJoin lineJoin, float miterLimit)
     {
         var iw = w > 0.0f ? 1.0f / w : 0.0f;
 
@@ -3748,7 +3748,7 @@ internal sealed class NVGContext
                 // Check to see if the corner needs to be beveled
                 if ((p1.Flags & NVGpointFlags.Corner) != 0)
                 {
-                    if (dmr2 * miterLimit * miterLimit < 1.0f || lineJoin == NVGlineJoin.Bevel || lineJoin == NVGlineJoin.Round)
+                    if (dmr2 * miterLimit * miterLimit < 1.0f || lineJoin == MewVGLineJoin.Bevel || lineJoin == MewVGLineJoin.Round)
                     {
                         p1.Flags |= NVGpointFlags.Bevel;
                     }
@@ -3851,7 +3851,7 @@ internal sealed class NVGContext
             dstPath.Closed = true;
             RecomputePathSegmentData(dstStart, count);
             var signedArea2 = ComputeSignedArea2(dstStart, count);
-            dstPath.Winding = signedArea2 >= 0.0 ? NVGwinding.CCW : NVGwinding.CW;
+            dstPath.Winding = signedArea2 >= 0.0 ? MewVGWinding.CCW : MewVGWinding.CW;
             _cache.Paths[writePath++] = dstPath;
             writePoint = dstStart + count;
         }
@@ -4246,11 +4246,11 @@ internal sealed class NVGContext
 
     #region Gradients
 
-    public NVGpaint LinearGradient(float sx, float sy, float ex, float ey, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint LinearGradient(float sx, float sy, float ex, float ey, MewVGColor icol, MewVGColor ocol)
     {
         const float large = 1e5f;
 
-        NVGpaint p = default;
+        MewVGPaint p = default;
 
         var dx = ex - sx;
         var dy = ey - sy;
@@ -4281,9 +4281,9 @@ internal sealed class NVGContext
         return p;
     }
 
-    public NVGpaint RadialGradient(float cx, float cy, float inr, float outr, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint RadialGradient(float cx, float cy, float inr, float outr, MewVGColor icol, MewVGColor ocol)
     {
-        NVGpaint p = default;
+        MewVGPaint p = default;
 
         var r = (inr + outr) * 0.5f;
         var f = outr - inr;
@@ -4303,9 +4303,9 @@ internal sealed class NVGContext
         return p;
     }
 
-    public NVGpaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
+    public MewVGPaint GradientRadial(in Matrix3x2 gradientTransform, float centerX, float centerY, float focalX, float focalY, float radiusX, float radiusY, int spreadMethod, int image)
     {
-        NVGpaint p = default;
+        MewVGPaint p = default;
         p.PaintKind = (int)NVGpaintKind.GradientRadial;
         p.Image = image;
         p.Center[0] = centerX;
@@ -4315,8 +4315,8 @@ internal sealed class NVGContext
         p.Radius2[0] = radiusX;
         p.Radius2[1] = radiusY;
         p.SpreadMethod = spreadMethod;
-        p.InnerColor = NVGcolor.White;
-        p.OuterColor = NVGcolor.White;
+        p.InnerColor = MewVGColor.White;
+        p.OuterColor = MewVGColor.White;
         p.Xform[0] = gradientTransform.M11;
         p.Xform[1] = gradientTransform.M12;
         p.Xform[2] = gradientTransform.M21;
@@ -4326,9 +4326,9 @@ internal sealed class NVGContext
         return p;
     }
 
-    public NVGpaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
+    public MewVGPaint GradientLinear(in Matrix3x2 gradientTransform, float startX, float startY, float endX, float endY, int spreadMethod, int image)
     {
-        NVGpaint p = default;
+        MewVGPaint p = default;
         p.PaintKind = (int)NVGpaintKind.GradientLinear;
         p.Image = image;
         p.Center[0] = startX;
@@ -4336,8 +4336,8 @@ internal sealed class NVGContext
         p.Focal[0] = endX;
         p.Focal[1] = endY;
         p.SpreadMethod = spreadMethod;
-        p.InnerColor = NVGcolor.White;
-        p.OuterColor = NVGcolor.White;
+        p.InnerColor = MewVGColor.White;
+        p.OuterColor = MewVGColor.White;
         p.Xform[0] = gradientTransform.M11;
         p.Xform[1] = gradientTransform.M12;
         p.Xform[2] = gradientTransform.M21;
@@ -4347,9 +4347,9 @@ internal sealed class NVGContext
         return p;
     }
 
-    public NVGpaint BoxGradient(float x, float y, float w, float h, float r, float f, NVGcolor icol, NVGcolor ocol)
+    public MewVGPaint BoxGradient(float x, float y, float w, float h, float r, float f, MewVGColor icol, MewVGColor ocol)
     {
-        NVGpaint p = default;
+        MewVGPaint p = default;
 
         TransformIdentity(p.Xform);
         p.Xform[4] = x + w * 0.5f;
@@ -4366,9 +4366,9 @@ internal sealed class NVGContext
         return p;
     }
 
-    public NVGpaint ImagePattern(float cx, float cy, float w, float h, float angle, int image, float alpha)
+    public MewVGPaint ImagePattern(float cx, float cy, float w, float h, float angle, int image, float alpha)
     {
-        NVGpaint p = default;
+        MewVGPaint p = default;
 
         TransformRotate(p.Xform, angle);
         p.Xform[4] = cx;
@@ -4378,7 +4378,7 @@ internal sealed class NVGContext
         p.Extent[1] = h;
 
         p.Image = image;
-        p.InnerColor = p.OuterColor = NVGcolor.RGBAf(1, 1, 1, alpha);
+        p.InnerColor = p.OuterColor = MewVGColor.RGBAf(1, 1, 1, alpha);
 
         return p;
     }

@@ -31,7 +31,7 @@ public class FillThenStrokeReproTests
         baselineContext.ShapeAntiAlias(false);
         baselineContext.BeginPath();
         baselineContext.Rect(10, 10, 50, 50);
-        baselineContext.StrokeColor(NVGcolor.RGBA(0, 0, 0, 255));
+        baselineContext.StrokeColor(MewVGColor.RGBA(0, 0, 0, 255));
         baselineContext.StrokeWidth(4);
         baselineContext.Stroke();
 
@@ -46,9 +46,9 @@ public class FillThenStrokeReproTests
         context.ShapeAntiAlias(false);
         context.BeginPath();
         context.Rect(10, 10, 50, 50);
-        context.FillColor(NVGcolor.RGBA(255, 0, 0, 255));
+        context.FillColor(MewVGColor.RGBA(255, 0, 0, 255));
         context.Fill();
-        context.StrokeColor(NVGcolor.RGBA(0, 0, 0, 255));
+        context.StrokeColor(MewVGColor.RGBA(0, 0, 0, 255));
         context.StrokeWidth(4);
         context.Stroke();
 
@@ -71,7 +71,7 @@ public class FillThenStrokeReproTests
         baselineContext.MoveTo(10, 10);
         baselineContext.LineTo(60, 10);
         baselineContext.LineTo(60, 60);
-        baselineContext.StrokeColor(NVGcolor.RGBA(0, 0, 0, 255));
+        baselineContext.StrokeColor(MewVGColor.RGBA(0, 0, 0, 255));
         baselineContext.StrokeWidth(4);
         baselineContext.Stroke();
 
@@ -88,9 +88,9 @@ public class FillThenStrokeReproTests
         context.MoveTo(10, 10);
         context.LineTo(60, 10);
         context.LineTo(60, 60);
-        context.FillColor(NVGcolor.RGBA(255, 0, 0, 255));
+        context.FillColor(MewVGColor.RGBA(255, 0, 0, 255));
         context.Fill();
-        context.StrokeColor(NVGcolor.RGBA(0, 0, 0, 255));
+        context.StrokeColor(MewVGColor.RGBA(0, 0, 0, 255));
         context.StrokeWidth(4);
         context.Stroke();
 

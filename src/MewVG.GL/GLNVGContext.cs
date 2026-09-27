@@ -37,7 +37,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int Width;
         public int Height;
         public NVGtextureType Type;
-        public NVGimageFlags Flags;
+        public MewVGImageFlags Flags;
     }
 
     private struct GLNVGBlend
@@ -199,14 +199,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _flushViewportWidth;
     private int _flushViewportHeight;
 
-    private static bool PaintHasTransparency(in NVGpaint paint)
+    private static bool PaintHasTransparency(in MewVGPaint paint)
         => paint.InnerColor.A < 0.999f || paint.OuterColor.A < 0.999f;
 
     public GLNVGContext()
     {
         // GL orders commands: once a frame's calls are flushed, its images may be rewritten.
         _maskImages = new MaskImageCache(
-            (width, height, coverage) => CreateTexture(NVGtextureType.Alpha, width, height, NVGimageFlags.Nearest, coverage),
+            (width, height, coverage) => CreateTexture(NVGtextureType.Alpha, width, height, MewVGImageFlags.Nearest, coverage),
             (image, width, height, coverage) => UpdateTexture(image, 0, 0, width, height, coverage),
             DeleteTexture,
             framesInFlight: 1);
@@ -214,7 +214,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         CreateResources();
     }
 
-    public int CreateImageFromHandle(int textureId, int width, int height, NVGimageFlags flags)
+    public int CreateImageFromHandle(int textureId, int width, int height, MewVGImageFlags flags)
     {
         var tex = AllocTexture();
         if (tex == null)
@@ -382,7 +382,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     void INVGRenderer.RenderClip(ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts)
         => RenderClip(ref scissor, fringe, bounds, paths, verts);
     void INVGRenderer.ResetClip() => ResetClip();
-    void INVGRenderer.RenderMaskFill(ref NVGpaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
+    void INVGRenderer.RenderMaskFill(ref MewVGPaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor, float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<byte> coverage, int maskWidth, int maskHeight, float maskOriginX, float maskOriginY, object? cacheKey, int cacheVersion)
         => RenderMaskFill(ref paint, compositeOperation, ref scissor, fringe, bounds, coverage, maskWidth, maskHeight, maskOriginX, maskOriginY, cacheKey, cacheVersion);
 
     private void RenderClip(
@@ -484,7 +484,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     public void RenderFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -642,7 +642,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     public void RenderStroke(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -751,7 +751,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     public void RenderTriangles(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         ReadOnlySpan<NVGvertex> verts,
@@ -776,7 +776,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     public void RenderMaskFill(
-        ref NVGpaint paint,
+        ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
@@ -850,7 +850,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.Enable(EnableCap.CullFace);
     }
 
-    public int CreateTexture(NVGtextureType type, int width, int height, NVGimageFlags flags, ReadOnlySpan<byte> data)
+    public int CreateTexture(NVGtextureType type, int width, int height, MewVGImageFlags flags, ReadOnlySpan<byte> data)
     {
         var texIndex = AllocTexture();
         if (texIndex == null)
@@ -872,13 +872,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         // as fuzzy / haloed edges when the image is minified (the base level at 100% looks fine). Premultiply
         // here and flag the texture premultiplied so the shader samples the already-correct texels.
         ReadOnlySpan<byte> uploadData = data;
-        if ((flags & NVGimageFlags.GenerateMipmaps) != 0
-            && (flags & NVGimageFlags.Premultiplied) == 0
+        if ((flags & MewVGImageFlags.GenerateMipmaps) != 0
+            && (flags & MewVGImageFlags.Premultiplied) == 0
             && (type == NVGtextureType.RGBA || type == NVGtextureType.BGRA)
             && data.Length >= width * height * 4)
         {
             uploadData = PremultiplyCopy(data, width, height);
-            flags |= NVGimageFlags.Premultiplied;
+            flags |= MewVGImageFlags.Premultiplied;
             tex.Flags = flags;
         }
 
@@ -909,9 +909,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 PixelFormat.Red, PixelType.UnsignedByte, data);
         }
 
-        if ((flags & NVGimageFlags.GenerateMipmaps) != 0)
+        if ((flags & MewVGImageFlags.GenerateMipmaps) != 0)
         {
-            if ((flags & NVGimageFlags.Nearest) != 0)
+            if ((flags & MewVGImageFlags.Nearest) != 0)
             {
                 GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.NearestMipmapNearest);
             }
@@ -922,7 +922,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         else
         {
-            if ((flags & NVGimageFlags.Nearest) != 0)
+            if ((flags & MewVGImageFlags.Nearest) != 0)
             {
                 GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)TextureMinFilter.Nearest);
             }
@@ -932,7 +932,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
         }
 
-        if ((flags & NVGimageFlags.Nearest) != 0)
+        if ((flags & MewVGImageFlags.Nearest) != 0)
         {
             GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)TextureMagFilter.Nearest);
         }
@@ -942,16 +942,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS,
-            (int)((flags & NVGimageFlags.RepeatX) != 0 ? TextureWrapMode.Repeat : TextureWrapMode.ClampToEdge));
+            (int)((flags & MewVGImageFlags.RepeatX) != 0 ? TextureWrapMode.Repeat : TextureWrapMode.ClampToEdge));
         GL.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT,
-            (int)((flags & NVGimageFlags.RepeatY) != 0 ? TextureWrapMode.Repeat : TextureWrapMode.ClampToEdge));
+            (int)((flags & MewVGImageFlags.RepeatY) != 0 ? TextureWrapMode.Repeat : TextureWrapMode.ClampToEdge));
 
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
         GL.PixelStore(PixelStoreParameter.UnpackRowLength, 0);
         GL.PixelStore(PixelStoreParameter.UnpackSkipPixels, 0);
         GL.PixelStore(PixelStoreParameter.UnpackSkipRows, 0);
 
-        if ((flags & NVGimageFlags.GenerateMipmaps) != 0)
+        if ((flags & MewVGImageFlags.GenerateMipmaps) != 0)
         {
             GL.GenerateMipmap(GenerateMipmapTarget.Texture2D);
         }
@@ -999,7 +999,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
 
             int glTex = _textures[i].Tex;
-            if (glTex != 0 && (_textures[i].Flags & NVGimageFlags.NoDelete) == 0)
+            if (glTex != 0 && (_textures[i].Flags & MewVGImageFlags.NoDelete) == 0)
             {
                 // Invalidate bind cache before GL frees the name; otherwise a later
                 // GenTextures reusing the same name would skip the real bind call.
@@ -1672,9 +1672,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetUniformVec4(data, vecIndex + 2, t[4], t[5], 1.0f, 0.0f);
     }
 
-    private static NVGcolor Premultiply(NVGcolor color) => new NVGcolor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
+    private static MewVGColor Premultiply(MewVGColor color) => new MewVGColor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
 
-    private bool ConvertPaint(float[] frag, ref NVGpaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
+    private bool ConvertPaint(float[] frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
     {
         Span<float> invxform = stackalloc float[6];
 
@@ -1743,7 +1743,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
 
             ref var tex = ref _textures[index];
-            if ((tex.Flags & NVGimageFlags.FlipY) != 0)
+            if ((tex.Flags & MewVGImageFlags.FlipY) != 0)
             {
                 Span<float> m1 = stackalloc float[6];
                 Span<float> m2 = stackalloc float[6];
@@ -1769,7 +1769,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             // only ALPHA textures take texType=2 (replicate red to alpha).
             if (tex.Type == NVGtextureType.RGBA || tex.Type == NVGtextureType.BGRA)
             {
-                SetUniformValue(frag, 12, 2, (tex.Flags & NVGimageFlags.Premultiplied) != 0 ? 0.0f : 1.0f);
+                SetUniformValue(frag, 12, 2, (tex.Flags & MewVGImageFlags.Premultiplied) != 0 ? 0.0f : 1.0f);
             }
             else
             {
@@ -2216,7 +2216,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         for (var i = 0; i < _textureCount; i++)
         {
-            if (_textures[i].Tex != 0 && (_textures[i].Flags & NVGimageFlags.NoDelete) == 0)
+            if (_textures[i].Tex != 0 && (_textures[i].Flags & MewVGImageFlags.NoDelete) == 0)
             {
                 GL.DeleteTexture(_textures[i].Tex);
             }

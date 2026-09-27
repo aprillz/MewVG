@@ -1,9 +1,9 @@
 namespace Aprillz.MewVG;
 
 /// <summary>
-/// GL API surface the GL backend targets. Selected once per process via <see cref="NanoVGGL.Initialize"/>.
+/// GL API surface the GL backend targets. Selected once per process via <see cref="MewVGGL.Initialize"/>.
 /// </summary>
-public enum NanoVGGLProfile
+public enum MewVGGLProfile
 {
     /// <summary>OpenGL 3.x core profile (GLSL 140).</summary>
     Gl3Core,
