@@ -147,11 +147,16 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
         NanoVGGL.Initialize(getProcAddress);
 
         _gl = new GLMinimal(getProcAddress);
+        Console.WriteLine($"GL renderer: {_gl.Renderer}");
         _vg = new NanoVGGL();
     }
 
     protected override void Execute()
     {
+        // MEWVG_DEMO_CAPTURE=<file> draws the scene plus the shader-variant checks, writes the frame
+        // as a binary PPM and exits; pair it with MEWVG_DEMO_TIME for a repeatable frame.
+        var capturePath = Environment.GetEnvironmentVariable("MEWVG_DEMO_CAPTURE");
+        var captureFrame = 0;
         var fpsTimer = System.Diagnostics.Stopwatch.StartNew();
         var frameCount = 0;
 
@@ -172,7 +177,20 @@ internal sealed unsafe partial class Win32DemoRunner : DemoRunner
 
             _vg!.BeginFrame(_winw, _winh, 1.0f);
             DemoScene.DrawDemo(_vg, _winw, _winh);
+            if (capturePath != null)
+            {
+                DemoScene.DrawShaderVariantChecks(_vg, 560, 540);
+            }
+
+            DemoScene.DrawFillLayers(_vg, _winw, _winh);
+
             _vg.EndFrame();
+
+            if (capturePath != null && ++captureFrame == 3)
+            {
+                _gl.SavePpm(capturePath, _winw, _winh);
+                _running = false;
+            }
 
             Gdi32.SwapBuffers(_hdc);
 
