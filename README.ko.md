@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="../assets/logo/logo_h-960.png" alt="MewVG" height="240" />
+  <img src="assets/logo/logo_h-960.png" alt="MewVG" height="240" />
 </p>
 
 # MewVG
@@ -20,39 +20,60 @@
 
 | 패키지 | 설명 |
 |---|---|
-| `Aprillz.MewVG.Core` | 플랫폼 독립적인 NanoVG 컨텍스트 및 경로 API |
-| `Aprillz.MewVG.GL` | OpenGL 렌더링 백엔드 (Windows, Linux) |
+| `Aprillz.MewVG.Core` | 플랫폼 독립적인 MewVG 컨텍스트 및 경로 API |
+| `Aprillz.MewVG.GL` | OpenGL / WebGL2 렌더링 백엔드 |
 | `Aprillz.MewVG.Metal` | Metal 렌더링 백엔드 (macOS) |
 
 ## 주요 특징
 
 - **순수 C# / 완전 관리형** &mdash; 네이티브 의존성 없음
-- **크로스플랫폼** &mdash; OpenGL (Win32, X11) 및 Metal (macOS) 백엔드
-- **NanoVG 호환 API** &mdash; 경로, 채우기, 스트로크, 텍스트를 위한 친숙한 드로잉 모델
+- **크로스플랫폼** &mdash; OpenGL (Win32, X11), WebGL2 (브라우저) 및 Metal (macOS) 백엔드
+- **MewVG API** &mdash; `MewVGContext`와 `MewVG*` 타입으로 제공하는 친숙한 NanoVG 드로잉 모델
+- **최적화된 OpenGL fill** &mdash; 페인트별 셰이더 변형으로 사용하지 않는 셰이더 분기 제거
 - **NativeAOT / Trim 지원** &mdash; `net8.0` 및 `net10.0` 대상
 
 ## 최소 요구사항
 
 | 백엔드 | 최소 버전 |
 |---|---|
-| `MewVG.GL` | OpenGL 3.1 / GLSL 1.40 |
+| `MewVG.GL` | OpenGL 3.1 / GLSL 1.40 또는 WebGL2 / GLSL ES 3.00 |
 | `MewVG.Metal` | Metal (macOS 10.11+) |
 
 ## 시작하기
 
 ```bash
 dotnet add package Aprillz.MewVG.Core
-dotnet add package Aprillz.MewVG.GL      # OpenGL용
+dotnet add package Aprillz.MewVG.GL      # OpenGL / WebGL2용
 # 또는
 dotnet add package Aprillz.MewVG.Metal    # macOS Metal용
 ```
+
+### OpenGL 빠른 시작
+
+OpenGL 컨텍스트를 생성하고 현재 컨텍스트로 만든 다음 MewVG를 초기화합니다. 함수 resolver는 요청받은 OpenGL 진입점의 주소를 반환해야 합니다.
+
+```csharp
+using Aprillz.MewVG;
+
+MewVGGL.Initialize(getProcAddress);
+using var vg = new MewVGGL();
+
+vg.BeginFrame(width, height, devicePixelRatio);
+vg.BeginPath();
+vg.RoundedRect(20, 20, 200, 120, 12);
+vg.FillColor(MewVGColor.RGBA(80, 160, 220, 255));
+vg.Fill();
+vg.EndFrame();
+```
+
+WebGL2 / GLES3에서는 `MewVGGL.Initialize`에 `MewVGGLProfile.Gles3`를 전달합니다. Metal 컨텍스트는 `new MewVGMetal(device)`로 직접 생성합니다.
 
 ## 프로젝트 구조
 
 ```
 MewVG/
 ├── src/
-│   ├── MewVG.Core/       코어 NanoVG 컨텍스트, 타입, 수학 유틸리티
+│   ├── MewVG.Core/       코어 MewVG 컨텍스트, 타입, 수학 유틸리티
 │   ├── MewVG.GL/         OpenGL 렌더링 백엔드
 │   └── MewVG.Metal/      Metal 렌더링 백엔드
 ├── samples/
@@ -65,7 +86,7 @@ MewVG/
 
 ## 라이선스
 
-이 프로젝트는 [MIT 라이선스](../LICENSE)로 제공됩니다.
+이 프로젝트는 [MIT 라이선스](LICENSE)로 제공됩니다.
 
 ### 원본 프로젝트
 
