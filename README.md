@@ -1,4 +1,4 @@
-[![한국어](https://img.shields.io/badge/README.md-한국어-green.svg)](ko)
+[![한국어](https://img.shields.io/badge/README.md-한국어-green.svg)](README.ko.md)
 
 <p align="center">
   <img src="assets/logo/logo_h-960.png" alt="MewVG" height="240" />
@@ -22,39 +22,60 @@
 
 | Package | Description |
 |---|---|
-| `Aprillz.MewVG.Core` | Platform-agnostic NanoVG context and path API |
-| `Aprillz.MewVG.GL` | OpenGL rendering backend (Windows, Linux) |
+| `Aprillz.MewVG.Core` | Platform-agnostic MewVG context and path API |
+| `Aprillz.MewVG.GL` | OpenGL / WebGL2 rendering backend |
 | `Aprillz.MewVG.Metal` | Metal rendering backend (macOS) |
 
 ## Highlights
 
 - **Pure C# / Fully Managed** &mdash; no native dependencies required
-- **Cross-platform** &mdash; OpenGL (Win32, X11) and Metal (macOS) backends
-- **NanoVG-compatible API** &mdash; familiar drawing model for paths, fills, strokes, gradients, and clipping
+- **Cross-platform** &mdash; OpenGL (Win32, X11), WebGL2 (browser), and Metal (macOS) backends
+- **MewVG API** &mdash; `MewVGContext` and `MewVG*` types with a familiar NanoVG drawing model
+- **Optimized OpenGL fills** &mdash; paint-specific shader variants avoid unused shader branches
 - **NativeAOT / Trim friendly** &mdash; targets `net8.0` and `net10.0`
 
 ## Requirements
 
 | Backend | Minimum |
 |---|---|
-| `MewVG.GL` | OpenGL 3.1 / GLSL 1.40 |
+| `MewVG.GL` | OpenGL 3.1 / GLSL 1.40, or WebGL2 / GLSL ES 3.00 |
 | `MewVG.Metal` | Metal (macOS 10.11+) |
 
 ## Getting Started
 
 ```bash
 dotnet add package Aprillz.MewVG.Core
-dotnet add package Aprillz.MewVG.GL      # for OpenGL
+dotnet add package Aprillz.MewVG.GL      # for OpenGL / WebGL2
 # or
 dotnet add package Aprillz.MewVG.Metal    # for macOS Metal
 ```
+
+### OpenGL quick start
+
+Create and make an OpenGL context current before initializing MewVG. The function resolver must return the address of the named OpenGL entry point.
+
+```csharp
+using Aprillz.MewVG;
+
+MewVGGL.Initialize(getProcAddress);
+using var vg = new MewVGGL();
+
+vg.BeginFrame(width, height, devicePixelRatio);
+vg.BeginPath();
+vg.RoundedRect(20, 20, 200, 120, 12);
+vg.FillColor(MewVGColor.RGBA(80, 160, 220, 255));
+vg.Fill();
+vg.EndFrame();
+```
+
+Pass `MewVGGLProfile.Gles3` to `MewVGGL.Initialize` when targeting WebGL2 / GLES3. For Metal, create the context directly with `new MewVGMetal(device)`.
 
 ## Project Structure
 
 ```
 MewVG/
 ├── src/
-│   ├── MewVG.Core/       Core NanoVG context, types, math
+│   ├── MewVG.Core/       Core MewVG context, types, math
 │   ├── MewVG.GL/         OpenGL rendering backend
 │   └── MewVG.Metal/      Metal rendering backend
 ├── samples/
