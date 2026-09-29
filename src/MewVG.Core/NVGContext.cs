@@ -2629,9 +2629,14 @@ internal sealed class NVGContext
         Span<float> fringeCoverages = _cache.NPoints <= 512
             ? stackalloc float[_cache.NPoints]
             : new float[_cache.NPoints];
-        if (fringe && !directConvexFill)
+        if (fringe)
         {
-            ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+            if (!directConvexFill)
+            {
+                ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+            }
+
+            // A resolved boundary can collapse to one convex contour, whose fringe also reads these.
             fringeCoverages.Fill(1f);
             if (resolvedFillBoundary)
             {
