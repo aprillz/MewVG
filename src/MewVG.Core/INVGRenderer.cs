@@ -45,6 +45,17 @@ internal interface INVGRenderer
         float fringe,
         in NVGRoundedRect shape);
 
+    /// <summary>
+    /// Draws a triangle list whose texcoords sample <paramref name="paint"/>'s image directly, each texel
+    /// multiplied by the paint's inner colour.
+    /// </summary>
+    void RenderTriangles(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        ReadOnlySpan<NVGvertex> verts,
+        float fringe);
+
     void RenderClip(
         ref NVGscissorState scissor,
         float fringe,

@@ -393,6 +393,19 @@ public struct MewVGPaint
 }
 
 /// <summary>
+/// A rectangle of an image, in image pixels, drawn to a rectangle in user space.
+/// </summary>
+public readonly record struct MewVGImageQuad(
+    float X,
+    float Y,
+    float Width,
+    float Height,
+    float SourceX,
+    float SourceY,
+    float SourceWidth,
+    float SourceHeight);
+
+/// <summary>
 /// Composite operation state.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]

@@ -98,6 +98,21 @@ internal sealed class FakeRenderer : INVGRenderer
         return AcceptsRoundedRects;
     }
 
+    /// <summary>One RenderTriangles invocation with its vertices copied.</summary>
+    public sealed record TrianglesCall(int Image, MewVGColor Color, NVGvertex[] Verts, float Fringe);
+
+    public List<TrianglesCall> TrianglesCalls { get; } = new();
+
+    public void RenderTriangles(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        ReadOnlySpan<NVGvertex> verts,
+        float fringe)
+    {
+        TrianglesCalls.Add(new TrianglesCall(paint.Image, paint.InnerColor, verts.ToArray(), fringe));
+    }
+
     /// <summary>The vertices as the renderer draws them, moved by the call's offset.</summary>
     private static NVGvertex[] Moved(ReadOnlySpan<NVGvertex> verts, Vector2 offset)
     {
@@ -172,11 +187,15 @@ internal sealed class TestMewVGContext : MewVGContext
 
     public override bool UpdateImage(int image, ReadOnlySpan<byte> data) => false;
 
+    public override bool UpdateImageRegion(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data) => false;
+
+    /// <summary>The size every image reports; zero reports no image.</summary>
+    public (int Width, int Height) ImageSizeForTests { get; set; }
+
     public override bool ImageSize(int image, out int width, out int height)
     {
-        width = 0;
-        height = 0;
-        return false;
+        (width, height) = ImageSizeForTests;
+        return width > 0 && height > 0;
     }
 
     public override void DeleteImage(int image)

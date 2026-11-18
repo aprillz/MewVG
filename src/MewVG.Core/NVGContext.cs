@@ -2263,6 +2263,64 @@ internal sealed class NVGContext
     }
 
     /// <summary>
+    /// Draws rectangles of an image to rectangles under the current transform as one triangle list, each texel
+    /// multiplied by <paramref name="color"/> and the global alpha.
+    /// </summary>
+    public void FillImageQuads(int image, int imageWidth, int imageHeight, ReadOnlySpan<MewVGImageQuad> quads, MewVGColor color)
+    {
+        if (quads.IsEmpty || imageWidth <= 0 || imageHeight <= 0)
+        {
+            return;
+        }
+
+        ref var state = ref GetState();
+        var vertexCount = quads.Length * 6;
+        if (_quadVerts.Length < vertexCount)
+        {
+            _quadVerts = new NVGvertex[Math.Max(vertexCount, _quadVerts.Length * 2)];
+        }
+
+        var inverseWidth = 1.0f / imageWidth;
+        var inverseHeight = 1.0f / imageHeight;
+        var written = 0;
+        foreach (ref readonly var quad in quads)
+        {
+            var right = quad.X + quad.Width;
+            var bottom = quad.Y + quad.Height;
+            var sourceLeft = quad.SourceX * inverseWidth;
+            var sourceTop = quad.SourceY * inverseHeight;
+            var sourceRight = (quad.SourceX + quad.SourceWidth) * inverseWidth;
+            var sourceBottom = (quad.SourceY + quad.SourceHeight) * inverseHeight;
+
+            TransformPoint(out var topLeftX, out var topLeftY, state.Xform, quad.X, quad.Y);
+            TransformPoint(out var topRightX, out var topRightY, state.Xform, right, quad.Y);
+            TransformPoint(out var bottomRightX, out var bottomRightY, state.Xform, right, bottom);
+            TransformPoint(out var bottomLeftX, out var bottomLeftY, state.Xform, quad.X, bottom);
+
+            var topLeft = new NVGvertex(topLeftX, topLeftY, sourceLeft, sourceTop);
+            var bottomRight = new NVGvertex(bottomRightX, bottomRightY, sourceRight, sourceBottom);
+            _quadVerts[written++] = topLeft;
+            _quadVerts[written++] = new NVGvertex(topRightX, topRightY, sourceRight, sourceTop);
+            _quadVerts[written++] = bottomRight;
+            _quadVerts[written++] = topLeft;
+            _quadVerts[written++] = bottomRight;
+            _quadVerts[written++] = new NVGvertex(bottomLeftX, bottomLeftY, sourceLeft, sourceBottom);
+        }
+
+        MewVGPaint paint = default;
+        TransformIdentity(paint.Xform);
+        paint.Image = image;
+        paint.InnerColor = color;
+        paint.InnerColor.A *= state.Alpha;
+        paint.OuterColor = paint.InnerColor;
+
+        var fringe = state.ShapeAntiAlias ? _fringeWidth : 0.0f;
+        _renderer.RenderTriangles(ref paint, state.CompositeOperation, ref state.Scissor, _quadVerts.AsSpan(0, written), fringe);
+        FillTriCount += quads.Length * 2;
+        DrawCallCount++;
+    }
+
+    /// <summary>
     /// Adds a fill's triangles and draw calls to the frame statistics. The fill body is a triangle list (NFill/3)
     /// and the fringe a triangle strip (NStroke-2); a path row carries one of the two, so the zero side is skipped.
     /// </summary>
@@ -2562,6 +2620,8 @@ internal sealed class NVGContext
     // mutates a snapshot another context may be reading.
     private readonly float[] _shiftedBounds = new float[4];
     private readonly TranslatedPathCache _translatedPaths = new();
+    // Scratch for the triangles of image quads; the renderer copies them before the next draw.
+    private NVGvertex[] _quadVerts = [];
 
     private bool TryFillFromDeviceSnapshot(
         FrozenFillCache cache,
