@@ -48,15 +48,38 @@ public class GLShaderSourceTests
     }
 
     [Fact]
-    public void FragmentShaderConditionalsAreBalanced()
+    public void ShaderConditionalsAreBalanced()
     {
         // The variants are the same source compiled with defines, so every conditional block must close.
-        var lines = GLNVGShaderSource.FILL_FRAG_SHADER.Split('\n');
-        var opened = lines.Count(line => line.StartsWith("#if"));
-        var closed = lines.Count(line => line.StartsWith("#endif"));
+        foreach (var body in new[] { GLNVGShaderSource.FILL_VERT_SHADER, GLNVGShaderSource.FILL_FRAG_SHADER })
+        {
+            var lines = body.Split('\n');
+            var opened = lines.Count(line => line.StartsWith("#if"));
+            var closed = lines.Count(line => line.StartsWith("#endif"));
 
-        Assert.True(opened > 0);
-        Assert.Equal(opened, closed);
+            Assert.True(opened > 0);
+            Assert.Equal(opened, closed);
+        }
+    }
+
+    [Theory]
+    [InlineData("vec2 fscissor;")]
+    [InlineData("vec2 fpaint;")]
+    [InlineData("float fgradT;")]
+    public void VariantVaryingIsWrittenUnderTheConditionItIsRead(string declaration)
+    {
+        // A variant that reads a varying its vertex shader does not write fails to link and falls back to the uber shader.
+        Assert.Equal(
+            ConditionBefore(GLNVGShaderSource.FILL_VERT_SHADER, "out " + declaration),
+            ConditionBefore(GLNVGShaderSource.FILL_FRAG_SHADER, "in " + declaration));
+    }
+
+    private static string ConditionBefore(string body, string declaration)
+    {
+        var lines = body.Split('\n');
+        var index = Array.FindIndex(lines, line => line.Trim() == declaration);
+        Assert.True(index > 0, declaration);
+        return lines.Take(index).Last(line => line.StartsWith("#if"));
     }
 
     [Fact]

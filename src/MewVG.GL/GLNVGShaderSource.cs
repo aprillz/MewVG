@@ -4,8 +4,8 @@ namespace Aprillz.MewVG;
 /// GLSL sources for the fill shader. The bodies are written in the common subset of
 /// GLSL 140 and GLSL ES 300; only <see cref="Header"/> differs per profile. Compiled as is, the
 /// fragment shader is the uber shader that picks the paint by uniform; with <c>VARIANT</c> and a
-/// <c>PAINT_*</c> define (plus <c>SCISSOR</c>, <c>CLIP</c>, <c>MASK</c> as needed) it compiles to a
-/// variant that draws one paint without the other branches.
+/// <c>PAINT_*</c> define (plus <c>TEX_TYPE</c> for an image paint and <c>SCISSOR</c>, <c>CLIP</c>, <c>MASK</c>,
+/// <c>FULL_COVERAGE</c> as needed) it compiles to a variant that draws one paint without the other branches.
 /// </summary>
 internal static class GLNVGShaderSource
 {
@@ -32,9 +32,38 @@ internal static class GLNVGShaderSource
             "\tin vec2 tcoord;\n" +
             "\tout vec2 ftcoord;\n" +
             "\tout vec2 fpos;\n" +
+            // What is affine in the vertex position (the scissor and paint coordinates, the position along a
+            // linear gradient) a variant works out per vertex, which interpolation carries exactly; the fragment
+            // shader is left only the part that is not affine.
+            "#if defined(SCISSOR) || defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_LINEAR_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
+            "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
+            "#endif\n" +
+            "#ifdef SCISSOR\n" +
+            "\tout vec2 fscissor;\n" +
+            "#endif\n" +
+            "#if defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
+            "\tout vec2 fpaint;\n" +
+            "#endif\n" +
+            "#ifdef PAINT_LINEAR_GRADIENT\n" +
+            "\tout float fgradT;\n" +
+            "#endif\n" +
             "void main(void) {\n" +
             "\tftcoord = tcoord;\n" +
             "\tfpos = vertex;\n" +
+            "#ifdef SCISSOR\n" +
+            "\tfscissor = (mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "#endif\n" +
+            "#if defined(PAINT_IMAGE)\n" +
+            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy / frag[9].xy;\n" +
+            "#elif defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
+            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "#endif\n" +
+            "#ifdef PAINT_LINEAR_GRADIENT\n" +
+            "\tvec2 pt = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "\tvec2 axis = frag[11].xy - frag[10].xy;\n" +
+            "\tfloat len2 = dot(axis, axis);\n" +
+            "\tfgradT = len2 <= 1e-6 ? 0.0 : dot(pt - frag[10].xy, axis) / len2;\n" +
+            "#endif\n" +
             "\tgl_Position = vec4(2.0*vertex.x/viewSize.x - 1.0, 1.0 - 2.0*vertex.y/viewSize.y, 0, 1);\n" +
             "}\n";
 
@@ -54,6 +83,15 @@ internal static class GLNVGShaderSource
             "\tin vec2 ftcoord;\n" +
             "\tin vec2 fpos;\n" +
             "\tout vec4 outColor;\n" +
+            "#ifdef SCISSOR\n" +
+            "\tin vec2 fscissor;\n" +
+            "#endif\n" +
+            "#if defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
+            "\tin vec2 fpaint;\n" +
+            "#endif\n" +
+            "#ifdef PAINT_LINEAR_GRADIENT\n" +
+            "\tin float fgradT;\n" +
+            "#endif\n" +
             "\t#define scissorMat mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz)\n" +
             "\t#define paintMat mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz)\n" +
             "\t#define innerCol frag[6]\n" +
@@ -78,11 +116,26 @@ internal static class GLNVGShaderSource
             "\treturn min(max(d.x,d.y),0.0) + length(max(d,0.0)) - rad;\n" +
             "}\n" +
             "\n" +
-            "float scissorMask(vec2 p) {\n" +
-            "\tvec2 sc = (abs((scissorMat * vec3(p,1.0)).xy) - scissorExt);\n" +
+            "float scissorMaskAt(vec2 local) {\n" +
+            "\tvec2 sc = (abs(local) - scissorExt);\n" +
             "\tsc = vec2(0.5,0.5) - sc * scissorScale;\n" +
             "\treturn clamp(sc.x,0.0,1.0) * clamp(sc.y,0.0,1.0);\n" +
             "}\n" +
+            "float scissorMask(vec2 p) {\n" +
+            "\treturn scissorMaskAt((scissorMat * vec3(p,1.0)).xy);\n" +
+            "}\n" +
+            // An image variant converts the texel by the texture type it was compiled for.
+            "#ifdef TEX_TYPE\n" +
+            "vec4 texelColor(vec4 color) {\n" +
+            "#if TEX_TYPE == 1\n" +
+            "\treturn vec4(color.xyz*color.w, color.w);\n" +
+            "#elif TEX_TYPE == 2\n" +
+            "\treturn vec4(color.x);\n" +
+            "#else\n" +
+            "\treturn color;\n" +
+            "#endif\n" +
+            "}\n" +
+            "#endif\n" +
             "float clipMask() {\n" +
             "#if defined(VARIANT) && !defined(CLIP)\n" +
             "\treturn 1.0;\n" +
@@ -137,6 +190,28 @@ internal static class GLNVGShaderSource
             "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
             "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
             "}\n" +
+            "float gradientSpreadT(float t, int spread) {\n" +
+            "\tif (spread == 0) return clamp(t, 0.0, 1.0);\n" +
+            "\tif (spread == 2) return fract(max(t, 0.0));\n" +
+            "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
+            "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
+            "}\n" +
+            // The signed distance to a rounded rectangle centred on the origin; radii are top-left, top-right,
+            // bottom-right and bottom-left.
+            "float sdRoundedBox(vec2 p, vec2 halfExtent, vec4 radii) {\n" +
+            "\tvec2 side = p.x > 0.0 ? radii.zy : radii.wx;\n" +
+            "\tfloat r = p.y > 0.0 ? side.x : side.y;\n" +
+            "\tvec2 q = abs(p) - halfExtent + vec2(r);\n" +
+            "\treturn min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n" +
+            "}\n" +
+            "float roundedBoxCoverage(vec2 p, vec2 halfExtent, vec4 radii) {\n" +
+            "\treturn clamp(0.5 - sdRoundedBox(p, halfExtent, radii) * frag[9].x, 0.0, 1.0);\n" +
+            "}\n" +
+            // A rounded rectangle covers what its outer box covers and its inner one does not; a fill's inner box
+            // covers nothing.
+            "float roundedRectCoverage(vec2 p) {\n" +
+            "\treturn max(roundedBoxCoverage(p, frag[3].xy, frag[4]) - roundedBoxCoverage(p, frag[3].zw, frag[5]), 0.0);\n" +
+            "}\n" +
             "float strokeMask() {\n" +
             "\tif (strokeMult < 0.0) {\n" +
             "\t\treturn clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);\n" +
@@ -148,57 +223,55 @@ internal static class GLNVGShaderSource
             "\tvec4 result;\n" +
             "#ifdef VARIANT\n" +
             "#ifdef SCISSOR\n" +
-            "\tfloat scissor = scissorMask(fpos);\n" +
+            "\tfloat scissor = scissorMaskAt(fscissor);\n" +
             "#else\n" +
             "\tfloat scissor = 1.0;\n" +
             "#endif\n" +
+            // Every vertex of a fill drawn without a fringe carries the body texcoord, for which strokeMask is 1.
+            "#ifdef FULL_COVERAGE\n" +
+            "\tfloat strokeAlpha = 1.0;\n" +
+            "#else\n" +
             "\tfloat strokeAlpha = strokeMask();\n" +
+            "#endif\n" +
             "#if defined(PAINT_SOLID)\n" +
             "\tvec4 color = innerCol;\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_IMAGE)\n" +
-            "\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy / extent;\n" +
-            "\tvec4 color = texture(tex, pt);\n" +
-            "\tif (texType == 1) color = vec4(color.xyz*color.w,color.w);\n" +
-            "\tif (texType == 2) color = vec4(color.x);\n" +
+            "\tvec4 color = texelColor(texture(tex, fpaint));\n" +
             "\tcolor *= innerCol;\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_IMAGE_TRIANGLES)\n" +
-            "\tvec4 color = texture(tex, ftcoord);\n" +
-            "\tif (texType == 1) color = vec4(color.xyz*color.w,color.w);\n" +
-            "\tif (texType == 2) color = vec4(color.x);\n" +
+            "\tvec4 color = texelColor(texture(tex, ftcoord));\n" +
             "\tcolor *= scissor;\n" +
             "\tresult = color * innerCol;\n" +
             "#elif defined(PAINT_BOX_GRADIENT)\n" +
-            "\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
-            "\tfloat d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
+            "\tfloat d = clamp((sdroundrect(fpaint, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
             "\tvec4 color = mix(innerCol,outerCol,d);\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_RADIAL_GRADIENT)\n" +
-            "\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
-            "\tfloat t = gradientRadialT(pt, gradientCenter, gradientFocal, gradientRadii, gradientSpread);\n" +
+            "\tfloat t = gradientRadialT(fpaint, gradientCenter, gradientFocal, gradientRadii, gradientSpread);\n" +
             "\tvec4 color = texture(tex, vec2(t, 0.5));\n" +
             "\tcolor *= innerCol;\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_LINEAR_GRADIENT)\n" +
-            "\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
-            "\tfloat t = gradientLinearT(pt, gradientCenter, gradientFocal, gradientSpread);\n" +
+            "\tfloat t = gradientSpreadT(fgradT, gradientSpread);\n" +
             "\tvec4 color = texture(tex, vec2(t, 0.5));\n" +
             "\tcolor *= innerCol;\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
+            "#elif defined(PAINT_ROUNDED_RECT)\n" +
+            "\tresult = innerCol * (roundedRectCoverage(ftcoord) * scissor);\n" +
             "#elif defined(PAINT_SIMPLE)\n" +
             "\tresult = vec4(1,1,1,1);\n" +
             "#elif defined(PAINT_COVERAGE_OUTPUT)\n" +
             "\tresult = vec4(strokeAlpha);\n" +
             "#elif defined(PAINT_COVERAGE_COMPOSITE)\n" +
             "\tfloat coverage = texelFetch(tex, ivec2(gl_FragCoord.xy - coverageOrigin), 0).r;\n" +
-            "\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
-            "\tfloat d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
+            "\tfloat d = clamp((sdroundrect(fpaint, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
             "\tvec4 color = mix(innerCol,outerCol,d);\n" +
             "\tcolor *= coverage * scissor;\n" +
             "\tresult = color;\n" +
@@ -240,6 +313,8 @@ internal static class GLNVGShaderSource
             "\t\tcolor *= innerCol;\n" +
             "\t\tcolor *= strokeAlpha * scissor;\n" +
             "\t\tresult = color;\n" +
+            "\t} else if (type == 8) {\n" +
+            "\t\tresult = innerCol * (roundedRectCoverage(ftcoord) * scissor);\n" +
             "\t} else if (type == 2) {\n" +
             "\t\tresult = vec4(1,1,1,1);\n" +
             "\t} else if (type == 3) {\n" +

@@ -1,6 +1,7 @@
 // NanoVG OpenGL backend (GL3 core profile)
 // Ported from nanovg_gl.h
 
+using System.Numerics;
 using System.Runtime.CompilerServices;
 
 namespace Aprillz.MewVG;
@@ -21,6 +22,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int LocCoverageOrigin;
         public int LocClipTex;
         public int LocClipEnabled;
+        // The value the program's clipEnabled uniform holds; a new program starts at 0 as the uniform does.
+        public int ClipEnabled;
         public int LocClipOrigin;
         public int LocClipSize;
         public int LocMaskTex;
@@ -105,6 +108,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         CoverageComposite = 5,
         GradientRadial = 6,
         GradientLinear = 7,
+        RoundedRect = 8,
     }
 
     // MEWVG_GL_DEBUG=1 turns on the glGetError check after each state change.
@@ -114,7 +118,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private const int VARIANT_FLAG_SCISSOR = 1;
     private const int VARIANT_FLAG_CLIP = 2;
     private const int VARIANT_FLAG_MASK = 4;
-    private const int VARIANT_FLAG_COUNT = 8;
+    private const int VARIANT_FLAG_FULL_COVERAGE = 8;
+    private const int VARIANT_FLAG_COUNT = 16;
     private const int VARIANT_PAINT_SOLID = 1;
     private const int VARIANT_PAINT_IMAGE = 2;
     private const int VARIANT_PAINT_IMAGE_TRIANGLES = 3;
@@ -125,7 +130,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private const int VARIANT_PAINT_COVERAGE_OUTPUT = 8;
     private const int VARIANT_PAINT_COVERAGE_COMPOSITE = 9;
     private const int VARIANT_PAINT_COVERAGE_SOLID = 10;
-    private const int VARIANT_PAINT_COUNT = 11;
+    private const int VARIANT_PAINT_IMAGE_UNPREMULTIPLIED = 11;
+    private const int VARIANT_PAINT_IMAGE_ALPHA = 12;
+    private const int VARIANT_PAINT_IMAGE_TRIANGLES_UNPREMULTIPLIED = 13;
+    private const int VARIANT_PAINT_IMAGE_TRIANGLES_ALPHA = 14;
+    private const int VARIANT_PAINT_ROUNDED_RECT = 15;
+    private const int VARIANT_PAINT_COUNT = 16;
+    // The inner half extent of a filled rounded rectangle: every point lies far outside a box this inside out.
+    private const float EMPTY_INNER_HALF_EXTENT = -1.0e4f;
     private const int UBER_SHADER = VARIANT_PAINT_COUNT * VARIANT_FLAG_COUNT;
     // MEWVG_GL_UBERSHADER=1 draws everything with the uber shader (A/B comparison, driver workaround).
     private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_GL_UBERSHADER") == "1";
@@ -135,12 +147,17 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private readonly bool[] _variantFailed = new bool[UBER_SHADER];
     private int _flushNumber;
     private int _currentProgram = -1;
+    private bool _clipUnitBound;
 
     private int _vao;
     private int _vbo;
 
     private GLNVGTexture[] _textures = Array.Empty<GLNVGTexture>();
     private int _textureCount;
+    // Where each live texture id sits in _textures, and the slots deleted textures left, so that finding a
+    // texture by id or a slot for a new one does not scan the table.
+    private readonly Dictionary<int, int> _textureSlots = new();
+    private readonly Stack<int> _freeTextureSlots = new();
     private int _textureCapacity;
     private int _textureId;
 
@@ -162,6 +179,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private readonly float[] _view = new float[2];
     private int _dummyTex;
+    // The GL name of the dummy texture, bound for every call that samples none.
+    private int _dummyTexName;
 
     // coverage buffer for transparent fills
     private int _coverageFbo;
@@ -180,6 +199,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private readonly int[] _clipMaskTextureWidths = new int[2];
     private readonly int[] _clipMaskTextureHeights = new int[2];
     private int _clipMaskIndex;
+
+    // What each mask texture holds: a hash of the clip drawn into it, the box it covers, and the mask it was
+    // intersected with. Drawing a clip that a texture already holds is skipped, since writing a texture the
+    // pending drawing still reads makes the GPU driver submit that drawing early.
+    private readonly long[] _clipMaskContents = new long[2];
+    private readonly bool[] _clipMaskContentsKnown = new bool[2];
     private bool _clipMaskActive;
     private bool _clipMaskEmpty;
     private int _clipMaskX;
@@ -277,9 +302,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _currentProgram = -1;
         UseProgram(UBER_SHADER);
 
-        GL.Enable(EnableCap.CullFace);
-        GL.CullFace(CullFaceMode.Back);
-        GL.FrontFace(FrontFaceDirection.Ccw);
+        // Nothing here relies on the winding of what it draws.
+        GL.Disable(EnableCap.CullFace);
         GL.Enable(EnableCap.Blend);
         GL.Disable(EnableCap.DepthTest);
         GL.Disable(EnableCap.ScissorTest);
@@ -319,6 +343,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _clipMaskActive = false;
         _clipMaskEmpty = false;
 
+        // Whatever ran since the last flush may have left a texture on the clip unit.
+        _clipUnitBound = true;
+        UnbindClipMask();
+
         for (var i = 0; i < _callCount; i++)
         {
             ref var call = ref _calls[i];
@@ -354,7 +382,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.DisableVertexAttribArray(1);
         GL.BindVertexArray(0);
         GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
-        GL.Disable(EnableCap.CullFace);
         GL.UseProgram(0);
         _currentProgram = -1;
         BindTexture(0);
@@ -435,7 +462,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 copy.StrokeOffset = vertOffset;
                 // A fringe strip can only follow the body triangles in one draw as triangles.
-                var written = ConvertStripToTriangles(verts.Slice(path.StrokeOffset, path.NStroke), _verts.AsSpan(vertOffset));
+                var written = ConvertStripToTriangles(verts.Slice(path.StrokeOffset, path.NStroke), _verts.AsSpan(vertOffset), Vector2.Zero);
                 copy.StrokeCount = written;
                 vertOffset += written;
             }
@@ -490,7 +517,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         float fringe,
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
         ref var call = ref AllocCall();
         call.Type = GLNVGCallType.Fill;
@@ -509,6 +537,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         maxVerts += call.TriangleCount;
         var vertOffset = AllocVerts(maxVerts);
+#if DEBUG
+        var bodyOffset = vertOffset;
+#endif
 
         // Pass 1: fill vertices (contiguous)
         for (var i = 0; i < paths.Length; i++)
@@ -521,7 +552,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 copy.FillOffset = vertOffset;
                 copy.FillCount = path.NFill;
-                verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(vertOffset));
+                CopyMoved(verts.Slice(path.FillOffset, path.NFill), _verts.AsSpan(vertOffset), offset);
                 vertOffset += path.NFill;
                 if ((path.NFill % 3) != 0)
                 {
@@ -546,19 +577,28 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 copy.StrokeOffset = vertOffset;
                 if (singleFringePath)
                 {
-                    strokeSrc.CopyTo(_verts.AsSpan(vertOffset));
+                    CopyMoved(strokeSrc, _verts.AsSpan(vertOffset), offset);
                     copy.StrokeCount = strokeSrc.Length;
                     vertOffset += strokeSrc.Length;
                 }
                 else
                 {
-                    var written = ConvertStripToTriangles(strokeSrc, _verts.AsSpan(vertOffset));
+                    var written = ConvertStripToTriangles(strokeSrc, _verts.AsSpan(vertOffset), offset);
                     copy.StrokeCount = written;
                     vertOffset += written;
                 }
             }
         }
         call.MergedFringeCount = vertOffset - call.MergedFringeOffset;
+#if DEBUG
+        if (call.MergedFringeCount == 0)
+        {
+            foreach (ref readonly var vert in _verts.AsSpan(bodyOffset, call.MergedFringeOffset - bodyOffset))
+            {
+                System.Diagnostics.Debug.Assert(vert.U == 0.5f && vert.V == 1.0f, "A fill without a fringe has a vertex off the body texcoord, which full coverage would draw too strongly.");
+            }
+        }
+#endif
 
         call.TriangleOffset = vertOffset;
         // The AA fringe extends half a fringe beyond the path bounds. The
@@ -609,8 +649,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
             SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
 
-            // uniformOffset+1: Paint for composite (type = CoverageComposite)
-            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+            // uniformOffset+1: Paint for composite (type = CoverageComposite), drawn over the quad alone.
+            var compositeScissorCuts = ScissorCuts(ref scissor, bounds[0] - quadMargin, bounds[1] - quadMargin, bounds[2] + quadMargin, bounds[3] + quadMargin, fringe);
+            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f, compositeScissorCuts))
             {
                 return;
             }
@@ -627,17 +668,30 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
         else
         {
-            call.UniformOffset = AllocUniforms(2);
-            var simple = _uniforms[call.UniformOffset].Data;
-            Array.Clear(simple);
-            SetUniformValue(simple, 12, 1, -1.0f); // strokeThr
-            SetUniformValue(simple, 12, 3, (float)GLNVGShaderType.Simple);
-
-            if (!ConvertPaint(_uniforms[call.UniformOffset + 1].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+            // The fringe of a fill reaches at most half a fringe times the miter limit past its points.
+            var reach = fringe * 2.0f;
+            var scissorCuts = ScissorCuts(ref scissor, bounds[0] - reach, bounds[1] - reach, bounds[2] + reach, bounds[3] + reach, fringe);
+            call.UniformOffset = AllocUniforms(1);
+            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, fringe, fringe, -1.0f, scissorCuts))
             {
                 return;
             }
-            SetUniformValue(_uniforms[call.UniformOffset + 1].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+        }
+    }
+
+    /// <summary>Copies vertices moved by an offset, in one pass.</summary>
+    private static void CopyMoved(ReadOnlySpan<NVGvertex> source, Span<NVGvertex> destination, Vector2 offset)
+    {
+        if (offset == Vector2.Zero)
+        {
+            source.CopyTo(destination);
+            return;
+        }
+
+        for (var index = 0; index < source.Length; index++)
+        {
+            destination[index] = Moved(source[index], offset);
         }
     }
 
@@ -648,7 +702,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         float fringe,
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
         ref var call = ref AllocCall();
         call.Type = GLNVGCallType.Stroke;
@@ -685,13 +740,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 var strokeSrc = verts.Slice(path.StrokeOffset, path.NStroke);
                 if (singleStrokePath)
                 {
-                    strokeSrc.CopyTo(_verts.AsSpan(vertOffset));
+                    CopyMoved(strokeSrc, _verts.AsSpan(vertOffset), offset);
                     copy.StrokeCount = strokeSrc.Length;
                     vertOffset += strokeSrc.Length;
                 }
                 else
                 {
-                    var written = ConvertStripToTriangles(strokeSrc, _verts.AsSpan(vertOffset));
+                    var written = ConvertStripToTriangles(strokeSrc, _verts.AsSpan(vertOffset), offset);
                     copy.StrokeCount = written;
                     vertOffset += written;
                 }
@@ -706,6 +761,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
         }
         call.MergedStrokeCount = vertOffset - call.MergedStrokeOffset;
+        minX += offset.X;
+        minY += offset.Y;
+        maxX += offset.X;
+        maxY += offset.Y;
 
         // Bounds quad (TriangleStrip) for the coverage-composite pass. Drawing the
         // stroke geometry itself for composite would re-rasterize overlapping segment
@@ -726,10 +785,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _verts[vertOffset++] = new NVGvertex(minX, maxY, 0.5f, 1.0f);
         _verts[vertOffset++] = new NVGvertex(minX, minY, 0.5f, 1.0f);
 
+        // The stroke geometry and the composite quad both lie within these bounds.
+        var scissorCuts = ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe);
         if (call.UsesCoverageAA)
         {
             call.UniformOffset = AllocUniforms(2);
-            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f))
+            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f, scissorCuts))
             {
                 return;
             }
@@ -743,12 +804,147 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         else
         {
             call.UniformOffset = AllocUniforms(1);
-            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f))
+            if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, strokeWidth, fringe, -1.0f, scissorCuts))
             {
                 return;
             }
         }
     }
+
+    /// <summary>
+    /// Draws a solid rounded rectangle, or its outline, as geometry around it whose fragments work out their coverage
+    /// from signed distances to rounded rectangles; the texcoord carries each vertex's position relative to the centre.
+    /// </summary>
+    public bool TryRenderRoundedRect(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        in NVGRoundedRect shape)
+    {
+        var outline = shape.StrokeHalfWidth >= 0.0f;
+        var strokeHalfWidth = Math.Max(shape.StrokeHalfWidth, 0.0f);
+        var antialias = Math.Max(fringe, 1.0f / _devicePixelRatio);
+
+        // The geometry reaches past the outer edge by a pixel of antialiasing.
+        var outerHalfWidth = shape.HalfWidth + strokeHalfWidth;
+        var outerHalfHeight = shape.HalfHeight + strokeHalfWidth;
+        var coverHalfWidth = outerHalfWidth + antialias;
+        var coverHalfHeight = outerHalfHeight + antialias;
+
+        // Inside an outline lies a box that the inner edge leaves uncovered by at least a pixel; the outline is
+        // drawn as the ring around it, so the fragments in the middle are never run.
+        var innerHalfWidth = shape.HalfWidth - strokeHalfWidth;
+        var innerHalfHeight = shape.HalfHeight - strokeHalfWidth;
+        var innerTopLeft = Math.Max(shape.TopLeft - strokeHalfWidth, 0.0f);
+        var innerTopRight = Math.Max(shape.TopRight - strokeHalfWidth, 0.0f);
+        var innerBottomRight = Math.Max(shape.BottomRight - strokeHalfWidth, 0.0f);
+        var innerBottomLeft = Math.Max(shape.BottomLeft - strokeHalfWidth, 0.0f);
+        var innerRadius = Math.Max(Math.Max(innerTopLeft, innerTopRight), Math.Max(innerBottomRight, innerBottomLeft));
+        var holeHalfWidth = innerHalfWidth - innerRadius - antialias;
+        var holeHalfHeight = innerHalfHeight - innerRadius - antialias;
+        var hollow = outline && holeHalfWidth > 0.0f && holeHalfHeight > 0.0f;
+
+        ref var call = ref AllocCall();
+        call.Type = GLNVGCallType.Triangles;
+        call.Image = 0;
+        call.BlendFunc = BlendCompositeOperation(compositeOperation);
+        call.TriangleCount = hollow ? 24 : 6;
+        call.TriangleOffset = AllocVerts(call.TriangleCount);
+        var geometry = _verts.AsSpan(call.TriangleOffset, call.TriangleCount);
+        if (hollow)
+        {
+            WriteRing(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight, holeHalfWidth, holeHalfHeight);
+        }
+        else
+        {
+            WriteQuad(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight);
+        }
+
+        call.UniformOffset = AllocUniforms(1);
+        var frag = _uniforms[call.UniformOffset].Data;
+        var scissorCuts = ScissorCuts(ref scissor, shape.CenterX - coverHalfWidth, shape.CenterY - coverHalfHeight,
+            shape.CenterX + coverHalfWidth, shape.CenterY + coverHalfHeight, fringe);
+        if (!ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f, scissorCuts))
+        {
+            call.Type = GLNVGCallType.None;
+            return true;
+        }
+
+        // A hard edge is a ramp too steep to leave any pixel partly covered.
+        var coverageScale = fringe > 0.0f ? 1.0f / fringe : 1.0e6f;
+        SetUniformValue(frag, 9, 0, coverageScale);
+
+        // Fills and outlines share one program, so a run of them never switches programs: a fill is an outline
+        // whose inner rectangle lies so far inside out that it covers nothing.
+        if (outline)
+        {
+            // Round corners grow and shrink with the outline; square ones stay square.
+            SetUniformVec4(frag, 3, outerHalfWidth, outerHalfHeight, innerHalfWidth, innerHalfHeight);
+            SetUniformVec4(frag, 4, GrowCorner(shape.TopLeft, strokeHalfWidth), GrowCorner(shape.TopRight, strokeHalfWidth),
+                GrowCorner(shape.BottomRight, strokeHalfWidth), GrowCorner(shape.BottomLeft, strokeHalfWidth));
+            SetUniformVec4(frag, 5, innerTopLeft, innerTopRight, innerBottomRight, innerBottomLeft);
+        }
+        else
+        {
+            SetUniformVec4(frag, 3, shape.HalfWidth, shape.HalfHeight, EMPTY_INNER_HALF_EXTENT, EMPTY_INNER_HALF_EXTENT);
+            SetUniformVec4(frag, 4, shape.TopLeft, shape.TopRight, shape.BottomRight, shape.BottomLeft);
+            SetUniformVec4(frag, 5, 0.0f, 0.0f, 0.0f, 0.0f);
+        }
+
+        SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.RoundedRect);
+        return true;
+    }
+
+    private static float GrowCorner(float radius, float amount) => radius > 0.0f ? radius + amount : 0.0f;
+
+    /// <summary>Writes two triangles covering a box around a centre, with texcoords relative to the centre.</summary>
+    private static void WriteQuad(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight)
+    {
+        var topLeft = Relative(centerX, centerY, -halfWidth, -halfHeight);
+        var topRight = Relative(centerX, centerY, halfWidth, -halfHeight);
+        var bottomRight = Relative(centerX, centerY, halfWidth, halfHeight);
+        var bottomLeft = Relative(centerX, centerY, -halfWidth, halfHeight);
+        output[0] = topLeft;
+        output[1] = topRight;
+        output[2] = bottomRight;
+        output[3] = topLeft;
+        output[4] = bottomRight;
+        output[5] = bottomLeft;
+    }
+
+    /// <summary>Writes eight triangles covering a box around a centre less a smaller box, with texcoords relative to the centre.</summary>
+    private static void WriteRing(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight, float holeHalfWidth, float holeHalfHeight)
+    {
+        Span<NVGvertex> outer =
+        [
+            Relative(centerX, centerY, -halfWidth, -halfHeight),
+            Relative(centerX, centerY, halfWidth, -halfHeight),
+            Relative(centerX, centerY, halfWidth, halfHeight),
+            Relative(centerX, centerY, -halfWidth, halfHeight),
+        ];
+        Span<NVGvertex> hole =
+        [
+            Relative(centerX, centerY, -holeHalfWidth, -holeHalfHeight),
+            Relative(centerX, centerY, holeHalfWidth, -holeHalfHeight),
+            Relative(centerX, centerY, holeHalfWidth, holeHalfHeight),
+            Relative(centerX, centerY, -holeHalfWidth, holeHalfHeight),
+        ];
+        var written = 0;
+        for (var side = 0; side < 4; side++)
+        {
+            var next = (side + 1) % 4;
+            output[written++] = outer[side];
+            output[written++] = outer[next];
+            output[written++] = hole[next];
+            output[written++] = outer[side];
+            output[written++] = hole[next];
+            output[written++] = hole[side];
+        }
+    }
+
+    private static NVGvertex Relative(float centerX, float centerY, float offsetX, float offsetY)
+        => new(centerX + offsetX, centerY + offsetY, offsetX, offsetY);
 
     public void RenderTriangles(
         ref MewVGPaint paint,
@@ -766,13 +962,58 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         call.TriangleCount = verts.Length;
         verts.CopyTo(_verts.AsSpan(call.TriangleOffset, verts.Length));
 
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+        for (var i = 0; i < verts.Length; i++)
+        {
+            ref readonly var vert = ref verts[i];
+            minX = MathF.Min(minX, vert.X);
+            minY = MathF.Min(minY, vert.Y);
+            maxX = MathF.Max(maxX, vert.X);
+            maxY = MathF.Max(maxY, vert.Y);
+        }
+
         call.UniformOffset = AllocUniforms(1);
-        if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, 1.0f, fringe, -1.0f))
+        var scissorCuts = verts.Length == 0 || ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe);
+        if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, 1.0f, fringe, -1.0f, scissorCuts))
         {
             return;
         }
 
         SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 3, (float)GLNVGShaderType.Img);
+        MergeWithPreviousTriangles();
+    }
+
+    /// <summary>
+    /// Folds the triangles call just added into the call before it when both sample the same image with the same
+    /// blending and uniforms and their vertices follow each other, so runs of glyph quads become one draw.
+    /// </summary>
+    private void MergeWithPreviousTriangles()
+    {
+        if (_callCount < 2)
+        {
+            return;
+        }
+
+        ref var call = ref _calls[_callCount - 1];
+        ref var previous = ref _calls[_callCount - 2];
+        if (previous.Type != GLNVGCallType.Triangles
+            || previous.Image != call.Image
+            || previous.BlendFunc.SrcRGB != call.BlendFunc.SrcRGB
+            || previous.BlendFunc.DstRGB != call.BlendFunc.DstRGB
+            || previous.BlendFunc.SrcAlpha != call.BlendFunc.SrcAlpha
+            || previous.BlendFunc.DstAlpha != call.BlendFunc.DstAlpha
+            || previous.TriangleOffset + previous.TriangleCount != call.TriangleOffset
+            || previous.UniformOffset + 1 != call.UniformOffset
+            || call.UniformOffset != _uniformCount - 1
+            || !_uniforms[previous.UniformOffset].Data.AsSpan().SequenceEqual(_uniforms[call.UniformOffset].Data))
+        {
+            return;
+        }
+
+        previous.TriangleCount += call.TriangleCount;
+        _callCount--;
+        _uniformCount--;
     }
 
     public void RenderMaskFill(
@@ -814,7 +1055,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         quad[3] = new NVGvertex(bounds[0], bounds[1], 0.5f, 1.0f);
 
         call.UniformOffset = AllocUniforms(1);
-        if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, fringe, fringe, -1.0f))
+        var scissorCuts = ScissorCuts(ref scissor, bounds[0], bounds[1], bounds[2], bounds[3], fringe);
+        if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, fringe, fringe, -1.0f, scissorCuts))
         {
             call.Type = GLNVGCallType.None;
             return;
@@ -829,8 +1071,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             return;
         }
 
-        GL.Disable(EnableCap.CullFace);
-        SetUniforms(call.UniformOffset, call.Image, mask: true);
+        SetUniforms(call.UniformOffset, call.Image, mask: true, fullCoverage: true);
 
         ref var shader = ref _programs[_currentProgram];
         ref var mask = ref _textures[maskIndex];
@@ -847,7 +1088,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
 
         GL.Uniform1(shader.LocMaskEnabled, 0);
-        GL.Enable(EnableCap.CullFace);
     }
 
     public int CreateTexture(NVGtextureType type, int width, int height, MewVGImageFlags flags, ReadOnlySpan<byte> data)
@@ -991,30 +1231,29 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     public void DeleteTexture(int id)
     {
-        for (var i = 0; i < _textureCount; i++)
+        if (!TryFindTexture(id, out var i))
         {
-            if (_textures[i].Id != id)
-            {
-                continue;
-            }
-
-            int glTex = _textures[i].Tex;
-            if (glTex != 0 && (_textures[i].Flags & MewVGImageFlags.NoDelete) == 0)
-            {
-                // Invalidate bind cache before GL frees the name; otherwise a later
-                // GenTextures reusing the same name would skip the real bind call.
-                if (_boundTexture == glTex)
-                {
-                    _boundTexture = -1;
-                }
-                GL.DeleteTexture(glTex);
-            }
-
-            _textures[i] = default;
             return;
         }
+
+        int glTex = _textures[i].Tex;
+        if (glTex != 0 && (_textures[i].Flags & MewVGImageFlags.NoDelete) == 0)
+        {
+            // Invalidate bind cache before GL frees the name; otherwise a later
+            // GenTextures reusing the same name would skip the real bind call.
+            if (_boundTexture == glTex)
+            {
+                _boundTexture = -1;
+            }
+            GL.DeleteTexture(glTex);
+        }
+
+        _textures[i] = default;
+        _textureSlots.Remove(id);
+        _freeTextureSlots.Push(i);
     }
 
+    /// <summary>Uploads <paramref name="data"/>, the rows of the rectangle tightly packed, into that rectangle of the texture.</summary>
     public bool UpdateTexture(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data)
     {
         if (!TryFindTexture(image, out var index))
@@ -1023,11 +1262,17 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         ref var tex = ref _textures[index];
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > tex.Width || y + height > tex.Height
+            || data.Length < width * height * (tex.Type == NVGtextureType.Alpha ? 1 : 4))
+        {
+            return false;
+        }
+
         BindTexture(tex.Tex);
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 1);
-        GL.PixelStore(PixelStoreParameter.UnpackRowLength, tex.Width);
-        GL.PixelStore(PixelStoreParameter.UnpackSkipPixels, x);
-        GL.PixelStore(PixelStoreParameter.UnpackSkipRows, y);
+        GL.PixelStore(PixelStoreParameter.UnpackRowLength, width);
+        GL.PixelStore(PixelStoreParameter.UnpackSkipPixels, 0);
+        GL.PixelStore(PixelStoreParameter.UnpackSkipRows, 0);
 
         if (tex.Type == NVGtextureType.RGBA)
         {
@@ -1047,8 +1292,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         GL.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
         GL.PixelStore(PixelStoreParameter.UnpackRowLength, 0);
-        GL.PixelStore(PixelStoreParameter.UnpackSkipPixels, 0);
-        GL.PixelStore(PixelStoreParameter.UnpackSkipRows, 0);
 
         BindTexture(0);
         return true;
@@ -1079,9 +1322,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         var paths = _paths.AsSpan(call.PathOffset, call.PathCount);
-        GL.Disable(EnableCap.CullFace);
 
-        SetUniforms(call.UniformOffset + 1, call.Image);
+        // Without fringe vertices the call draws only body triangles, all at full coverage.
+        SetUniforms(call.UniformOffset, call.Image, fullCoverage: call.MergedFringeCount == 0);
         var fillStart = -1;
         var fillCount = 0;
         for (var i = 0; i < paths.Length; i++)
@@ -1096,6 +1339,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 fillCount += paths[i].FillCount;
             }
         }
+        if (fillStart >= 0 && fillCount > 0 && call.MergedFringeCount > 0 && !call.MergedFringeIsStrip &&
+            fillStart + fillCount == call.MergedFringeOffset)
+        {
+            // The body and its fringe lie one after the other as triangles: one draw, in the same order.
+            GL.DrawArrays(PrimitiveType.Triangles, fillStart, fillCount + call.MergedFringeCount);
+            return;
+        }
+
         if (fillStart >= 0 && fillCount > 0)
         {
             GL.DrawArrays(PrimitiveType.Triangles, fillStart, fillCount);
@@ -1106,8 +1357,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             var fringeMode = call.MergedFringeIsStrip ? PrimitiveType.TriangleStrip : PrimitiveType.Triangles;
             GL.DrawArrays(fringeMode, call.MergedFringeOffset, call.MergedFringeCount);
         }
-
-        GL.Enable(EnableCap.CullFace);
     }
 
     private void Stroke(in GLNVGCall call)
@@ -1120,20 +1369,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         var strokeMode = call.MergedStrokeIsStrip ? PrimitiveType.TriangleStrip : PrimitiveType.Triangles;
 
-        GL.Disable(EnableCap.CullFace);
         SetUniforms(call.UniformOffset, call.Image);
         if (call.MergedStrokeCount > 0)
             GL.DrawArrays(strokeMode, call.MergedStrokeOffset, call.MergedStrokeCount);
-        GL.Enable(EnableCap.CullFace);
     }
 
     private void Triangles(in GLNVGCall call)
     {
-        GL.Disable(EnableCap.CullFace);
         SetUniforms(call.UniformOffset, call.Image);
 
         GL.DrawArrays(PrimitiveType.Triangles, call.TriangleOffset, call.TriangleCount);
-        GL.Enable(EnableCap.CullFace);
     }
 
     private void Clip(in GLNVGCall call) => RenderShaderClip(call);
@@ -1157,6 +1402,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var defaultFbo = GL.GetInteger(GetPName.FramebufferBinding);
         if (_clipMaskTextures[index] != 0) GL.DeleteTexture(_clipMaskTextures[index]);
         if (_clipMaskFbos[index] != 0) GL.DeleteFramebuffer(_clipMaskFbos[index]);
+        _clipMaskContentsKnown[index] = false;
 
         _clipMaskTextures[index] = GL.GenTexture();
         GL.BindTexture(TextureTarget.Texture2D, _clipMaskTextures[index]);
@@ -1183,6 +1429,35 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _boundTexture = 0;
         _clipMaskTextureWidths[index] = width;
         _clipMaskTextureHeights[index] = height;
+    }
+
+    /// <summary>A hash of everything that decides what a clip draws into its mask.</summary>
+    private long ClipMaskContents(in GLNVGCall call, int clipX, int clipY, int clipWidth, int clipHeight, long previous, bool intersects)
+    {
+        var hash = new HashCode();
+        hash.Add(clipX);
+        hash.Add(clipY);
+        hash.Add(clipWidth);
+        hash.Add(clipHeight);
+        hash.Add(_flushViewportWidth);
+        hash.Add(_flushViewportHeight);
+        hash.Add(intersects);
+        hash.Add(previous);
+        var verts = _verts.AsSpan(call.MergedFringeOffset, call.MergedFringeCount);
+        hash.AddBytes(System.Runtime.InteropServices.MemoryMarshal.AsBytes(verts));
+        long low = hash.ToHashCode();
+
+        // A second, independent hash keeps two different clips from sharing a value by chance.
+        var second = new HashCode();
+        second.Add(call.MergedFringeCount);
+        second.Add(low);
+        for (var index = 0; index < verts.Length; index += 7)
+        {
+            second.Add(verts[index].X);
+            second.Add(verts[index].Y);
+        }
+
+        return ((long)second.ToHashCode() << 32) | (uint)low;
     }
 
     private void RenderShaderClip(in GLNVGCall call)
@@ -1223,10 +1498,26 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         EnsureClipMaskTexture(destination, clipWidth, clipHeight);
 
+        long contents = ClipMaskContents(call, clipX, clipY, clipWidth, clipHeight,
+            previousActive ? _clipMaskContents[_clipMaskIndex] : 0, previousActive);
+        if (_clipMaskContentsKnown[destination] && _clipMaskContents[destination] == contents)
+        {
+            _clipMaskIndex = destination;
+            _clipMaskActive = true;
+            _clipMaskEmpty = false;
+            _clipMaskX = clipX;
+            _clipMaskY = clipY;
+            _clipMaskWidth = clipWidth;
+            _clipMaskHeight = clipHeight;
+            return;
+        }
+
+        _clipMaskContents[destination] = contents;
+        _clipMaskContentsKnown[destination] = true;
+
         GL.BindFramebuffer(FramebufferTarget.Framebuffer, _clipMaskFbos[destination]);
         GL.Viewport(-clipX, -clipY, _flushViewportWidth, _flushViewportHeight);
         GL.Disable(EnableCap.ScissorTest);
-        GL.Disable(EnableCap.CullFace);
         GL.ColorMask(true, true, true, true);
         GL.ClearColor(0, 0, 0, 0);
         GL.Clear(ClearBufferMask.ColorBufferBit);
@@ -1258,7 +1549,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.Viewport(_flushViewportX, _flushViewportY, _flushViewportWidth, _flushViewportHeight);
         GL.BlendEquation(BlendEquationMode.FuncAdd);
         BlendFuncSeparate(previousBlend);
-        GL.Enable(EnableCap.CullFace);
         _clipMaskIndex = destination;
         _clipMaskActive = true;
         _clipMaskEmpty = false;
@@ -1321,7 +1611,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _coverageTexHeight = height;
     }
 
-    private static int ConvertStripToTriangles(ReadOnlySpan<NVGvertex> strip, Span<NVGvertex> output)
+    private static int ConvertStripToTriangles(ReadOnlySpan<NVGvertex> strip, Span<NVGvertex> output, Vector2 offset)
     {
         if (strip.Length < 3) return 0;
         var written = 0;
@@ -1329,19 +1619,23 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             if ((i & 1) == 0)
             {
-                output[written++] = strip[i];
-                output[written++] = strip[i + 1];
-                output[written++] = strip[i + 2];
+                output[written++] = Moved(strip[i], offset);
+                output[written++] = Moved(strip[i + 1], offset);
+                output[written++] = Moved(strip[i + 2], offset);
             }
             else
             {
-                output[written++] = strip[i + 1];
-                output[written++] = strip[i];
-                output[written++] = strip[i + 2];
+                output[written++] = Moved(strip[i + 1], offset);
+                output[written++] = Moved(strip[i], offset);
+                output[written++] = Moved(strip[i + 2], offset);
             }
         }
+
         return written;
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static NVGvertex Moved(NVGvertex vert, Vector2 offset) => new(vert.X + offset.X, vert.Y + offset.Y, vert.U, vert.V);
 
     private static int StripToTriangleCount(int stripVertCount)
         => stripVertCount < 3 ? 0 : (stripVertCount - 2) * 3;
@@ -1423,7 +1717,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         });
         GL.BlendEquation(BlendEquationMode.Max);
 
-        GL.Disable(EnableCap.CullFace);
         SetUniforms(call.UniformOffset, 0, applyClipMask: false);
         {
             var fillStart = -1;
@@ -1441,7 +1734,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         SetUniforms(call.UniformOffset + 2, 0, applyClipMask: false);
-        GL.Disable(EnableCap.CullFace);
         if (call.MergedFringeCount > 0)
         {
             var fringeMode = call.MergedFringeIsStrip ? PrimitiveType.TriangleStrip : PrimitiveType.Triangles;
@@ -1458,7 +1750,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetCoverageOrigin(scissorX, scissorY);
         BindTexture(_coverageTex);
         GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
-        GL.Enable(EnableCap.CullFace);
         _boundTexture = -1;
     }
 
@@ -1484,7 +1775,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.Scissor(0, 0, scissorWidth, scissorHeight);
         GL.ClearColor(0, 0, 0, 0);
         GL.Clear(ClearBufferMask.ColorBufferBit);
-        GL.Disable(EnableCap.CullFace);
 
         BlendFuncSeparate(new GLNVGBlend
         {
@@ -1513,7 +1803,6 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         // blend at sharp corners where segment quads/joins overlap).
         if (call.TriangleCount > 0)
             GL.DrawArrays(PrimitiveType.TriangleStrip, call.TriangleOffset, call.TriangleCount);
-        GL.Enable(EnableCap.CullFace);
         _boundTexture = -1;
     }
 
@@ -1586,38 +1875,40 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BlendFuncSeparate(blend.SrcRGB, blend.DstRGB, blend.SrcAlpha, blend.DstAlpha);
     }
 
-    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true, bool mask = false, bool callerBindsClip = false)
+    /// <summary>
+    /// Makes the program for a set of uniforms current and loads them; <paramref name="fullCoverage"/> says every
+    /// vertex the call draws carries the fill-body texcoord, so its stroke mask is 1 throughout.
+    /// </summary>
+    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true, bool mask = false, bool callerBindsClip = false, bool fullCoverage = false)
     {
         var frag = _uniforms[uniformOffset].Data;
         var clip = applyClipMask && _clipMaskActive;
         // A caller that binds a clip itself (a nested clip reading the previous one) needs a program that samples it.
-        UseProgram(callerBindsClip ? SelectProgram(frag, true, mask, clipEmpty: false) : SelectProgram(frag, clip, mask, _clipMaskEmpty));
+        UseProgram(callerBindsClip
+            ? SelectProgram(frag, true, mask, clipEmpty: false, fullCoverage)
+            : SelectProgram(frag, clip, mask, _clipMaskEmpty, fullCoverage));
         GL.Uniform4(_programs[_currentProgram].LocFrag, UniformArraySize, frag);
 
         if (bindTexture)
         {
-            var index = -1;
-            if (image != 0)
+            if (image != 0 && TryFindTexture(image, out var index))
             {
-                TryFindTexture(image, out index);
+                BindTexture(_textures[index].Tex);
             }
-
-            if (index < 0)
+            else
             {
-                TryFindTexture(_dummyTex, out index);
+                BindTexture(_dummyTexName);
             }
-
-            BindTexture(index >= 0 ? _textures[index].Tex : 0);
         }
 
         if (!clip)
         {
-            GL.Uniform1(_programs[_currentProgram].LocClipEnabled, 0);
+            SetClipEnabled(0);
             UnbindClipMask();
         }
         else if (_clipMaskEmpty)
         {
-            GL.Uniform1(_programs[_currentProgram].LocClipEnabled, 2);
+            SetClipEnabled(2);
             UnbindClipMask();
         }
         else
@@ -1636,15 +1927,33 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     /// </summary>
     private void UnbindClipMask()
     {
+        if (!_clipUnitBound)
+        {
+            return;
+        }
+
+        _clipUnitBound = false;
         GL.ActiveTexture(TextureUnit.Texture1);
         GL.BindTexture(TextureTarget.Texture2D, 0);
         GL.ActiveTexture(TextureUnit.Texture0);
     }
 
+    /// <summary>Sets the current program's clipEnabled uniform, skipping the call when it already holds the value.</summary>
+    private void SetClipEnabled(int value)
+    {
+        ref var shader = ref _programs[_currentProgram];
+        if (shader.ClipEnabled != value)
+        {
+            shader.ClipEnabled = value;
+            GL.Uniform1(shader.LocClipEnabled, value);
+        }
+    }
+
     private void BindClipMask(int originX, int originY, int width, int height)
     {
         ref var shader = ref _programs[_currentProgram];
-        GL.Uniform1(shader.LocClipEnabled, 1);
+        SetClipEnabled(1);
+        _clipUnitBound = true;
         GL.ActiveTexture(TextureUnit.Texture1);
         GL.BindTexture(TextureTarget.Texture2D, _clipMaskTextures[_clipMaskIndex]);
         GL.ActiveTexture(TextureUnit.Texture0);
@@ -1674,7 +1983,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private static MewVGColor Premultiply(MewVGColor color) => new MewVGColor(color.R * color.A, color.G * color.A, color.B * color.A, color.A);
 
-    private bool ConvertPaint(float[] frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
+    /// <summary>
+    /// False when the scissor leaves every pixel the box can cover at full strength, so the call draws the
+    /// same pixels without it and can take a program that has no scissor in it.
+    /// </summary>
+    private bool ScissorCuts(ref NVGscissorState scissor, float minX, float minY, float maxX, float maxY, float fringe)
+        => NVGScissorCoverage.Cuts(ref scissor, minX, minY, maxX, maxY, fringe, _view[0], _view[1], _devicePixelRatio);
+
+    private bool ConvertPaint(float[] frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr, bool scissorCuts)
     {
         Span<float> invxform = stackalloc float[6];
 
@@ -1685,7 +2001,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         SetUniformVec4(frag, 6, inner.R, inner.G, inner.B, inner.A);
         SetUniformVec4(frag, 7, outer.R, outer.G, outer.B, outer.A);
 
-        if (scissor.Extent[0] < -0.5f || scissor.Extent[1] < -0.5f)
+        if (!scissorCuts || scissor.Extent[0] < -0.5f || scissor.Extent[1] < -0.5f)
         {
             SetUniformVec4(frag, 0, 0, 0, 0, 0);
             SetUniformVec4(frag, 1, 0, 0, 0, 0);
@@ -1854,13 +2170,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private bool TryFindTexture(int id, out int index)
     {
-        for (var i = 0; i < _textureCount; i++)
+        if (id != 0 && _textureSlots.TryGetValue(id, out index))
         {
-            if (_textures[i].Id == id)
-            {
-                index = i;
-                return true;
-            }
+            return true;
         }
 
         index = -1;
@@ -1869,28 +2181,27 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private int? AllocTexture()
     {
-        for (var i = 0; i < _textureCount; i++)
+        int index;
+        if (_freeTextureSlots.Count > 0)
         {
-            if (_textures[i].Id == 0)
+            index = _freeTextureSlots.Pop();
+        }
+        else
+        {
+            if (_textureCount + 1 > _textureCapacity)
             {
-                ref var tex = ref _textures[i];
-                tex = default;
-                tex.Id = ++_textureId;
-                return i;
+                var newCapacity = Math.Max(_textureCount + 1, 4) + _textureCapacity / 2;
+                Array.Resize(ref _textures, newCapacity);
+                _textureCapacity = newCapacity;
             }
+
+            index = _textureCount++;
         }
 
-        if (_textureCount + 1 > _textureCapacity)
-        {
-            var newCapacity = Math.Max(_textureCount + 1, 4) + _textureCapacity / 2;
-            Array.Resize(ref _textures, newCapacity);
-            _textureCapacity = newCapacity;
-        }
-
-        var index = _textureCount++;
         ref var newTex = ref _textures[index];
         newTex = default;
         newTex.Id = ++_textureId;
+        _textureSlots[newTex.Id] = index;
         return index;
     }
 
@@ -1966,6 +2277,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _vbo = GL.GenBuffer();
 
         _dummyTex = CreateTexture(NVGtextureType.Alpha, 1, 1, 0, ReadOnlySpan<byte>.Empty);
+        _dummyTexName = TryFindTexture(_dummyTex, out var dummyIndex) ? _textures[dummyIndex].Tex : 0;
 
         CheckError("create done");
     }
@@ -2021,7 +2333,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     /// Picks the program for a draw from its uniforms and the flush state: a variant when one draws
     /// it exactly as the uber shader would, the uber shader otherwise.
     /// </summary>
-    private int SelectProgram(float[] frag, bool clip, bool mask, bool clipEmpty)
+    private int SelectProgram(float[] frag, bool clip, bool mask, bool clipEmpty, bool fullCoverage)
     {
         // An empty clip is drawn by the uber shader (clipEnabled 2); the variants have no such state.
         if (_uberShaderOnly || (clip && clipEmpty))
@@ -2038,13 +2350,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var paint = (GLNVGShaderType)(int)frag[12 * 4 + 3] switch
         {
             GLNVGShaderType.FillGrad => IsSolidPaint(frag) ? VARIANT_PAINT_SOLID : VARIANT_PAINT_BOX_GRADIENT,
-            GLNVGShaderType.FillImg => VARIANT_PAINT_IMAGE,
-            GLNVGShaderType.Img => VARIANT_PAINT_IMAGE_TRIANGLES,
+            GLNVGShaderType.FillImg => ImagePaint(frag, VARIANT_PAINT_IMAGE, VARIANT_PAINT_IMAGE_UNPREMULTIPLIED, VARIANT_PAINT_IMAGE_ALPHA),
+            GLNVGShaderType.Img => ImagePaint(frag, VARIANT_PAINT_IMAGE_TRIANGLES, VARIANT_PAINT_IMAGE_TRIANGLES_UNPREMULTIPLIED, VARIANT_PAINT_IMAGE_TRIANGLES_ALPHA),
             GLNVGShaderType.GradientLinear => VARIANT_PAINT_LINEAR_GRADIENT,
             GLNVGShaderType.GradientRadial => VARIANT_PAINT_RADIAL_GRADIENT,
             GLNVGShaderType.Simple => VARIANT_PAINT_SIMPLE,
             GLNVGShaderType.CoverageOutput => VARIANT_PAINT_COVERAGE_OUTPUT,
             GLNVGShaderType.CoverageComposite => IsSolidPaint(frag) ? VARIANT_PAINT_COVERAGE_SOLID : VARIANT_PAINT_COVERAGE_COMPOSITE,
+            GLNVGShaderType.RoundedRect => VARIANT_PAINT_ROUNDED_RECT,
             _ => 0,
         };
         if (paint == 0)
@@ -2054,10 +2367,27 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         var flags = (HasScissor(frag) ? VARIANT_FLAG_SCISSOR : 0) |
                     (clip ? VARIANT_FLAG_CLIP : 0) |
-                    (mask ? VARIANT_FLAG_MASK : 0);
+                    (mask ? VARIANT_FLAG_MASK : 0) |
+                    (fullCoverage && ReadsStrokeMask(paint) ? VARIANT_FLAG_FULL_COVERAGE : 0);
         var index = paint * VARIANT_FLAG_COUNT + flags;
         return _variantFailed[index] ? UBER_SHADER : index;
     }
+
+    /// <summary>The image variant of the three given for the texture type the uniforms name.</summary>
+    private static int ImagePaint(float[] frag, int premultiplied, int unpremultiplied, int alpha) => (int)frag[12 * 4 + 2] switch
+    {
+        1 => unpremultiplied,
+        2 => alpha,
+        _ => premultiplied,
+    };
+
+    /// <summary>Whether the variant paint's colour depends on the stroke mask, which full coverage replaces by 1.</summary>
+    private static bool ReadsStrokeMask(int paint) => paint switch
+    {
+        VARIANT_PAINT_SOLID or VARIANT_PAINT_BOX_GRADIENT or VARIANT_PAINT_LINEAR_GRADIENT or VARIANT_PAINT_RADIAL_GRADIENT or
+        VARIANT_PAINT_IMAGE or VARIANT_PAINT_IMAGE_UNPREMULTIPLIED or VARIANT_PAINT_IMAGE_ALPHA => true,
+        _ => false,
+    };
 
     /// <summary>True when the box gradient's inner and outer colours match, so it is that colour everywhere.</summary>
     private static bool IsSolidPaint(float[] frag)
@@ -2130,21 +2460,27 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var paint = (index / VARIANT_FLAG_COUNT) switch
         {
             VARIANT_PAINT_SOLID => "#define PAINT_SOLID\n",
-            VARIANT_PAINT_IMAGE => "#define PAINT_IMAGE\n",
-            VARIANT_PAINT_IMAGE_TRIANGLES => "#define PAINT_IMAGE_TRIANGLES\n",
+            VARIANT_PAINT_IMAGE => "#define PAINT_IMAGE\n#define TEX_TYPE 0\n",
+            VARIANT_PAINT_IMAGE_UNPREMULTIPLIED => "#define PAINT_IMAGE\n#define TEX_TYPE 1\n",
+            VARIANT_PAINT_IMAGE_ALPHA => "#define PAINT_IMAGE\n#define TEX_TYPE 2\n",
+            VARIANT_PAINT_IMAGE_TRIANGLES => "#define PAINT_IMAGE_TRIANGLES\n#define TEX_TYPE 0\n",
+            VARIANT_PAINT_IMAGE_TRIANGLES_UNPREMULTIPLIED => "#define PAINT_IMAGE_TRIANGLES\n#define TEX_TYPE 1\n",
+            VARIANT_PAINT_IMAGE_TRIANGLES_ALPHA => "#define PAINT_IMAGE_TRIANGLES\n#define TEX_TYPE 2\n",
             VARIANT_PAINT_BOX_GRADIENT => "#define PAINT_BOX_GRADIENT\n",
             VARIANT_PAINT_LINEAR_GRADIENT => "#define PAINT_LINEAR_GRADIENT\n",
             VARIANT_PAINT_RADIAL_GRADIENT => "#define PAINT_RADIAL_GRADIENT\n",
             VARIANT_PAINT_SIMPLE => "#define PAINT_SIMPLE\n",
             VARIANT_PAINT_COVERAGE_OUTPUT => "#define PAINT_COVERAGE_OUTPUT\n",
             VARIANT_PAINT_COVERAGE_COMPOSITE => "#define PAINT_COVERAGE_COMPOSITE\n",
+            VARIANT_PAINT_ROUNDED_RECT => "#define PAINT_ROUNDED_RECT\n",
             _ => "#define PAINT_COVERAGE_SOLID\n",
         };
         var flags = index % VARIANT_FLAG_COUNT;
         return "#define VARIANT\n" + paint +
                ((flags & VARIANT_FLAG_SCISSOR) != 0 ? "#define SCISSOR\n" : string.Empty) +
                ((flags & VARIANT_FLAG_CLIP) != 0 ? "#define CLIP\n" : string.Empty) +
-               ((flags & VARIANT_FLAG_MASK) != 0 ? "#define MASK\n" : string.Empty);
+               ((flags & VARIANT_FLAG_MASK) != 0 ? "#define MASK\n" : string.Empty) +
+               ((flags & VARIANT_FLAG_FULL_COVERAGE) != 0 ? "#define FULL_COVERAGE\n" : string.Empty);
     }
 
     private static void GetUniforms(ref GLNVGShader shader)

@@ -48,6 +48,9 @@ public sealed class MewVGGL : MewVGContext
         return _gl.UpdateTexture(image, 0, 0, width, height, data);
     }
 
+    public override bool UpdateImageRegion(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data)
+        => _gl.UpdateTexture(image, x, y, width, height, data);
+
     public override bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
     {
         // GL UpdateTexture dispatches on the stored NVGtextureType set at creation. With native
