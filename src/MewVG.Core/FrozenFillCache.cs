@@ -50,10 +50,18 @@ public sealed class FrozenFillCache
     internal Tess.TessWindingRule WindingRule;
     internal float BuildScale;
 
-    // Device-space snapshot of the last winding-resolved ExpandFill output.
-    // Boundary resolution runs in device space and bypasses the object-space
-    // tessellation reuse, so repeat draws with an unchanged transform replay
-    // this snapshot instead of resolving and tessellating again.
+    // The last answer of the boundary gate for these contours, with the fringe and the stretch of the
+    // transform it was asked under. A transform that only moves or turns the contours gets the same answer.
+    internal bool GateKnown;
+    internal bool GateInteracts;
+    internal float GateMargin;
+    internal float GateStretchX;
+    internal float GateStretchY;
+    internal float GateShear;
+
+    // Device-space snapshot of the last ExpandFill output. Repeat draws whose transform differs at most in
+    // translation replay it shifted, instead of transforming the contours, resolving winding and building
+    // the fringe again.
     internal bool SnapshotValid;
     internal float[] SnapshotXform = new float[6];
     internal float SnapshotFringe;

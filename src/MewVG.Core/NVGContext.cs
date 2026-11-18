@@ -229,9 +229,6 @@ internal sealed class NVGContext
     private readonly Tessellator _fillBoundaryTessellator = new();
     private readonly TessResultBuffer _fillBoundaryResultBuffer = new();
 
-    // Set by ExpandFill: whether the last fill went through winding boundary
-    // resolution (used to decide device-snapshot caching in FillFromCache).
-    private bool _lastFillUsedBoundaryResolution;
 
     // Reusable uniform grid over the current fill contours. Each segment
     // registers its inflated bounding box, so proximity queries stay linear in
@@ -2367,10 +2364,9 @@ internal sealed class NVGContext
             return;
         }
 
-        if (_lastFillUsedBoundaryResolution)
-        {
-            StoreDeviceSnapshot(cache, windingRule, fringe, state.Xform);
-        }
+        // Every draw of the shape under the same linear transform replays this, shifted by its translation,
+        // instead of transforming the contours and building the fringe again.
+        StoreDeviceSnapshot(cache, windingRule, fringe, state.Xform);
 
         // Submit to renderer
         fillPaint.InnerColor.A *= state.Alpha;
@@ -2673,13 +2669,12 @@ internal sealed class NVGContext
         var resolvedFillBoundary = false;
         _lastFillUsedMask = false;
         if (!fastSingleConvex && w > 0.0f && _cache.NPaths >= 1 &&
-            FillNeedsBoundaryResolution(_fringeWidth))
+            FillNeedsBoundaryResolution(_fringeWidth, tessCache))
         {
             if (allowMask && TryRasterizeCoverageMask(tessWindingRule, tessCache))
             {
                 // The mask carries both fill and anti-aliasing; the caller submits it in
                 // place of the vertex output.
-                _lastFillUsedBoundaryResolution = false;
                 _cache.NPaths = 0;
                 _cache.NVerts = 0;
                 return;
@@ -2693,7 +2688,6 @@ internal sealed class NVGContext
             // fold back over itself.
             resolvedFillBoundary = ResolveFillBoundaryContours(tessWindingRule);
         }
-        _lastFillUsedBoundaryResolution = resolvedFillBoundary;
         if (_cache.NPaths == 0)
         {
             _cache.NVerts = 0;
@@ -2899,7 +2893,15 @@ internal sealed class NVGContext
 
         if (fringe && directConvexFill)
         {
-            ComputeFillFringeSigns(fringeSigns, sourcePathCount, tessWindingRule);
+            // A lone convex contour has its inside on the side its winding turns to, so no point has to be
+            // probed against the fill to find it.
+            var area = PolyArea(_cache.Points.AsSpan(directFirst, directCount));
+            fringeSigns[0] = area < 0.0f ? -1f : 1f;
+#if DEBUG
+            Span<float> probed = stackalloc float[1];
+            ComputeFillFringeSigns(probed, sourcePathCount, tessWindingRule);
+            System.Diagnostics.Debug.Assert(probed[0] == fringeSigns[0], "The winding of a convex contour gave another fringe side than probing it.");
+#endif
         }
 
         var vertOffset = 0;
@@ -3194,6 +3196,39 @@ internal sealed class NVGContext
         _cache.NVerts = vertOffset;
     }
 
+    /// <summary>
+    /// The gate for a frozen fill, which asks again only when the transform changed the distances between
+    /// its points: a move or a turn of the same geometry keeps them, and with them the answer.
+    /// </summary>
+    private bool FillNeedsBoundaryResolution(float margin, FrozenFillCache? cache)
+    {
+        if (cache == null)
+        {
+            return FillNeedsBoundaryResolution(margin);
+        }
+
+        // Two transforms stretch the geometry alike exactly when these three products match.
+        ref var state = ref GetState();
+        var xf = state.Xform;
+        var stretchX = (xf[0] * xf[0]) + (xf[1] * xf[1]);
+        var stretchY = (xf[2] * xf[2]) + (xf[3] * xf[3]);
+        var shear = (xf[0] * xf[2]) + (xf[1] * xf[3]);
+        if (cache.GateKnown && cache.GateMargin == margin &&
+            cache.GateStretchX == stretchX && cache.GateStretchY == stretchY && cache.GateShear == shear)
+        {
+            return cache.GateInteracts;
+        }
+
+        var interacts = FillNeedsBoundaryResolution(margin);
+        cache.GateKnown = true;
+        cache.GateMargin = margin;
+        cache.GateStretchX = stretchX;
+        cache.GateStretchY = stretchY;
+        cache.GateShear = shear;
+        cache.GateInteracts = interacts;
+        return interacts;
+    }
+
     private bool FillNeedsBoundaryResolution(float margin)
     {
         var pathCount = _cache.NPaths;
@@ -3207,10 +3242,10 @@ internal sealed class NVGContext
         BuildFillSegmentGrid(pathCount, margin);
         var grid = _fillSegmentGrid;
 
-        // Prefix arc lengths per point: two segments of the same contour that
-        // are close in space but adjacent along the contour (flattened tight
-        // arcs, end caps) are normal geometry, not a fold-over. Only pairs far
-        // apart along the contour count as self-overlap.
+        // Prefix arc lengths per point: two stretches of the same contour that
+        // are close in space but adjacent along the contour (a corner, flattened
+        // tight arcs, end caps) are normal geometry, not a fold-over. Only points
+        // far apart along the contour count as self-overlap.
         var pool = System.Buffers.ArrayPool<float>.Shared;
         var arcPrefix = pool.Rent(_cache.NPoints);
         var arcTotals = pool.Rent(pathCount);
@@ -3249,12 +3284,14 @@ internal sealed class NVGContext
                     var segB = grid.EntrySegments[b];
                     if (pathB == pathA)
                     {
-                        var arcSeparation = MathF.Abs(arcPrefix[contourA.First + segB] - arcPrefix[contourA.First + segA]);
-                        arcSeparation = Minf(arcSeparation, arcTotals[pathA] - arcSeparation);
-                        if (arcSeparation <= minimumFoldSeparation)
+                        if (segB != segA &&
+                            SegmentsFoldOver(pointsA, arcPrefix.AsSpan(contourA.First, contourA.Count), arcTotals[pathA], segA, segB, minimumFoldSeparation, marginSquared))
                         {
-                            continue;
+                            interacts = true;
+                            break;
                         }
+
+                        continue;
                     }
 
                     ref readonly var contourB = ref _cache.Paths[pathB];
@@ -3274,6 +3311,92 @@ internal sealed class NVGContext
         pool.Return(arcTotals, clearArray: false);
         pool.Return(arcPrefix, clearArray: false);
         return interacts;
+    }
+
+    /// <summary>
+    /// Whether two segments of one contour hold a pair of points further apart along the contour than
+    /// <paramref name="minimumSeparation"/> and closer in space than the margin: the contour folding back
+    /// over itself, or a spike thinner than the fringe.
+    /// </summary>
+    private static bool SegmentsFoldOver(
+        ReadOnlySpan<NVGpoint> points,
+        ReadOnlySpan<float> arcPrefix,
+        float arcTotal,
+        int segmentA,
+        int segmentB,
+        float minimumSeparation,
+        float marginSquared)
+    {
+        var first = Math.Min(segmentA, segmentB);
+        var second = Math.Max(segmentA, segmentB);
+        var firstLength = points[first].Len;
+        var secondLength = points[second].Len;
+
+        // The contour runs from the end of one segment to the start of the other both ways round; the
+        // shorter run is the one that can make the pair neighbours.
+        var forwardGap = arcPrefix[second] - arcPrefix[first] - firstLength;
+        var backwardGap = arcTotal - arcPrefix[second] - secondLength + arcPrefix[first];
+        int leading;
+        int trailing;
+        float gap;
+        if (forwardGap <= backwardGap)
+        {
+            leading = first;
+            trailing = second;
+            gap = forwardGap;
+        }
+        else
+        {
+            leading = second;
+            trailing = first;
+            gap = backwardGap;
+        }
+
+        ref readonly var leadingStart = ref points[leading];
+        ref readonly var leadingEnd = ref points[(leading + 1) % points.Length];
+        ref readonly var trailingStart = ref points[trailing];
+        ref readonly var trailingEnd = ref points[(trailing + 1) % points.Length];
+        float leadingEndX = leadingEnd.X, leadingEndY = leadingEnd.Y;
+        float trailingStartX = trailingStart.X, trailingStartY = trailingStart.Y;
+
+        var missing = minimumSeparation - gap;
+        if (missing > 0f)
+        {
+            // Segments that meet at a corner, or with a short run between them, are ordinary geometry near
+            // that run. Only the parts far enough from it along the contour are compared, split evenly
+            // between the two segments, which is where a straight spike is at its thinnest for that reach.
+            var leadingLength = points[leading].Len;
+            var trailingLength = points[trailing].Len;
+            var leadingCut = Minf(leadingLength, missing * 0.5f);
+            var trailingCut = missing - leadingCut;
+            if (trailingCut > trailingLength)
+            {
+                trailingCut = trailingLength;
+                leadingCut = missing - trailingCut;
+                if (leadingCut > leadingLength)
+                {
+                    return false;
+                }
+            }
+
+            if (leadingLength > 0f)
+            {
+                var along = 1f - (leadingCut / leadingLength);
+                leadingEndX = leadingStart.X + ((leadingEnd.X - leadingStart.X) * along);
+                leadingEndY = leadingStart.Y + ((leadingEnd.Y - leadingStart.Y) * along);
+            }
+
+            if (trailingLength > 0f)
+            {
+                var along = trailingCut / trailingLength;
+                trailingStartX = trailingStart.X + ((trailingEnd.X - trailingStart.X) * along);
+                trailingStartY = trailingStart.Y + ((trailingEnd.Y - trailingStart.Y) * along);
+            }
+        }
+
+        return SegmentSegmentDistanceSquared(
+            leadingStart.X, leadingStart.Y, leadingEndX, leadingEndY,
+            trailingStartX, trailingStartY, trailingEnd.X, trailingEnd.Y) < marginSquared;
     }
 
     private bool ResolveFillBoundaryContours(TessWindingRule windingRule)
@@ -3508,8 +3631,9 @@ internal sealed class NVGContext
 
             if (!resolved)
             {
-                // Ambiguous - fall back to signed-area winding.
-                signs[i] = path.Winding == MewVGWinding.CW ? 1f : -1f;
+                // A contour too thin to probe takes its inside from the sign of its area, the rule every probed
+                // contour agrees with.
+                signs[i] = PolyArea(pts) < 0.0f ? -1f : 1f;
             }
         }
     }
