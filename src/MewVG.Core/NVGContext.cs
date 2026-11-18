@@ -171,6 +171,9 @@ internal sealed class NVGContext
     private const int NVG_INIT_COMMANDS_SIZE = 256;
     private const float EDGE_AA_FRINGE_PX = 1f;
 
+    // A miter at a right angle reaches this far past the corner, in half stroke widths.
+    private const float SQUARE_MITER_RATIO = 1.4143f;
+
     // miterLimit 4.0 (SVG default) keeps ~36 degree tips on miter instead of beveling.
     // Bevel at a sharp convex tip emits outside-normal vertices that poke past
     // the tip along both edge normals, producing visible 1-2px spikes at the
@@ -216,6 +219,24 @@ internal sealed class NVGContext
     private int _ncommands;
     private int _ccommands;
     private float _commandx, _commandy;
+
+    // The rounded rectangle the path was started with, in user space under the transform it was added with. It
+    // describes the path while the command count still equals _roundedRectCommandEnd, which is -1 otherwise.
+    private PathRoundedRect _pathRoundedRect;
+    private int _roundedRectCommandEnd = -1;
+
+    private struct PathRoundedRect
+    {
+        public float X;
+        public float Y;
+        public float Width;
+        public float Height;
+        public float TopLeft;
+        public float TopRight;
+        public float BottomRight;
+        public float BottomLeft;
+        public Buffer6<float> Xform;
+    }
 
     // State stack
     private readonly NVGstate[] _states;
@@ -1070,6 +1091,7 @@ internal sealed class NVGContext
     public void BeginPath()
     {
         _ncommands = 0;
+        _roundedRectCommandEnd = -1;
         ClearPathCache();
     }
 
@@ -1285,6 +1307,7 @@ internal sealed class NVGContext
             return;
         }
 
+        var startsPath = _ncommands == 0;
         var halfw = Absf(w) * 0.5f;
         var halfh = Absf(h) * 0.5f;
         var rxBL = Minf(radBottomLeft, halfw) * Signf(w);
@@ -1310,6 +1333,85 @@ internal sealed class NVGContext
             (float)NVGcommands.Close
         };
         AppendCommands(vals);
+
+        if (startsPath)
+        {
+            _pathRoundedRect = new PathRoundedRect
+            {
+                X = x,
+                Y = y,
+                Width = w,
+                Height = h,
+                TopLeft = radTopLeft,
+                TopRight = radTopRight,
+                BottomRight = radBottomRight,
+                BottomLeft = radBottomLeft,
+                Xform = GetState().Xform,
+            };
+            _roundedRectCommandEnd = _ncommands;
+        }
+    }
+
+    /// <summary>
+    /// Has the renderer draw the path as a rounded rectangle worked out per pixel, when the path is exactly one
+    /// rounded rectangle the renderer can draw that way: axis-aligned under a uniform scale, with circular corners
+    /// and a solid paint. False leaves the path to be expanded as usual.
+    /// </summary>
+    private bool TryDrawPathRoundedRect(ref NVGstate state, ref MewVGPaint paint, float strokeHalfWidth, float fringe)
+    {
+        if (_roundedRectCommandEnd != _ncommands ||
+            paint.Image != 0 || paint.PaintKind != (int)NVGpaintKind.Default ||
+            paint.InnerColor.R != paint.OuterColor.R || paint.InnerColor.G != paint.OuterColor.G ||
+            paint.InnerColor.B != paint.OuterColor.B || paint.InnerColor.A != paint.OuterColor.A)
+        {
+            return false;
+        }
+
+        ref readonly var shape = ref _pathRoundedRect;
+        var xform = shape.Xform;
+        var scale = Absf(xform[0]);
+        if (xform[1] != 0.0f || xform[2] != 0.0f || scale != Absf(xform[3]) || scale == 0.0f ||
+            shape.Width <= 0.0f || shape.Height <= 0.0f)
+        {
+            return false;
+        }
+
+        // A radius past half the shorter side is cut differently along each side, which makes the corner elliptical.
+        var limit = Minf(shape.Width, shape.Height) * 0.5f;
+        var topLeft = Maxf(shape.TopLeft, 0.0f);
+        var topRight = Maxf(shape.TopRight, 0.0f);
+        var bottomRight = Maxf(shape.BottomRight, 0.0f);
+        var bottomLeft = Maxf(shape.BottomLeft, 0.0f);
+        if (topLeft > limit || topRight > limit || bottomRight > limit || bottomLeft > limit)
+        {
+            return false;
+        }
+
+        // An outline turns its square corners with miter joins, which the per-pixel shape draws square.
+        var hasSquareCorner = topLeft == 0.0f || topRight == 0.0f || bottomRight == 0.0f || bottomLeft == 0.0f;
+        if (strokeHalfWidth >= 0.0f && hasSquareCorner && (state.LineJoin != MewVGLineJoin.Miter || state.MiterLimit < SQUARE_MITER_RATIO))
+        {
+            return false;
+        }
+
+        // A mirrored transform swaps the corners it mirrors.
+        if (xform[0] < 0.0f)
+        {
+            (topLeft, topRight) = (topRight, topLeft);
+            (bottomLeft, bottomRight) = (bottomRight, bottomLeft);
+        }
+
+        if (xform[3] < 0.0f)
+        {
+            (topLeft, bottomLeft) = (bottomLeft, topLeft);
+            (topRight, bottomRight) = (bottomRight, topRight);
+        }
+
+        TransformPoint(out var centerX, out var centerY, xform, shape.X + (shape.Width * 0.5f), shape.Y + (shape.Height * 0.5f));
+        var roundedRect = new NVGRoundedRect(
+            centerX, centerY, shape.Width * 0.5f * scale, shape.Height * 0.5f * scale,
+            topLeft * scale, topRight * scale, bottomRight * scale, bottomLeft * scale, strokeHalfWidth);
+        return _renderer.TryRenderRoundedRect(ref paint, state.CompositeOperation, ref state.Scissor, fringe, roundedRect);
     }
 
     public void Ellipse(float cx, float cy, float rx, float ry)
@@ -2080,18 +2182,46 @@ internal sealed class NVGContext
         var fillPaint = state.Fill;
 
         ApplyPathTolerances();
-        FlattenPaths(enforceWinding: false);
-
         var useFringeAa = state.ShapeAntiAlias;
-        if (useFringeAa)
+        var fringe = useFringeAa ? _fringeWidth : 0.0f;
+
+        var roundedPaint = fillPaint;
+        roundedPaint.InnerColor.A *= state.Alpha;
+        roundedPaint.OuterColor.A *= state.Alpha;
+        if (TryDrawPathRoundedRect(ref state, ref roundedPaint, -1.0f, fringe))
         {
-            var fillFringe = _fringeWidth;
-            ExpandFill(fillFringe, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
+            FillTriCount += 2;
+            DrawCallCount++;
+            ClearPathCache();
+            return;
         }
-        else
+
+        // A path flattened already (by a stroke of it) is expanded from that, so only a fresh one uses the cache.
+        var commands = _commands.AsSpan(0, _ncommands);
+        var settings = PathExpansionSettings.ForFill(_devicePxRatio, fringe, state.FillRule);
+        var fresh = _cache.NPaths == 0;
+        TranslatedPathCache.Entry? stored = null;
+        var shiftX = 0f;
+        var shiftY = 0f;
+        if (fresh)
         {
-            ExpandFill(0.0f, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
+            stored = _translatedPaths.Find(commands, settings, out shiftX, out shiftY);
         }
+
+        if (stored != null)
+        {
+            fillPaint.InnerColor.A *= state.Alpha;
+            fillPaint.OuterColor.A *= state.Alpha;
+            var storedPaths = stored.Paths.AsSpan(0, stored.PathCount);
+            _renderer.RenderFill(ref fillPaint, state.CompositeOperation, ref state.Scissor, fringe, ShiftBounds(stored.Bounds, shiftX, shiftY),
+                storedPaths, stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY));
+            CountFill(storedPaths);
+            ClearPathCache();
+            return;
+        }
+
+        FlattenPaths(enforceWinding: false);
+        ExpandFill(fringe, MewVGLineJoin.Miter, FillExpandMiterLimit, MapFillRuleToTess(state.FillRule));
 
         if (_lastFillUsedMask)
         {
@@ -2105,6 +2235,12 @@ internal sealed class NVGContext
             return;
         }
 
+        // A coverage mask follows the pixel grid and is never kept; vertex geometry moves with the path.
+        if (fresh)
+        {
+            StoreTranslatedPath(commands, settings);
+        }
+
         // Apply global alpha
         fillPaint.InnerColor.A *= state.Alpha;
         fillPaint.OuterColor.A *= state.Alpha;
@@ -2114,31 +2250,51 @@ internal sealed class NVGContext
             ref fillPaint,
             state.CompositeOperation,
             ref state.Scissor,
-            useFringeAa ? _fringeWidth : 0.0f,
+            fringe,
             _cache.Bounds,
             _cache.Paths.AsSpan(0, _cache.NPaths),
-            _cache.Verts);
-
-        // Count triangles. Fill body is a triangle list (NFill/3); fringe is a
-        // triangle strip (NStroke-2). A given path row carries exactly one of
-        // the two, so skip the zero side to avoid an erroneous -2.
-        for (var i = 0; i < _cache.NPaths; i++)
-        {
-            ref var path = ref _cache.Paths[i];
-            if (path.NFill > 0)
-            {
-                FillTriCount += path.NFill / 3;
-            }
-            if (path.NStroke > 0)
-            {
-                FillTriCount += path.NStroke - 2;
-            }
-            DrawCallCount += 2;
-        }
+            _cache.Verts,
+            Vector2.Zero);
+        CountFill(_cache.Paths.AsSpan(0, _cache.NPaths));
 
         // ExpandFill destructively rewrites the path cache (fill body, forced Closed,
         // in-place point edits), so a following Stroke() must re-flatten from commands.
         ClearPathCache();
+    }
+
+    /// <summary>
+    /// Adds a fill's triangles and draw calls to the frame statistics. The fill body is a triangle list (NFill/3)
+    /// and the fringe a triangle strip (NStroke-2); a path row carries one of the two, so the zero side is skipped.
+    /// </summary>
+    private void CountFill(ReadOnlySpan<NVGpathData> paths)
+    {
+        foreach (ref readonly var path in paths)
+        {
+            if (path.NFill > 0)
+            {
+                FillTriCount += path.NFill / 3;
+            }
+
+            if (path.NStroke > 0)
+            {
+                FillTriCount += path.NStroke - 2;
+            }
+
+            DrawCallCount += 2;
+        }
+    }
+
+    /// <summary>
+    /// Bounds of stored geometry moved by a shift, in per-context scratch; the renderer moves the vertices as it
+    /// copies them, so the stored geometry is never changed and rounding never builds up.
+    /// </summary>
+    private ReadOnlySpan<float> ShiftBounds(float[] bounds, float shiftX, float shiftY)
+    {
+        _shiftedBounds[0] = bounds[0] + shiftX;
+        _shiftedBounds[1] = bounds[1] + shiftY;
+        _shiftedBounds[2] = bounds[2] + shiftX;
+        _shiftedBounds[3] = bounds[3] + shiftY;
+        return _shiftedBounds;
     }
 
     /// <summary>
@@ -2379,7 +2535,8 @@ internal sealed class NVGContext
             useFringeAa ? _fringeWidth : 0.0f,
             _cache.Bounds,
             _cache.Paths.AsSpan(0, _cache.NPaths),
-            _cache.Verts);
+            _cache.Verts,
+            Vector2.Zero);
 
         // See Fill() for why NFill uses /3 and NStroke uses -2, each guarded on > 0.
         for (var i = 0; i < _cache.NPaths; i++)
@@ -2401,10 +2558,10 @@ internal sealed class NVGContext
         ClearPathCache();
     }
 
-    // Scratch for replaying a device snapshot at a translated position; per context, so a
-    // replay never mutates the snapshot another context may be reading.
-    private NVGvertex[] _snapshotShiftVerts = Array.Empty<NVGvertex>();
-    private readonly float[] _snapshotShiftBounds = new float[4];
+    // Bounds of stored geometry replayed at a translated position; per context, so a replay never
+    // mutates a snapshot another context may be reading.
+    private readonly float[] _shiftedBounds = new float[4];
+    private readonly TranslatedPathCache _translatedPaths = new();
 
     private bool TryFillFromDeviceSnapshot(
         FrozenFillCache cache,
@@ -2438,53 +2595,17 @@ internal sealed class NVGContext
         fillPaint.InnerColor.A *= state.Alpha;
         fillPaint.OuterColor.A *= state.Alpha;
 
-        ReadOnlySpan<NVGvertex> verts = cache.SnapshotVerts.AsSpan(0, cache.SnapshotNVerts);
-        ReadOnlySpan<float> bounds = cache.SnapshotBounds;
-        if (shiftX != 0f || shiftY != 0f)
-        {
-            // The stored snapshot stays untouched and every replay shifts from it, so the
-            // rounding error is a single step and never accumulates across scroll ticks.
-            if (_snapshotShiftVerts.Length < cache.SnapshotNVerts)
-            {
-                _snapshotShiftVerts = new NVGvertex[cache.SnapshotVerts.Length];
-            }
-            var shifted = _snapshotShiftVerts.AsSpan(0, cache.SnapshotNVerts);
-            verts.CopyTo(shifted);
-            for (var i = 0; i < shifted.Length; i++)
-            {
-                shifted[i].X += shiftX;
-                shifted[i].Y += shiftY;
-            }
-            _snapshotShiftBounds[0] = cache.SnapshotBounds[0] + shiftX;
-            _snapshotShiftBounds[1] = cache.SnapshotBounds[1] + shiftY;
-            _snapshotShiftBounds[2] = cache.SnapshotBounds[2] + shiftX;
-            _snapshotShiftBounds[3] = cache.SnapshotBounds[3] + shiftY;
-            verts = shifted;
-            bounds = _snapshotShiftBounds;
-        }
-
+        var paths = cache.SnapshotPaths.AsSpan(0, cache.SnapshotNPaths);
         _renderer.RenderFill(
             ref fillPaint,
             state.CompositeOperation,
             ref state.Scissor,
             fringe,
-            bounds,
-            cache.SnapshotPaths.AsSpan(0, cache.SnapshotNPaths),
-            verts);
-
-        for (var i = 0; i < cache.SnapshotNPaths; i++)
-        {
-            ref readonly var path = ref cache.SnapshotPaths[i];
-            if (path.NFill > 0)
-            {
-                FillTriCount += path.NFill / 3;
-            }
-            if (path.NStroke > 0)
-            {
-                FillTriCount += path.NStroke - 2;
-            }
-            DrawCallCount += 2;
-        }
+            ShiftBounds(cache.SnapshotBounds, shiftX, shiftY),
+            paths,
+            cache.SnapshotVerts.AsSpan(0, cache.SnapshotNVerts),
+            new Vector2(shiftX, shiftY));
+        CountFill(paths);
 
         ClearPathCache();
         return true;
@@ -2603,15 +2724,40 @@ internal sealed class NVGContext
         strokePaint.OuterColor.A *= state.Alpha;
 
         ApplyPathTolerances();
-        FlattenPaths();
-
-        if (state.ShapeAntiAlias)
+        var expansionFringe = state.ShapeAntiAlias ? _fringeWidth : 0.0f;
+        if (TryDrawPathRoundedRect(ref state, ref strokePaint, strokeWidth * 0.5f, expansionFringe))
         {
-            ExpandStroke(strokeWidth * 0.5f, _fringeWidth, state.LineCap, state.LineJoin, state.MiterLimit);
+            StrokeTriCount += 2;
+            DrawCallCount++;
+            return;
         }
-        else
+
+        // A path flattened already (by a fill or stroke of it) is expanded from that, so only a fresh one uses the cache.
+        var commands = _commands.AsSpan(0, _ncommands);
+        var settings = PathExpansionSettings.ForStroke(_devicePxRatio, expansionFringe, strokeWidth * 0.5f, state.LineCap, state.LineJoin, state.MiterLimit);
+        var fresh = _cache.NPaths == 0;
+        TranslatedPathCache.Entry? stored = null;
+        var shiftX = 0f;
+        var shiftY = 0f;
+        if (fresh)
         {
-            ExpandStroke(strokeWidth * 0.5f, 0.0f, state.LineCap, state.LineJoin, state.MiterLimit);
+            stored = _translatedPaths.Find(commands, settings, out shiftX, out shiftY);
+        }
+
+        if (stored != null)
+        {
+            var storedPaths = stored.Paths.AsSpan(0, stored.PathCount);
+            _renderer.RenderStroke(ref strokePaint, state.CompositeOperation, ref state.Scissor, _fringeWidth, strokeWidth, storedPaths,
+                stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY));
+            CountStroke(storedPaths);
+            return;
+        }
+
+        FlattenPaths();
+        ExpandStroke(strokeWidth * 0.5f, expansionFringe, state.LineCap, state.LineJoin, state.MiterLimit);
+        if (fresh)
+        {
+            StoreTranslatedPath(commands, settings);
         }
 
         // Submit to renderer
@@ -2622,12 +2768,28 @@ internal sealed class NVGContext
             _fringeWidth,
             strokeWidth,
             _cache.Paths.AsSpan(0, _cache.NPaths),
-            _cache.Verts);
+            _cache.Verts,
+            Vector2.Zero);
+        CountStroke(_cache.Paths.AsSpan(0, _cache.NPaths));
+    }
 
-        // Count triangles
-        for (var i = 0; i < _cache.NPaths; i++)
+    /// <summary>Keeps the geometry just expanded into the path cache for the path of the last missed lookup.</summary>
+    private void StoreTranslatedPath(ReadOnlySpan<float> commands, in PathExpansionSettings settings)
+    {
+        var paths = _cache.Paths.AsSpan(0, _cache.NPaths);
+        var vertCount = 0;
+        foreach (ref readonly var path in paths)
         {
-            ref var path = ref _cache.Paths[i];
+            vertCount = Math.Max(vertCount, Math.Max(path.FillOffset + path.NFill, path.StrokeOffset + path.NStroke));
+        }
+
+        _translatedPaths.Store(commands, settings, paths, _cache.Verts.AsSpan(0, vertCount), _cache.Bounds);
+    }
+
+    private void CountStroke(ReadOnlySpan<NVGpathData> paths)
+    {
+        foreach (ref readonly var path in paths)
+        {
             StrokeTriCount += path.NStroke - 2;
             DrawCallCount++;
         }

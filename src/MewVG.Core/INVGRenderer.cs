@@ -1,5 +1,7 @@
 // NanoVG renderer abstraction (core/backend split)
 
+using System.Numerics;
+
 namespace Aprillz.MewVG;
 
 internal interface INVGRenderer
@@ -10,6 +12,7 @@ internal interface INVGRenderer
 
     void Flush();
 
+    /// <summary>Draws a fill whose vertices are moved by <paramref name="offset"/>, which <paramref name="bounds"/> already includes.</summary>
     void RenderFill(
         ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
@@ -17,8 +20,10 @@ internal interface INVGRenderer
         float fringe,
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts);
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset);
 
+    /// <summary>Draws a stroke whose vertices are moved by <paramref name="offset"/>.</summary>
     void RenderStroke(
         ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
@@ -26,7 +31,19 @@ internal interface INVGRenderer
         float fringe,
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts);
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset);
+
+    /// <summary>
+    /// Draws a solid rounded rectangle, or its outline, by working out its coverage per pixel; false when the
+    /// renderer cannot, and the caller then draws the rectangle's path instead.
+    /// </summary>
+    bool TryRenderRoundedRect(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        in NVGRoundedRect shape);
 
     void RenderClip(
         ref NVGscissorState scissor,
