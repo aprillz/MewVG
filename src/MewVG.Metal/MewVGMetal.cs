@@ -111,6 +111,9 @@ public sealed class MewVGMetal : MewVGContext
         return _context.UpdateTexture(image, 0, 0, width, height, data);
     }
 
+    public override bool UpdateImageRegion(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data)
+        => _context.UpdateTextureInQueueOrder(image, x, y, width, height, data);
+
     public override bool UpdateImageBGRA(int image, ReadOnlySpan<byte> data)
     {
         // The texture's MTLPixelFormat (set at creation) decides the upload format. As long
