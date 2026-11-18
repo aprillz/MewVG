@@ -1,3 +1,5 @@
+using System.Numerics;
+
 using Aprillz.MewVG;
 
 namespace MewVG.Core.Tests;
@@ -57,9 +59,10 @@ internal sealed class FakeRenderer : INVGRenderer
         float fringe,
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
-        FillCalls.Add(new Call(paths.ToArray(), verts.ToArray(), fringe));
+        FillCalls.Add(new Call(paths.ToArray(), Moved(verts, offset), fringe));
     }
 
     public void RenderStroke(
@@ -69,9 +72,43 @@ internal sealed class FakeRenderer : INVGRenderer
         float fringe,
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
-        StrokeCalls.Add(new StrokeCallData(paths.ToArray(), verts.ToArray(), fringe, strokeWidth));
+        StrokeCalls.Add(new StrokeCallData(paths.ToArray(), Moved(verts, offset), fringe, strokeWidth));
+    }
+
+    /// <summary>When set, rounded rectangles are taken whole and recorded; otherwise the context draws their paths.</summary>
+    public bool AcceptsRoundedRects { get; set; }
+
+    public List<NVGRoundedRect> RoundedRectCalls { get; } = new();
+
+    public bool TryRenderRoundedRect(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        in NVGRoundedRect shape)
+    {
+        if (AcceptsRoundedRects)
+        {
+            RoundedRectCalls.Add(shape);
+        }
+
+        return AcceptsRoundedRects;
+    }
+
+    /// <summary>The vertices as the renderer draws them, moved by the call's offset.</summary>
+    private static NVGvertex[] Moved(ReadOnlySpan<NVGvertex> verts, Vector2 offset)
+    {
+        var moved = verts.ToArray();
+        foreach (ref var vert in moved.AsSpan())
+        {
+            vert.X += offset.X;
+            vert.Y += offset.Y;
+        }
+
+        return moved;
     }
 
     public void RenderClip(
