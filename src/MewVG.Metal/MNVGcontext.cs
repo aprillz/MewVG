@@ -352,6 +352,115 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
           }
         }
 
+        // ─── Paint variants ───────────────────────────────────────────────────
+        // Specialised by function constants into one paint without the branches of the others. A variant
+        // draws exactly what fragmentShaderAA draws for the uniforms it is picked for (see SelectVariant):
+        // the affine coordinates come from the vertex shader, and the scissor, mask and clip reads are left
+        // out when they cannot change the result.
+        constant int VARIANT_PAINT [[function_constant(0)]];
+        constant int VARIANT_TEX_TYPE [[function_constant(1)]];
+        constant bool VARIANT_SCISSOR [[function_constant(2)]];
+        constant bool VARIANT_CLIP [[function_constant(3)]];
+        constant bool VARIANT_MASK [[function_constant(4)]];
+
+        typedef struct {
+          float4 pos [[position]];
+          float2 fpos;
+          float2 ftcoord;
+          float2 fscissor;
+          float2 fpaint;
+          float fgradT;
+        } VariantRasterizerData;
+
+        float gradientSpreadT(float t, int spread) {
+          if (spread == 0) return clamp(t, 0.0f, 1.0f);
+          if (spread == 2) return fract(max(t, 0.0f));
+          float r = fmod(max(t, 0.0f), 2.0f);
+          return r <= 1.0f ? r : 2.0f - r;
+        }
+
+        float4 variantTexel(float4 color) {
+          if (VARIANT_TEX_TYPE == 1) return float4(color.xyz * color.w, color.w);
+          if (VARIANT_TEX_TYPE == 2) return float4(color.x);
+          return color;
+        }
+
+        vertex VariantRasterizerData vertexVariant(Vertex vert [[stage_in]],
+                                                   constant float2& viewSize [[buffer(1)]],
+                                                   constant Uniforms& uniforms [[buffer(2)]]) {
+          VariantRasterizerData out;
+          out.ftcoord = vert.tcoord;
+          out.fpos = vert.pos;
+          out.fscissor = VARIANT_SCISSOR ? (uniforms.scissorMat * float3(vert.pos, 1.0f)).xy : float2(0.0f);
+          float2 paintPt = (uniforms.paintMat * float3(vert.pos, 1.0f)).xy;
+          out.fpaint = VARIANT_PAINT == 2 ? paintPt / uniforms.extent : paintPt;
+          float2 axis = uniforms.gradientFocal - uniforms.gradientCenter;
+          float len2 = dot(axis, axis);
+          out.fgradT = VARIANT_PAINT == 5 && len2 > 1e-6f ? dot(paintPt - uniforms.gradientCenter, axis) / len2 : 0.0f;
+          out.pos = float4(2.0 * vert.pos.x / viewSize.x - 1.0,
+                           1.0 - 2.0 * vert.pos.y / viewSize.y,
+                           0, 1);
+          return out;
+        }
+
+        fragment float4 fragmentVariant(VariantRasterizerData in [[stage_in]],
+                                        constant Uniforms& uniforms [[buffer(0)]],
+                                        texture2d<float> texture [[texture(0)]],
+                                        texture2d<float> maskTex [[texture(1)]],
+                                        sampler sampler [[sampler(0)]],
+                                        float4 clipIn [[color(2), function_constant(VARIANT_CLIP)]]) {
+          // Only the clip variants read the clip attachment: a fragment function that reads the framebuffer has
+          // the fragments over one pixel run in order, which a stack of overlapping fills pays for.
+          float scissor = 1.0f;
+          if (VARIANT_SCISSOR) {
+            float2 sc = (abs(in.fscissor) - uniforms.scissorExt) * uniforms.scissorScale;
+            sc = saturate(float2(0.5f) - sc);
+            scissor = sc.x * sc.y;
+          }
+
+          float4 color;
+          if (VARIANT_PAINT == 3) {         // image triangles
+            color = variantTexel(texture.sample(sampler, in.ftcoord));
+            color *= scissor;
+            color = color * uniforms.innerCol;
+          } else if (VARIANT_PAINT == 7) {  // simple
+            color = uniforms.innerCol * scissor;
+          } else {
+            float strokeAlpha = strokeMask(uniforms, in.ftcoord);
+            if (VARIANT_PAINT == 1) {       // solid
+              color = uniforms.innerCol;
+              color *= scissor;
+              color *= strokeAlpha;
+            } else if (VARIANT_PAINT == 4) {  // box gradient
+              float d = saturate((uniforms.feather * 0.5 + sdroundrect(uniforms, in.fpaint)) / uniforms.feather);
+              color = mix(uniforms.innerCol, uniforms.outerCol, d);
+              color *= scissor;
+              color *= strokeAlpha;
+            } else if (VARIANT_PAINT == 5) {  // linear gradient
+              float t = gradientSpreadT(in.fgradT, int(uniforms.gradientSpread));
+              color = texture.sample(sampler, float2(t, 0.5f));
+              color *= uniforms.innerCol;
+              color *= scissor;
+              color *= strokeAlpha;
+            } else if (VARIANT_PAINT == 6) {  // radial gradient
+              float t = gradientRadialT(in.fpaint, uniforms.gradientCenter, uniforms.gradientFocal, uniforms.gradientRadii, int(uniforms.gradientSpread));
+              color = texture.sample(sampler, float2(t, 0.5f));
+              color *= uniforms.innerCol;
+              color *= scissor;
+              color *= strokeAlpha;
+            } else {                          // image
+              color = variantTexel(texture.sample(sampler, in.fpaint));
+              color *= scissor;
+              color *= strokeAlpha;
+              color = color * uniforms.innerCol;
+            }
+          }
+
+          if (VARIANT_MASK) color *= maskCoverage(uniforms, maskTex, in.fpos);
+          if (VARIANT_CLIP) color *= clipIn.r;
+          return color;
+        }
+
         // Path clip: color[2] (RG8) holds the current clip coverage in .r for every pixel, 1 when
         // no clip is active, and every paint fragment multiplies by it through framebuffer fetch.
         // Its .g channel is scratch for building the next clip (see the clip functions below).
@@ -525,6 +634,25 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     // newRenderPipelineStateWithDescriptor:error: (a multi-millisecond synchronous
     // call) on every draw call.
     private IntPtr _pipelineState;           // id<MTLRenderPipelineState> for the call being rendered
+    // Paint variants (see the shader's fragmentVariant): index = ((paint * 3) + texType) * 8 + flags.
+    private const int VARIANT_FLAG_SCISSOR = 1;
+    private const int VARIANT_FLAG_CLIP = 2;
+    private const int VARIANT_FLAG_MASK = 4;
+    private const int VARIANT_PAINT_SOLID = 1;
+    private const int VARIANT_PAINT_IMAGE = 2;
+    private const int VARIANT_PAINT_IMAGE_TRIANGLES = 3;
+    private const int VARIANT_PAINT_BOX_GRADIENT = 4;
+    private const int VARIANT_PAINT_LINEAR_GRADIENT = 5;
+    private const int VARIANT_PAINT_RADIAL_GRADIENT = 6;
+    private const int VARIANT_PAINT_SIMPLE = 7;
+    private const int VARIANT_COUNT = 8 * 3 * 8;
+    // MEWVG_METAL_UBERSHADER=1 draws everything with the uber shader (A/B comparison).
+    private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_METAL_UBERSHADER") == "1";
+    private readonly IntPtr[] _variantVertexFunctions = new IntPtr[VARIANT_COUNT];
+    private readonly IntPtr[] _variantFragmentFunctions = new IntPtr[VARIANT_COUNT];
+    private readonly bool[] _variantFailed = new bool[VARIANT_COUNT];
+    // Whether a path clip is in force at the call being rendered; the render pass starts without one.
+    private bool _clipActive;
     private IntPtr _pseudoSampler;           // id<MTLSamplerState>
     private IntPtr _pseudoTexture;           // id<MTLTexture>
     private readonly Dictionary<ulong, IntPtr> _pipelineCache = new();
@@ -553,6 +681,11 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     // Frame state
     private IntPtr _renderEncoder;       // id<MTLRenderCommandEncoder>
+    // The command buffer of the frame being recorded, whose queue staged uploads go through.
+    private IntPtr _frameCommandBuffer;
+    // Staged region uploads of the frame being recorded, committed ahead of the frame's own command buffer.
+    private IntPtr _uploadCommandBuffer;
+    private IntPtr _uploadEncoder;
     private DispatchSemaphore _semaphore;
 
     // Encoder-scoped state cache: skips the objc_msgSend for setRenderPipelineState/
@@ -564,6 +697,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     // ResetEncoderStateCache, called from SetRenderEncoder, because each frame's
     // encoder is a fresh object with no state assumed bound.
     private IntPtr _cachedPipelineState;
+    private IntPtr _cachedVertexUniformBuffer;
+    private nuint? _cachedVertexUniformOffset;
     private MTLCullMode? _cachedCullMode;
     private IntPtr _cachedFragmentTexture;
     private IntPtr _cachedFragmentSampler;
@@ -761,7 +896,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             return cached;
         }
 
-        var pipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha);
+        var pipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, _vertexFunction, _fragmentAAFunction);
         if (pipeline == IntPtr.Zero)
         {
             throw new InvalidOperationException("Failed to create render pipeline state");
@@ -771,11 +906,104 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         return pipeline;
     }
 
+    /// <summary>
+    /// The pipeline of a paint variant for a composite operation, created on first use; zero when the device
+    /// rejects the variant, which is then drawn by the uber shader for good.
+    /// </summary>
+    private IntPtr GetOrCreateVariantPipeline(int variant, NVGcompositeOperationState blend)
+    {
+        if (_variantFailed[variant])
+        {
+            return IntPtr.Zero;
+        }
+
+        ResolveBlendFactors(blend, out var srcRgb, out var dstRgb, out var srcAlpha, out var dstAlpha);
+        var key = PackPipelineKey(srcRgb, dstRgb, srcAlpha, dstAlpha, _pixelFormat) | ((ulong)(variant + 1) << 48);
+        if (_pipelineCache.TryGetValue(key, out var cached))
+        {
+            return cached;
+        }
+
+        if (_variantFragmentFunctions[variant] == IntPtr.Zero && !TryCreateVariantFunctions(variant))
+        {
+            _variantFailed[variant] = true;
+            return IntPtr.Zero;
+        }
+
+        var pipeline = CreatePipelineState(srcRgb, dstRgb, srcAlpha, dstAlpha, _variantVertexFunctions[variant],
+            _variantFragmentFunctions[variant]);
+        if (pipeline == IntPtr.Zero)
+        {
+            _variantFailed[variant] = true;
+            return IntPtr.Zero;
+        }
+
+        _pipelineCache[key] = pipeline;
+        return pipeline;
+    }
+
+    private bool TryCreateVariantFunctions(int variant)
+    {
+        // Runs once per variant, not per frame: pool the NSError and the constant values.
+        using var pool = new AutoreleasePool();
+        var values = ObjCRuntime.New(ObjCRuntime.GetClass("MTLFunctionConstantValues"));
+        if (values == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        try
+        {
+            int paint = variant / 24;
+            int texType = (variant / 8) % 3;
+            byte scissor = (byte)((variant & VARIANT_FLAG_SCISSOR) != 0 ? 1 : 0);
+            byte clip = (byte)((variant & VARIANT_FLAG_CLIP) != 0 ? 1 : 0);
+            byte mask = (byte)((variant & VARIANT_FLAG_MASK) != 0 ? 1 : 0);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &paint, MetalMessages.DATA_TYPE_INT, (nuint)0);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &texType, MetalMessages.DATA_TYPE_INT, (nuint)1);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &scissor, MetalMessages.DATA_TYPE_BOOL, (nuint)2);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &clip, MetalMessages.DATA_TYPE_BOOL, (nuint)3);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &mask, MetalMessages.DATA_TYPE_BOOL, (nuint)4);
+
+            var vertex = CreateSpecializedFunction("vertexVariant", values);
+            if (vertex == IntPtr.Zero)
+            {
+                return false;
+            }
+
+            var fragment = CreateSpecializedFunction("fragmentVariant", values);
+            if (fragment == IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(vertex, ObjCRuntime.Selectors.release);
+                return false;
+            }
+
+            _variantVertexFunctions[variant] = vertex;
+            _variantFragmentFunctions[variant] = fragment;
+            return true;
+        }
+        finally
+        {
+            ObjCRuntime.SendMessage(values, ObjCRuntime.Selectors.release);
+        }
+    }
+
+    private IntPtr CreateSpecializedFunction(string name, IntPtr values)
+    {
+        using var nsName = new NSString(name);
+        var error = IntPtr.Zero;
+        var function = ObjCRuntime.SendMessage(_library, MetalMessages.NewFunctionWithConstantsSelector, nsName.Handle, values,
+            (IntPtr)(&error));
+        return error == IntPtr.Zero ? function : IntPtr.Zero;
+    }
+
     private IntPtr CreatePipelineState(
         MTLBlendFactor srcRgb,
         MTLBlendFactor dstRgb,
         MTLBlendFactor srcAlpha,
-        MTLBlendFactor dstAlpha)
+        MTLBlendFactor dstAlpha,
+        IntPtr vertexFunction,
+        IntPtr fragmentFunction)
     {
         // Only reached on a _pipelineCache miss (see GetOrCreatePipelinePair), not on
         // every draw call, so pooling the NSError from
@@ -789,10 +1017,9 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         var vertexDescriptor = CreateVertexDescriptor();
-        var fragmentFunc = _fragmentAAFunction;
 
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, _vertexFunction);
-        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, fragmentFunc);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexFunction, vertexFunction);
+        ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setFragmentFunction, fragmentFunction);
         ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.setVertexDescriptor, vertexDescriptor);
 
         var colorAttachments = ObjCRuntime.SendMessage(pipelineDescriptor, MetalSelectors.colorAttachments);
@@ -1251,6 +1478,10 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// </summary>
     public void EndFrame()
     {
+        CommitUploads();
+        // The host commits and releases the command buffer after this; later uploads must not reach for it.
+        _frameCommandBuffer = IntPtr.Zero;
+
         // Nothing to render
         if (_callCount == 0)
         {
@@ -1465,8 +1696,98 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     private void SetBlendState(NVGcompositeOperationState blend)
     {
+        // Paint calls set the uber or a variant pipeline themselves (see ApplyPaintPipeline).
         _pipelineState = GetOrCreatePipeline(blend);
-        SetPipelineState(_pipelineState);
+    }
+
+    /// <summary>
+    /// Sets the pipeline that draws a paint call: the variant that draws its uniforms exactly as the uber shader
+    /// would when there is one, the uber shader otherwise.
+    /// </summary>
+    private void ApplyPaintPipeline(ref MNVGbuffers buffers, int uniformIndex, NVGcompositeOperationState blend)
+    {
+        int variant;
+        fixed (byte* ptr = &_uniforms[uniformIndex * MNVG_UNIFORM_ALIGN])
+        {
+            variant = SelectVariant((MNVGfragUniforms*)ptr, _clipActive);
+        }
+
+        var pipeline = variant < 0 ? IntPtr.Zero : GetOrCreateVariantPipeline(variant, blend);
+        if (pipeline == IntPtr.Zero)
+        {
+            SetPipelineState(_pipelineState);
+            return;
+        }
+
+        SetPipelineState(pipeline);
+        SetVertexUniformOffset(buffers.uniformBuffer, (nuint)(uniformIndex * MNVG_UNIFORM_ALIGN));
+    }
+
+    /// <summary>The variant for a call's uniforms, or -1 for the uber shader.</summary>
+    private static int SelectVariant(MNVGfragUniforms* frag, bool clip)
+    {
+        // The variants leave out the discard, which only a non-negative stroke threshold can trigger.
+        if (_uberShaderOnly || frag->strokeThr >= 0.0f)
+        {
+            return -1;
+        }
+
+        int paint = (MNVGshaderType)frag->type switch
+        {
+            MNVGshaderType.MNVG_SHADER_FILLGRAD => IsSolidPaint(frag) ? VARIANT_PAINT_SOLID : VARIANT_PAINT_BOX_GRADIENT,
+            MNVGshaderType.MNVG_SHADER_FILLIMG => VARIANT_PAINT_IMAGE,
+            MNVGshaderType.MNVG_SHADER_IMG => VARIANT_PAINT_IMAGE_TRIANGLES,
+            MNVGshaderType.MNVG_SHADER_GRADIENT_LINEAR => VARIANT_PAINT_LINEAR_GRADIENT,
+            MNVGshaderType.MNVG_SHADER_GRADIENT_RADIAL => VARIANT_PAINT_RADIAL_GRADIENT,
+            MNVGshaderType.MNVG_SHADER_SIMPLE => VARIANT_PAINT_SIMPLE,
+            _ => 0,
+        };
+        if (paint == 0)
+        {
+            return -1;
+        }
+
+        int texType = paint is VARIANT_PAINT_IMAGE or VARIANT_PAINT_IMAGE_TRIANGLES ? Math.Clamp(frag->texType, 0, 2) : 0;
+        int flags = (HasScissor(frag) ? VARIANT_FLAG_SCISSOR : 0) |
+                    (clip ? VARIANT_FLAG_CLIP : 0) |
+                    (frag->maskEnabled != 0 ? VARIANT_FLAG_MASK : 0);
+        return (((paint * 3) + texType) * 8) + flags;
+    }
+
+    /// <summary>True when the box gradient's inner and outer colours match, so it is that colour everywhere.</summary>
+    private static bool IsSolidPaint(MNVGfragUniforms* frag)
+        => frag->innerCol.R == frag->outerCol.R && frag->innerCol.G == frag->outerCol.G &&
+           frag->innerCol.B == frag->outerCol.B && frag->innerCol.A == frag->outerCol.A;
+
+    /// <summary>False for the zero matrix and unit extent and scale ConvertPaint writes when no scissor applies.</summary>
+    private static bool HasScissor(MNVGfragUniforms* frag)
+    {
+        for (int index = 0; index < 12; index++)
+        {
+            if (frag->scissorMat[index] != 0.0f)
+            {
+                return true;
+            }
+        }
+
+        return frag->scissorExt[0] != 1.0f || frag->scissorExt[1] != 1.0f ||
+               frag->scissorScale[0] != 1.0f || frag->scissorScale[1] != 1.0f;
+    }
+
+    /// <summary>Binds the uniform buffer to the vertex stage (index 2) at the given byte offset, for the variants.</summary>
+    private void SetVertexUniformOffset(IntPtr buffer, nuint offset)
+    {
+        if (_cachedVertexUniformBuffer == buffer)
+        {
+            if (_cachedVertexUniformOffset == offset) return;
+            _cachedVertexUniformOffset = offset;
+            ObjCRuntime.SendMessage(_renderEncoder, MetalMessages.SetVertexBufferOffsetSelector, offset, (ulong)2);
+            return;
+        }
+
+        _cachedVertexUniformBuffer = buffer;
+        _cachedVertexUniformOffset = offset;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setVertexBuffer_offset_atIndex, buffer, offset, (nuint)2);
     }
 
     /// <summary>Sends setRenderPipelineState only if it differs from the cached value.</summary>
@@ -1528,6 +1849,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         SetCullMode(MTLCullMode.None);
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
+        ApplyPaintPipeline(ref buffers, call.uniformOffset + 1, call.blendFunc);
 
         var fillStart = -1;
         var fillCount = 0;
@@ -1673,6 +1995,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         SetCullMode(MTLCullMode.None);
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+        ApplyPaintPipeline(ref buffers, call.uniformOffset, call.blendFunc);
 
         for (var i = 0; i < call.pathCount; i++)
         {
@@ -1695,6 +2018,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         SetCullMode(MTLCullMode.Back);
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+        ApplyPaintPipeline(ref buffers, call.uniformOffset, call.blendFunc);
 
         ObjCRuntime.SendMessage(
             _renderEncoder,
@@ -1717,6 +2041,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, mask.tex, MASK_TEXTURE_INDEX);
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(call.uniformOffset * MNVG_UNIFORM_ALIGN));
+        ApplyPaintPipeline(ref buffers, call.uniformOffset, call.blendFunc);
 
         ObjCRuntime.SendMessage(
             _renderEncoder,
@@ -1776,6 +2101,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         SetPipelineState(pipelines[CLIP_PIPELINE_RESOLVE]);
         DrawQuad(call.triangleOffset, call.triangleCount);
+        _clipActive = true;
 
         SetPipelineState(_pipelineState);
     }
@@ -1791,6 +2117,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         SetCullMode(MTLCullMode.None);
         SetPipelineState(GetClipPipelines()[CLIP_PIPELINE_RESET]);
         DrawQuad(call.triangleOffset, call.triangleCount);
+        _clipActive = false;
         SetPipelineState(_pipelineState);
     }
 
@@ -2067,9 +2394,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         return id;
     }
 
-    /// <summary>
-    /// Updates texture data
-    /// </summary>
+    /// <summary>Uploads <paramref name="data"/>, the rows of the rectangle tightly packed, into that rectangle of the texture.</summary>
     public bool UpdateTexture(int id, int x, int y, int width, int height, ReadOnlySpan<byte> data)
     {
         if (id <= 0 || id > _textureCount)
@@ -2084,8 +2409,12 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         }
 
         var bytesPerPixel = tex.type == (int)NVGtexture.Alpha ? 1 : 4;
-        var bytesPerRow = tex.width * bytesPerPixel;
-        var srcOffset = y * bytesPerRow + x * bytesPerPixel;
+        var bytesPerRow = width * bytesPerPixel;
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > tex.width || y + height > tex.height
+            || data.Length < bytesPerRow * height)
+        {
+            return false;
+        }
 
         fixed (byte* ptr = data)
         {
@@ -2100,12 +2429,110 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
                 MetalSelectors.replaceRegion_mipmapLevel_withBytes_bytesPerRow,
                 region,
                 (nuint)0,
-                (IntPtr)(ptr + srcOffset),
+                (IntPtr)ptr,
                 (nuint)bytesPerRow
             );
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Uploads a rectangle like <see cref="UpdateTexture"/>, but in queue order while a frame is recorded: frames
+    /// already committed keep sampling the old texels even while the GPU still runs them, and the frame being
+    /// recorded samples the new ones.
+    /// </summary>
+    public bool UpdateTextureInQueueOrder(int id, int x, int y, int width, int height, ReadOnlySpan<byte> data)
+    {
+        if (_frameCommandBuffer == IntPtr.Zero)
+        {
+            return UpdateTexture(id, x, y, width, height, data);
+        }
+
+        if (id <= 0 || id > _textureCount)
+        {
+            return false;
+        }
+
+        ref var tex = ref _textures[id - 1];
+        if (tex.id != id || tex.tex == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        var bytesPerPixel = tex.type == (int)NVGtexture.Alpha ? 1 : 4;
+        var bytesPerRow = width * bytesPerPixel;
+        if (x < 0 || y < 0 || width <= 0 || height <= 0 || x + width > tex.width || y + height > tex.height
+            || data.Length < bytesPerRow * height)
+        {
+            return false;
+        }
+
+        if (_uploadEncoder == IntPtr.Zero)
+        {
+            // A command buffer on the frame's queue committed before the frame's runs after every frame committed
+            // earlier, so the copy cannot overwrite texels they still read.
+            var queue = ObjCRuntime.SendMessage(_frameCommandBuffer, MetalMessages.CommandQueueSelector);
+            var commandBuffer = queue == IntPtr.Zero ? IntPtr.Zero : ObjCRuntime.SendMessage(queue, MetalSelectors.commandBuffer);
+            if (commandBuffer == IntPtr.Zero)
+            {
+                return UpdateTexture(id, x, y, width, height, data);
+            }
+
+            var encoder = ObjCRuntime.SendMessage(commandBuffer, MetalSelectors.blitCommandEncoder);
+            if (encoder == IntPtr.Zero)
+            {
+                return UpdateTexture(id, x, y, width, height, data);
+            }
+
+            _uploadCommandBuffer = ObjCRuntime.SendMessage(commandBuffer, ObjCRuntime.Selectors.retain);
+            _uploadEncoder = ObjCRuntime.SendMessage(encoder, ObjCRuntime.Selectors.retain);
+        }
+
+        var byteCount = bytesPerRow * height;
+        IntPtr staging;
+        fixed (byte* ptr = data)
+        {
+            staging = MetalMessages.NewBufferWithBytes(_device, MetalMessages.NewBufferWithBytesSelector, ptr,
+                (nuint)byteCount, (ulong)MTLResourceOptions.StorageModeShared);
+        }
+
+        if (staging == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        MetalMessages.CopyFromBuffer(
+            _uploadEncoder,
+            MetalMessages.CopyFromBufferSelector,
+            staging,
+            0,
+            (nuint)bytesPerRow,
+            (nuint)byteCount,
+            new MTLSize { Width = (nuint)width, Height = (nuint)height, Depth = 1 },
+            tex.tex,
+            0,
+            0,
+            new MTLOrigin { X = (nuint)x, Y = (nuint)y, Z = 0 });
+
+        // The command buffer keeps the buffers its commands use until they finish.
+        ObjCRuntime.SendMessage(staging, ObjCRuntime.Selectors.release);
+        return true;
+    }
+
+    private void CommitUploads()
+    {
+        if (_uploadCommandBuffer == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ObjCRuntime.SendMessage(_uploadEncoder, MetalSelectors.endEncoding);
+        ObjCRuntime.SendMessage(_uploadCommandBuffer, MetalSelectors.commit);
+        ObjCRuntime.SendMessage(_uploadEncoder, ObjCRuntime.Selectors.release);
+        ObjCRuntime.SendMessage(_uploadCommandBuffer, ObjCRuntime.Selectors.release);
+        _uploadEncoder = IntPtr.Zero;
+        _uploadCommandBuffer = IntPtr.Zero;
     }
 
     private void GenerateMipmaps(IntPtr texture)
@@ -2165,7 +2592,12 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// </summary>
     public void SetRenderEncoder(IntPtr renderEncoder, IntPtr commandBuffer)
     {
+        // Uploads left by a frame that never reached EndFrame still precede everything after them.
+        CommitUploads();
         _renderEncoder = renderEncoder;
+        _frameCommandBuffer = commandBuffer;
+        // A new render pass clears the clip attachment to 1, which is no clip.
+        _clipActive = false;
         // New encoder has no state bound yet - a stale cache would make the first
         // draw call on it skip a setter it actually needs, so always invalidate here.
         ResetEncoderStateCache();
@@ -2184,6 +2616,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         _cachedFragmentSampler = IntPtr.Zero;
         _cachedFragmentUniformBuffer = IntPtr.Zero;
         _cachedFragmentUniformOffset = null;
+        _cachedVertexUniformBuffer = IntPtr.Zero;
+        _cachedVertexUniformOffset = null;
     }
 
     /// <summary>
@@ -2358,9 +2792,11 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         float fringe,
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
         var pathOffset = _pathCount;
+        var firstVert = _vertCount;
         EnsurePaths(_pathCount + paths.Length);
         for (var i = 0; i < paths.Length; i++)
         {
@@ -2399,6 +2835,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
                 _vertCount += path.NStroke;
             }
         }
+
+        MoveVerts(firstVert, _vertCount - firstVert, offset);
 
         // Add call
         EnsureCalls(_callCount + 1);
@@ -2463,7 +2901,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         fixed (byte* ptr = &_uniforms[(call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
-            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
+            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f,
+                ScissorCuts(ref scissor, _verts.AsSpan(firstVert, _vertCount - firstVert), fringe));
             frag->strokeMult = -1.0f;
         }
 
@@ -2495,7 +2934,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         float fringe,
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
     {
         var maxverts = 0;
         var pathOffset = _pathCount;
@@ -2520,6 +2960,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         {
             _verts[_vertCount + i] = verts[i];
         }
+        MoveVerts(_vertCount, maxverts, offset);
         _vertCount += maxverts;
 
         // Add call
@@ -2546,7 +2987,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
-            ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, -1.0f);
+            ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, -1.0f,
+                ScissorCuts(ref scissor, _verts.AsSpan(_vertCount - maxverts, maxverts), fringe));
         }
 
         // Coverage AA composite needs a bounds quad. Compute from stroke verts
@@ -2576,6 +3018,10 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
             else
             {
+                minX += offset.X;
+                minY += offset.Y;
+                maxX += offset.X;
+                maxY += offset.Y;
                 EnsureVerts(_vertCount + 4);
                 call.triangleOffset = _vertCount;
                 call.triangleCount = 4;
@@ -2611,7 +3057,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
-            ConvertPaint(frag, ref paint, ref scissor, 1.0f, fringe, -1.0f);
+            ConvertPaint(frag, ref paint, ref scissor, 1.0f, fringe, -1.0f, ScissorCuts(ref scissor, verts, fringe));
             frag->type = (int)MNVGshaderType.MNVG_SHADER_IMG;
         }
 
@@ -2621,6 +3067,40 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         EnsureVerts(_vertCount + verts.Length);
         verts.CopyTo(_verts.AsSpan(_vertCount));
         _vertCount += verts.Length;
+        MergeWithPreviousTriangles();
+    }
+
+    /// <summary>
+    /// Folds the triangles call just added into the call before it when both sample the same image with the same
+    /// blending and uniforms and their vertices follow each other, so runs of glyph quads become one draw.
+    /// </summary>
+    private void MergeWithPreviousTriangles()
+    {
+        if (_callCount < 2)
+        {
+            return;
+        }
+
+        ref var call = ref _calls[_callCount - 1];
+        ref var previous = ref _calls[_callCount - 2];
+        if (previous.type != MNVGcallType.MNVG_TRIANGLES
+            || previous.image != call.image
+            || previous.blendFunc.SrcRGB != call.blendFunc.SrcRGB
+            || previous.blendFunc.DstRGB != call.blendFunc.DstRGB
+            || previous.blendFunc.SrcAlpha != call.blendFunc.SrcAlpha
+            || previous.blendFunc.DstAlpha != call.blendFunc.DstAlpha
+            || previous.triangleOffset + previous.triangleCount != call.triangleOffset
+            || previous.uniformOffset + 1 != call.uniformOffset
+            || call.uniformOffset != _uniformCount - 1
+            || !_uniforms.AsSpan(previous.uniformOffset * MNVG_UNIFORM_ALIGN, sizeof(MNVGfragUniforms))
+                .SequenceEqual(_uniforms.AsSpan(call.uniformOffset * MNVG_UNIFORM_ALIGN, sizeof(MNVGfragUniforms))))
+        {
+            return;
+        }
+
+        previous.triangleCount += call.triangleCount;
+        _callCount--;
+        _uniformCount--;
     }
 
     internal void RenderMaskFill(
@@ -2657,7 +3137,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
-            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f);
+            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f,
+                NVGScissorCoverage.Cuts(ref scissor, bounds[0], bounds[1], bounds[2], bounds[3], fringe, _viewSize.X, _viewSize.Y, _devicePixelRatio));
             // strokeMult < 0 reads the fill-body texcoord (0.5, 1) as full coverage, leaving
             // the mask as the only shape.
             frag->strokeMult = -1.0f;
@@ -2766,12 +3247,34 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
     }
 
-    private void ConvertPaint(MNVGfragUniforms* frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr)
+    /// <summary>Whether the scissor changes any pixel the vertices can cover.</summary>
+    private bool ScissorCuts(ref NVGscissorState scissor, ReadOnlySpan<NVGvertex> verts, float fringe)
+    {
+        if (verts.IsEmpty)
+        {
+            return true;
+        }
+
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+        foreach (ref readonly var vert in verts)
+        {
+            minX = MathF.Min(minX, vert.X);
+            minY = MathF.Min(minY, vert.Y);
+            maxX = MathF.Max(maxX, vert.X);
+            maxY = MathF.Max(maxY, vert.Y);
+        }
+
+        return NVGScissorCoverage.Cuts(ref scissor, minX, minY, maxX, maxY, fringe, _viewSize.X, _viewSize.Y, _devicePixelRatio);
+    }
+
+    private void ConvertPaint(MNVGfragUniforms* frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr,
+        bool scissorCuts = true)
     {
         Span<float> invxform = stackalloc float[6];
 
-        // Scissor
-        if (scissor.Extent[0] < -0.5f || scissor.Extent[1] < -0.5f)
+        // Scissor: left out when it cuts nothing the draw covers, which also lets a variant skip the test.
+        if (!scissorCuts || scissor.Extent[0] < -0.5f || scissor.Extent[1] < -0.5f)
         {
             frag->scissorMat[0] = 0;
             frag->scissorMat[1] = 0;
@@ -2985,8 +3488,9 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         float fringe,
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
-        => RenderFill(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts);
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
+        => RenderFill(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts, offset);
 
     void INVGRenderer.RenderStroke(
         ref MewVGPaint paint,
@@ -2995,8 +3499,41 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         float fringe,
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
-        ReadOnlySpan<NVGvertex> verts)
-        => RenderStroke(ref paint, compositeOperation, ref scissor, fringe, strokeWidth, paths, verts);
+        ReadOnlySpan<NVGvertex> verts,
+        Vector2 offset)
+        => RenderStroke(ref paint, compositeOperation, ref scissor, fringe, strokeWidth, paths, verts, offset);
+
+    void INVGRenderer.RenderTriangles(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        ReadOnlySpan<NVGvertex> verts,
+        float fringe)
+        => RenderTriangles(ref paint, compositeOperation, ref scissor, verts, fringe);
+
+    // Metal has no per-pixel rounded rectangle; the context draws the rectangle's path.
+    bool INVGRenderer.TryRenderRoundedRect(
+        ref MewVGPaint paint,
+        NVGcompositeOperationState compositeOperation,
+        ref NVGscissorState scissor,
+        float fringe,
+        in NVGRoundedRect shape)
+        => false;
+
+    /// <summary>Moves the vertices just copied into the frame's vertex buffer by the caller's offset.</summary>
+    private void MoveVerts(int start, int count, Vector2 offset)
+    {
+        if (offset == Vector2.Zero)
+        {
+            return;
+        }
+
+        foreach (ref var vert in _verts.AsSpan(start, count))
+        {
+            vert.X += offset.X;
+            vert.Y += offset.Y;
+        }
+    }
 
     public void Dispose()
     {
@@ -3029,6 +3566,21 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         if (_fragmentAAFunction != IntPtr.Zero)
         {
             ObjCRuntime.SendMessage(_fragmentAAFunction, ObjCRuntime.Selectors.release);
+        }
+
+        for (int variant = 0; variant < VARIANT_COUNT; variant++)
+        {
+            if (_variantVertexFunctions[variant] != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(_variantVertexFunctions[variant], ObjCRuntime.Selectors.release);
+                _variantVertexFunctions[variant] = IntPtr.Zero;
+            }
+
+            if (_variantFragmentFunctions[variant] != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(_variantFragmentFunctions[variant], ObjCRuntime.Selectors.release);
+                _variantFragmentFunctions[variant] = IntPtr.Zero;
+            }
         }
 
         if (_fragmentCoverageBuildFn != IntPtr.Zero)
