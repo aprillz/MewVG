@@ -133,6 +133,20 @@ public abstract class MewVGContext : IDisposable
 
     public void Fill() => _nvg.Fill();
 
+    /// <summary>
+    /// Draws rectangles of <paramref name="image"/> to rectangles under the current transform, scissor and composite
+    /// state in one call, each texel multiplied by <paramref name="color"/>, so an alpha image is drawn in that colour.
+    /// </summary>
+    public void FillImageQuads(int image, ReadOnlySpan<MewVGImageQuad> quads, MewVGColor color)
+    {
+        if (quads.IsEmpty || !ImageSize(image, out var width, out var height))
+        {
+            return;
+        }
+
+        _nvg.FillImageQuads(image, width, height, quads, color);
+    }
+
     public void Stroke() => _nvg.Stroke();
 
     /// <summary>Current bezier flatten tolerance (depends on devicePxRatio).</summary>
@@ -239,6 +253,13 @@ public abstract class MewVGContext : IDisposable
     }
 
     public abstract bool UpdateImage(int image, ReadOnlySpan<byte> data);
+
+    /// <summary>
+    /// Updates a rectangle of an image made by <see cref="CreateImageRGBA"/> or <see cref="CreateImageAlpha"/>;
+    /// <paramref name="data"/> holds the rectangle's rows tightly packed in the image's pixel format. Frames already
+    /// flushed keep sampling the old texels while the GPU still draws them; draws not yet flushed sample the new ones.
+    /// </summary>
+    public abstract bool UpdateImageRegion(int image, int x, int y, int width, int height, ReadOnlySpan<byte> data);
 
     public abstract bool ImageSize(int image, out int width, out int height);
 
