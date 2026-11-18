@@ -1682,6 +1682,95 @@ internal sealed class NVGContext
 
     #region Path Tessellation
 
+    private const int FLATTENED_BEZIER_CACHE_SIZE = 8;
+
+    private readonly record struct FlattenedBezierPoint(float X, float Y, NVGpointFlags Flags);
+
+    // A curve and the points its flattening put down, both relative to its start point.
+    private sealed class FlattenedBezier
+    {
+        public float X2, Y2, X3, Y3, X4, Y4, Tolerance;
+        public readonly List<FlattenedBezierPoint> Points = [];
+        public bool Valid;
+    }
+
+    // The last curves flattened. Shapes drawn many times with the same corners (rounded rectangles and their
+    // borders above all) put down the same curves at other places, and the subdivision is the same wherever it is.
+    private readonly FlattenedBezier[] _flattenedBeziers = CreateFlattenedBezierCache();
+    private int _nextFlattenedBezier;
+    private List<FlattenedBezierPoint>? _bezierCapture;
+    private float _bezierCaptureX;
+    private float _bezierCaptureY;
+
+    private static FlattenedBezier[] CreateFlattenedBezierCache()
+    {
+        var cache = new FlattenedBezier[FLATTENED_BEZIER_CACHE_SIZE];
+        for (var index = 0; index < cache.Length; index++)
+        {
+            cache[index] = new FlattenedBezier();
+        }
+
+        return cache;
+    }
+
+    /// <summary>Flattens one cubic curve that starts at the last point, reusing the points of an identical curve flattened before.</summary>
+    private void FlattenBezier(float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4)
+    {
+        // The flatness test reads only differences between the control points, so a curve moved elsewhere
+        // splits at the same parameters and its points lie the same distances from its start.
+        float relX2 = x2 - x1, relY2 = y2 - y1, relX3 = x3 - x1, relY3 = y3 - y1, relX4 = x4 - x1, relY4 = y4 - y1;
+        for (var index = 0; index < _flattenedBeziers.Length; index++)
+        {
+            var cached = _flattenedBeziers[index];
+            if (cached.Valid && cached.Tolerance == _tessTol &&
+                cached.X2 == relX2 && cached.Y2 == relY2 && cached.X3 == relX3 && cached.Y3 == relY3 &&
+                cached.X4 == relX4 && cached.Y4 == relY4)
+            {
+                var points = cached.Points;
+                for (var pointIndex = 0; pointIndex < points.Count; pointIndex++)
+                {
+                    var point = points[pointIndex];
+                    // The last point is the curve's own end, put down exactly as given.
+                    if (pointIndex == points.Count - 1 && point.Flags == NVGpointFlags.Corner)
+                    {
+                        AddPoint(x4, y4, point.Flags);
+                    }
+                    else
+                    {
+                        AddPoint(x1 + point.X, y1 + point.Y, point.Flags);
+                    }
+                }
+
+                return;
+            }
+        }
+
+        var entry = _flattenedBeziers[_nextFlattenedBezier];
+        _nextFlattenedBezier = (_nextFlattenedBezier + 1) % _flattenedBeziers.Length;
+        entry.Valid = false;
+        entry.Points.Clear();
+        _bezierCapture = entry.Points;
+        _bezierCaptureX = x1;
+        _bezierCaptureY = y1;
+        try
+        {
+            TesselateBezier(x1, y1, x2, y2, x3, y3, x4, y4, 0, NVGpointFlags.Corner);
+        }
+        finally
+        {
+            _bezierCapture = null;
+        }
+
+        entry.X2 = relX2;
+        entry.Y2 = relY2;
+        entry.X3 = relX3;
+        entry.Y3 = relY3;
+        entry.X4 = relX4;
+        entry.Y4 = relY4;
+        entry.Tolerance = _tessTol;
+        entry.Valid = true;
+    }
+
     private void TesselateBezier(float x1, float y1, float x2, float y2,
                                  float x3, float y3, float x4, float y4,
                                  int level, NVGpointFlags type)
@@ -1714,6 +1803,7 @@ internal sealed class NVGContext
         if ((d2 + d3) * (d2 + d3) < _tessTol * _tessTol * (dx * dx + dy * dy))
         {
             AddPoint(x4, y4, type);
+            _bezierCapture?.Add(new FlattenedBezierPoint(x4 - _bezierCaptureX, y4 - _bezierCaptureY, type));
             return;
         }
 
@@ -1755,10 +1845,10 @@ internal sealed class NVGContext
                     if (_cache.NPoints > 0)
                     {
                         ref var last = ref LastPoint();
-                        TesselateBezier(last.X, last.Y,
+                        FlattenBezier(last.X, last.Y,
                             _commands[i + 1], _commands[i + 2],
                             _commands[i + 3], _commands[i + 4],
-                            _commands[i + 5], _commands[i + 6], 0, NVGpointFlags.Corner);
+                            _commands[i + 5], _commands[i + 6]);
                     }
                     i += 7;
                     break;
@@ -1779,8 +1869,7 @@ internal sealed class NVGContext
             }
         }
 
-        _cache.Bounds[0] = _cache.Bounds[1] = 1e6f;
-        _cache.Bounds[2] = _cache.Bounds[3] = -1e6f;
+        float boundsMinX = 1e6f, boundsMinY = 1e6f, boundsMaxX = -1e6f, boundsMaxY = -1e6f;
 
         // Calculate the direction and length of line segments.
         for (var j = 0; j < _cache.NPaths; j++)
@@ -1825,7 +1914,7 @@ internal sealed class NVGContext
             for (var k = 0; k < path.Count; k++)
             {
                 ref var p0 = ref pts[k];
-                ref var p1 = ref pts[(k + 1) % path.Count];
+                ref var p1 = ref pts[k + 1 < path.Count ? k + 1 : 0];
 
                 // Calculate segment direction and length
                 p0.DX = p1.X - p0.X;
@@ -1833,12 +1922,17 @@ internal sealed class NVGContext
                 p0.Len = Normalize(ref p0.DX, ref p0.DY);
 
                 // Update bounds
-                _cache.Bounds[0] = Minf(_cache.Bounds[0], p0.X);
-                _cache.Bounds[1] = Minf(_cache.Bounds[1], p0.Y);
-                _cache.Bounds[2] = Maxf(_cache.Bounds[2], p0.X);
-                _cache.Bounds[3] = Maxf(_cache.Bounds[3], p0.Y);
+                boundsMinX = Minf(boundsMinX, p0.X);
+                boundsMinY = Minf(boundsMinY, p0.Y);
+                boundsMaxX = Maxf(boundsMaxX, p0.X);
+                boundsMaxY = Maxf(boundsMaxY, p0.Y);
             }
         }
+
+        _cache.Bounds[0] = boundsMinX;
+        _cache.Bounds[1] = boundsMinY;
+        _cache.Bounds[2] = boundsMaxX;
+        _cache.Bounds[3] = boundsMaxY;
     }
 
     private static float PolyArea(Span<NVGpoint> pts)
@@ -1861,22 +1955,27 @@ internal sealed class NVGContext
             return false;
         }
 
-        // Skia-style convex test: consecutive turns must have the same sign AND
-        // the total signed turn angle must equal ±2π (exactly one revolution).
-        // The first condition alone is necessary but not sufficient - a self-
-        // intersecting pentagram has all turns in one direction but winds ±4π.
+        // Consecutive turns must have the same sign, and the edges must go round exactly once: a
+        // self-intersecting pentagram turns one way throughout but goes round twice. Going round once,
+        // the edge direction crosses each axis twice, so its x and its y each change sign twice; counting
+        // those changes settles it without an arctangent per corner, as Skia's convexity check does.
         float sign = 0f;
-        float turnSum = 0f;
+        int xChanges = 0, yChanges = 0;
+        int firstX = 0, firstY = 0, lastX = 0, lastY = 0;
         for (var i = 0; i < pts.Length; i++)
         {
             ref readonly var a = ref pts[i];
-            ref readonly var b = ref pts[(i + 1) % pts.Length];
-            ref readonly var c = ref pts[(i + 2) % pts.Length];
+            ref readonly var b = ref pts[i + 1 < pts.Length ? i + 1 : i + 1 - pts.Length];
+            ref readonly var c = ref pts[i + 2 < pts.Length ? i + 2 : i + 2 - pts.Length];
 
             var abx = b.X - a.X;
             var aby = b.Y - a.Y;
             var bcx = c.X - b.X;
             var bcy = c.Y - b.Y;
+
+            CountSignChange(abx, ref firstX, ref lastX, ref xChanges);
+            CountSignChange(aby, ref firstY, ref lastY, ref yChanges);
+
             var cross = abx * bcy - aby * bcx;
             if (MathF.Abs(cross) <= 1e-8f)
             {
@@ -1891,9 +1990,6 @@ internal sealed class NVGContext
             {
                 return false;
             }
-
-            var dot = abx * bcx + aby * bcy;
-            turnSum += MathF.Atan2(cross, dot);
         }
 
         if (sign == 0f)
@@ -1901,10 +1997,30 @@ internal sealed class NVGContext
             return false;
         }
 
-        // Allow small numerical slack; a simple convex polygon winds once (±2π),
-        // self-intersecting contours wind ±4π or more.
-        const float revolution = MathF.PI * 2f;
-        return MathF.Abs(MathF.Abs(turnSum) - revolution) <= 1e-3f;
+        // The direction comes back to where it started, which closes the count.
+        xChanges += firstX != 0 && firstX != lastX ? 1 : 0;
+        yChanges += firstY != 0 && firstY != lastY ? 1 : 0;
+        return xChanges <= 2 && yChanges <= 2;
+
+        static void CountSignChange(float delta, ref int first, ref int last, ref int changes)
+        {
+            int current = delta > 0f ? 1 : delta < 0f ? -1 : 0;
+            if (current == 0)
+            {
+                return;
+            }
+
+            if (first == 0)
+            {
+                first = current;
+            }
+            else if (current != last)
+            {
+                changes++;
+            }
+
+            last = current;
+        }
     }
 
     // Simple (non-self-intersecting) polygon test: sign of turn may flip (concave
@@ -3708,7 +3824,7 @@ internal sealed class NVGContext
 
             for (var j = 0; j < path.Count; j++)
             {
-                ref var p0 = ref pts[(j + path.Count - 1) % path.Count];
+                ref var p0 = ref pts[j > 0 ? j - 1 : path.Count - 1];
                 ref var p1 = ref pts[j];
 
                 var dlx0 = p0.DY;
@@ -3763,9 +3879,6 @@ internal sealed class NVGContext
                 {
                     path.NBevel++;
                 }
-
-                // Store back
-                pts[j] = p1;
             }
 
             path.Convex = nleft == path.Count;
