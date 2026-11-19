@@ -26,12 +26,30 @@ internal static class GLNVGShaderSource
         }
     }
 
+    // A paint whose colour is innerCol alone, or innerCol times what it samples, takes a per-vertex tint as well,
+    // so draws that differ in that colour alone can go out in one call: the uber shader always (1 when the tint
+    // array is off), a variant when compiled with TINT.
+    private const string TINT_DEFINE =
+            "#ifndef VARIANT\n" +
+            "#define TINT\n" +
+            "#endif\n" +
+            "#ifdef TINT\n" +
+            "#define TINTED(color) ((color) * ftint)\n" +
+            "#else\n" +
+            "#define TINTED(color) (color)\n" +
+            "#endif\n";
+
     internal const string FILL_VERT_SHADER =
+            TINT_DEFINE +
             "\tuniform vec2 viewSize;\n" +
             "\tin vec2 vertex;\n" +
             "\tin vec2 tcoord;\n" +
             "\tout vec2 ftcoord;\n" +
             "\tout vec2 fpos;\n" +
+            "#ifdef TINT\n" +
+            "\tin vec4 tint;\n" +
+            "\tflat out vec4 ftint;\n" +
+            "#endif\n" +
             // What is affine in the vertex position (the scissor and paint coordinates, the position along a
             // linear gradient) a variant works out per vertex, which interpolation carries exactly; the fragment
             // shader is left only the part that is not affine.
@@ -50,6 +68,9 @@ internal static class GLNVGShaderSource
             "void main(void) {\n" +
             "\tftcoord = tcoord;\n" +
             "\tfpos = vertex;\n" +
+            "#ifdef TINT\n" +
+            "\tftint = tint;\n" +
+            "#endif\n" +
             "#ifdef SCISSOR\n" +
             "\tfscissor = (mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz) * vec3(vertex,1.0)).xy;\n" +
             "#endif\n" +
@@ -68,6 +89,7 @@ internal static class GLNVGShaderSource
             "}\n";
 
     internal const string FILL_FRAG_SHADER =
+            TINT_DEFINE +
             "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
             "\tuniform sampler2D tex;\n" +
             "\tuniform vec2 coverageOrigin;\n" +
@@ -91,6 +113,9 @@ internal static class GLNVGShaderSource
             "#endif\n" +
             "#ifdef PAINT_LINEAR_GRADIENT\n" +
             "\tin float fgradT;\n" +
+            "#endif\n" +
+            "#ifdef TINT\n" +
+            "\tflat in vec4 ftint;\n" +
             "#endif\n" +
             "\t#define scissorMat mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz)\n" +
             "\t#define paintMat mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz)\n" +
@@ -234,7 +259,7 @@ internal static class GLNVGShaderSource
             "\tfloat strokeAlpha = strokeMask();\n" +
             "#endif\n" +
             "#if defined(PAINT_SOLID)\n" +
-            "\tvec4 color = innerCol;\n" +
+            "\tvec4 color = TINTED(innerCol);\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_IMAGE)\n" +
@@ -245,7 +270,7 @@ internal static class GLNVGShaderSource
             "#elif defined(PAINT_IMAGE_TRIANGLES)\n" +
             "\tvec4 color = texelColor(texture(tex, ftcoord));\n" +
             "\tcolor *= scissor;\n" +
-            "\tresult = color * innerCol;\n" +
+            "\tresult = color * TINTED(innerCol);\n" +
             "#elif defined(PAINT_BOX_GRADIENT)\n" +
             "\tfloat d = clamp((sdroundrect(fpaint, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
             "\tvec4 color = mix(innerCol,outerCol,d);\n" +
@@ -264,7 +289,7 @@ internal static class GLNVGShaderSource
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
             "#elif defined(PAINT_ROUNDED_RECT)\n" +
-            "\tresult = innerCol * (roundedRectCoverage(ftcoord) * scissor);\n" +
+            "\tresult = TINTED(innerCol) * (roundedRectCoverage(ftcoord) * scissor);\n" +
             "#elif defined(PAINT_SIMPLE)\n" +
             "\tresult = vec4(1,1,1,1);\n" +
             "#elif defined(PAINT_COVERAGE_OUTPUT)\n" +
@@ -288,7 +313,7 @@ internal static class GLNVGShaderSource
             "\tif (type == 0) {\n" +
             "\t\tvec2 pt = (paintMat * vec3(fpos,1.0)).xy;\n" +
             "\t\tfloat d = clamp((sdroundrect(pt, extent, radius) + feather*0.5) / feather, 0.0, 1.0);\n" +
-            "\t\tvec4 color = mix(innerCol,outerCol,d);\n" +
+            "\t\tvec4 color = TINTED(mix(innerCol,outerCol,d));\n" +
             "\t\tcolor *= strokeAlpha * scissor;\n" +
             "\t\tresult = color;\n" +
             "\t} else if (type == 1) {\n" +
@@ -314,7 +339,7 @@ internal static class GLNVGShaderSource
             "\t\tcolor *= strokeAlpha * scissor;\n" +
             "\t\tresult = color;\n" +
             "\t} else if (type == 8) {\n" +
-            "\t\tresult = innerCol * (roundedRectCoverage(ftcoord) * scissor);\n" +
+            "\t\tresult = TINTED(innerCol) * (roundedRectCoverage(ftcoord) * scissor);\n" +
             "\t} else if (type == 2) {\n" +
             "\t\tresult = vec4(1,1,1,1);\n" +
             "\t} else if (type == 3) {\n" +
@@ -322,7 +347,7 @@ internal static class GLNVGShaderSource
             "\t\tif (texType == 1) color = vec4(color.xyz*color.w,color.w);\n" +
             "\t\tif (texType == 2) color = vec4(color.x);\n" +
             "\t\tcolor *= scissor;\n" +
-            "\t\tresult = color * innerCol;\n" +
+            "\t\tresult = color * TINTED(innerCol);\n" +
             "\t} else if (type == 4) {\n" +
             "\t\tresult = vec4(strokeAlpha);\n" +
             "\t} else if (type == 5) {\n" +
