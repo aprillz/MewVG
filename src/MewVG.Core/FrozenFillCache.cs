@@ -71,6 +71,8 @@ public sealed class FrozenFillCache
     internal int SnapshotNPaths;
     internal int SnapshotNVerts;
     internal float[] SnapshotBounds = new float[4];
+    // Bumped whenever the snapshot is taken again.
+    internal int SnapshotVersion;
 
     // Coverage-mask path (see NVGContext.TryRasterizeCoverageMask): the mask is device-space,
     // so it is keyed by the transform, fringe and winding rule it was built for, exactly like

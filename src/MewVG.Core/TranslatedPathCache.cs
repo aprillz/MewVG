@@ -50,6 +50,8 @@ internal sealed class TranslatedPathCache
         public readonly float[] Bounds = new float[4];
         public long LastUse;
         public bool Used;
+        // Bumped whenever the entry takes another path's geometry.
+        public int Version;
     }
 
     private readonly Entry[] _entries = new Entry[CAPACITY];
@@ -132,6 +134,7 @@ internal sealed class TranslatedPathCache
         }
 
         entry.Used = true;
+        entry.Version++;
         entry.Hash = _missHash;
         entry.Settings = settings;
         entry.AnchorX = anchorX;

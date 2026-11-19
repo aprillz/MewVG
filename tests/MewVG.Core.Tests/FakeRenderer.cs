@@ -60,7 +60,8 @@ internal sealed class FakeRenderer : INVGRenderer
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset)
+        Vector2 offset,
+        NVGGeometrySource source)
     {
         FillCalls.Add(new Call(paths.ToArray(), Moved(verts, offset), fringe));
     }
