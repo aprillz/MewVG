@@ -120,6 +120,25 @@ internal struct MNVGcall
     public float maxY;
     // Next call drawn in the same batch, or -1 (see BuildBatches).
     public int nextInBatch;
+    // Stored geometry the fill's vertices came from and the offset they were drawn at (see TryAddFillInstance).
+    public object? source;
+    public int sourceVersion;
+    public Vector2 sourceOffset;
+    // Instances the fill is drawn as, from the instance list; 0 when it is drawn once as recorded.
+    public int instanceOffset;
+    public int instanceCount;
+    public bool instanceTinted;
+    // The unmoved geometry the instances draw, as one triangle list (see AppendInstanceGeometry).
+    public int instanceVertexOffset;
+    public int instanceVertexCount;
+}
+
+/// <summary>One more draw of a fill's geometry: moved by offset, its colour times tint.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct MNVGinstance
+{
+    public Vector2 offset;
+    public Vector4 tint;
 }
 
 /// <summary>Calls drawn as one: the first call's state, every member's geometry in member order.</summary>
@@ -168,6 +187,8 @@ internal unsafe struct MNVGbuffers
     public int image;
     public IntPtr tintBuffer;      // id<MTLBuffer>, the tints of tinted batches indexed like the vertices
     public int ntints;
+    public IntPtr instanceBuffer;  // id<MTLBuffer>, the instances of instanced fills
+    public int ninstances;
 }
 
 /// <summary>
@@ -202,6 +223,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     public const int MNVG_INIT_BUFFER_COUNT = 4;
     public const int MNVG_UNIFORM_ALIGN = 256;
     private const int TINT_BUFFER_INDEX = 3;
+    private const int INSTANCE_BUFFER_INDEX = 4;
     // How many batches back a call looks for one to join; each step is one bounds test.
     private const int BATCH_LOOKBACK = 10;
     // The inner half extent of a filled rounded rectangle: every point lies far outside a box this inside out.
@@ -231,6 +253,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
           float2 pos [[attribute(0)]];
           float2 tcoord [[attribute(1)]];
           float4 tint [[attribute(2)]];
+          float2 instanceOffset [[attribute(3)]];
+          float4 instanceTint [[attribute(4)]];
         } Vertex;
 
         typedef struct {
@@ -350,11 +374,12 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         vertex RasterizerData vertexShader(Vertex vert [[stage_in]],
                                            constant float2& viewSize [[buffer(1)]]) {
           RasterizerData out;
+          float2 position = vert.pos + vert.instanceOffset;
           out.ftcoord = vert.tcoord;
-          out.fpos = vert.pos;
-          out.ftint = vert.tint;
-          out.pos = float4(2.0 * vert.pos.x / viewSize.x - 1.0,
-                           1.0 - 2.0 * vert.pos.y / viewSize.y,
+          out.fpos = position;
+          out.ftint = vert.tint * vert.instanceTint;
+          out.pos = float4(2.0 * position.x / viewSize.x - 1.0,
+                           1.0 - 2.0 * position.y / viewSize.y,
                            0, 1);
           return out;
         }
@@ -467,17 +492,18 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
                                                    constant float2& viewSize [[buffer(1)]],
                                                    constant Uniforms& uniforms [[buffer(2)]]) {
           VariantRasterizerData out;
+          float2 position = vert.pos + vert.instanceOffset;
           out.ftcoord = vert.tcoord;
-          out.fpos = vert.pos;
-          out.ftint = vert.tint;
-          out.fscissor = VARIANT_SCISSOR ? (uniforms.scissorMat * float3(vert.pos, 1.0f)).xy : float2(0.0f);
-          float2 paintPt = (uniforms.paintMat * float3(vert.pos, 1.0f)).xy;
+          out.fpos = position;
+          out.ftint = vert.tint * vert.instanceTint;
+          out.fscissor = VARIANT_SCISSOR ? (uniforms.scissorMat * float3(position, 1.0f)).xy : float2(0.0f);
+          float2 paintPt = (uniforms.paintMat * float3(position, 1.0f)).xy;
           out.fpaint = VARIANT_PAINT == 2 ? paintPt / uniforms.extent : paintPt;
           float2 axis = uniforms.gradientFocal - uniforms.gradientCenter;
           float len2 = dot(axis, axis);
           out.fgradT = VARIANT_PAINT == 5 && len2 > 1e-6f ? dot(paintPt - uniforms.gradientCenter, axis) / len2 : 0.0f;
-          out.pos = float4(2.0 * vert.pos.x / viewSize.x - 1.0,
-                           1.0 - 2.0 * vert.pos.y / viewSize.y,
+          out.pos = float4(2.0 * position.x / viewSize.x - 1.0,
+                           1.0 - 2.0 * position.y / viewSize.y,
                            0, 1);
           return out;
         }
@@ -760,6 +786,11 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private IntPtr _whiteTintBuffer;
     private int _whiteTintCount;
     private bool _tintBound;
+    private MNVGinstance[] _instances = new MNVGinstance[64];
+    private int _instanceCount;
+    // The one instance every draw that is not instanced reads: no offset, a white tint.
+    private IntPtr _singleInstanceBuffer;
+    private bool _instancesBound;
     private int _callCapacity;
     private MNVGpath[] _paths;
     private int _pathCount;
@@ -1502,6 +1533,19 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         ObjCRuntime.SendMessage(layout0, MetalSelectors.setStepRate, (nuint)1);
         ObjCRuntime.SendMessage(layout0, MetalSelectors.setStepFunction, (ulong)MTLVertexStepFunction.PerVertex);
 
+        var attr3 = ObjCRuntime.SendMessage(attributes, MetalSelectors.objectAtIndexedSubscript, (nuint)3);
+        ObjCRuntime.SendMessage(attr3, MetalSelectors.setFormat, (ulong)MTLVertexFormat.Float2);
+        ObjCRuntime.SendMessage(attr3, MetalSelectors.setOffset, (nuint)0);
+        ObjCRuntime.SendMessage(attr3, MetalSelectors.setBufferIndex, (nuint)INSTANCE_BUFFER_INDEX);
+        var attr4 = ObjCRuntime.SendMessage(attributes, MetalSelectors.objectAtIndexedSubscript, (nuint)4);
+        ObjCRuntime.SendMessage(attr4, MetalSelectors.setFormat, (ulong)MTLVertexFormat.Float4);
+        ObjCRuntime.SendMessage(attr4, MetalSelectors.setOffset, (nuint)8);
+        ObjCRuntime.SendMessage(attr4, MetalSelectors.setBufferIndex, (nuint)INSTANCE_BUFFER_INDEX);
+        var instanceLayout = ObjCRuntime.SendMessage(layouts, MetalSelectors.objectAtIndexedSubscript, (nuint)INSTANCE_BUFFER_INDEX);
+        ObjCRuntime.SendMessage(instanceLayout, MetalSelectors.setStride, (nuint)sizeof(MNVGinstance));
+        ObjCRuntime.SendMessage(instanceLayout, MetalSelectors.setStepRate, (nuint)1);
+        ObjCRuntime.SendMessage(instanceLayout, MetalSelectors.setStepFunction, (ulong)MTLVertexStepFunction.PerInstance);
+
         var tintLayout = ObjCRuntime.SendMessage(layouts, MetalSelectors.objectAtIndexedSubscript, (nuint)TINT_BUFFER_INDEX);
         ObjCRuntime.SendMessage(tintLayout, MetalSelectors.setStride, (nuint)sizeof(Vector4));
         ObjCRuntime.SendMessage(tintLayout, MetalSelectors.setStepRate, (nuint)1);
@@ -1602,10 +1646,13 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Batches draw their geometry from copies put after what the calls recorded, so they are formed before the upload.
         BuildBatches();
         var tintStart = AppendBatchGeometry(out var tintEnd);
+        PrepareInstancedFills();
 
         // Update buffers with current frame data
         UpdateBuffers(ref buffers);
         UpdateTintBuffers(ref buffers, tintStart, tintEnd);
+        UpdateInstanceBuffers(ref buffers);
+        _instanceCount = 0;
 
         // Render
         Render(ref buffers);
@@ -1746,6 +1793,10 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         // texture even for calls that never read it.
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentTexture_atIndex, _pseudoTexture, (nuint)1);
 
+        // Every draw that is not instanced reads the one instance that moves and tints nothing.
+        _instancesBound = false;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setVertexBuffer_offset_atIndex, _singleInstanceBuffer, (nuint)0, (nuint)INSTANCE_BUFFER_INDEX);
+
         // Every call outside a tinted batch reads white tints.
         _tintBound = false;
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setVertexBuffer_offset_atIndex, _whiteTintBuffer, (nuint)0, (nuint)TINT_BUFFER_INDEX);
@@ -1809,6 +1860,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             case MNVGcallType.MNVG_FILL:
                 if (call.hasCoverageAA)
                     RenderFillWithCoverage(ref buffers, ref call);
+                else if (call.instanceCount > 1)
+                    RenderFillInstances(ref buffers, ref call);
                 else
                     RenderFill(ref buffers, ref call);
                 break;
@@ -1844,7 +1897,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             }
 
             var batchable = !_batchingOff && IsBatchable(in call);
-            var joinable = batchable && BatchVertexCount(in call) <= BATCH_MAX_CALL_VERTICES;
+            var joinable = batchable && call.instanceCount == 0 && BatchVertexCount(in call) <= BATCH_MAX_CALL_VERTICES;
             if (joinable && TryFindBatch(in call, out var found, out var tinted))
             {
                 ref var batch = ref _batches[found];
@@ -2394,6 +2447,249 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         _cachedFragmentUniformBuffer = buffer;
         _cachedFragmentUniformOffset = offset;
         ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setFragmentBuffer_offset_atIndex, buffer, offset, (nuint)0);
+    }
+
+    /// <summary>Draws a fill once per instance, each moved by its offset and, when tinted, coloured by its tint.</summary>
+    private void RenderFillInstances(ref MNVGbuffers buffers, ref MNVGcall call)
+    {
+        SetCullMode(MTLCullMode.None);
+        SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
+        ApplyPaintPipeline(ref buffers, call.uniformOffset + 1, call.blendFunc, DrawsFullCoverage(in call));
+        _instancesBound = true;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setVertexBuffer_offset_atIndex, buffers.instanceBuffer,
+            (nuint)(call.instanceOffset * sizeof(MNVGinstance)), (nuint)INSTANCE_BUFFER_INDEX);
+
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.drawPrimitives_vertexStart_vertexCount_instanceCount,
+            (ulong)MTLPrimitiveType.Triangle, (nuint)call.instanceVertexOffset, (nuint)call.instanceVertexCount, (nuint)call.instanceCount);
+
+        _instancesBound = false;
+        ObjCRuntime.SendMessage(_renderEncoder, MetalSelectors.setVertexBuffer_offset_atIndex, _singleInstanceBuffer, (nuint)0, (nuint)INSTANCE_BUFFER_INDEX);
+    }
+
+    /// <summary>
+    /// Draws a fill of the same stored geometry as the fill just recorded as another instance of that one, moved by the
+    /// offset it is drawn at, when the two differ in nothing else but a colour a tint can carry. Nothing is drawn between
+    /// them, so the order is kept.
+    /// </summary>
+    private bool TryAddFillInstance(ref MewVGPaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor,
+        float fringe, ReadOnlySpan<float> bounds, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts, Vector2 offset,
+        NVGGeometrySource source)
+    {
+        if (_batchingOff || _callCount == 0)
+        {
+            return false;
+        }
+
+        ref var previous = ref _calls[_callCount - 1];
+        if (previous.type != MNVGcallType.MNVG_FILL || previous.hasCoverageAA || !ReferenceEquals(previous.source, source.Owner) ||
+            previous.sourceVersion != source.Version || previous.image != paint.Image ||
+            previous.blendFunc.SrcRGB != compositeOperation.SrcRGB || previous.blendFunc.DstRGB != compositeOperation.DstRGB ||
+            previous.blendFunc.SrcAlpha != compositeOperation.SrcAlpha || previous.blendFunc.DstAlpha != compositeOperation.DstAlpha)
+        {
+            return false;
+        }
+
+        // The same geometry with a transparent paint would go through the coverage passes.
+        if (_coverageTexture != IntPtr.Zero && PaintHasTransparency(paint) && !IsConvexFill(paths))
+        {
+            return false;
+        }
+
+        // The scissor test reads the box the moved vertices would have had.
+        BoundsOf(verts, out var minX, out var minY, out var maxX, out var maxY);
+        var cuts = verts.IsEmpty ||
+                   NVGScissorCoverage.Cuts(ref scissor, minX + offset.X, minY + offset.Y, maxX + offset.X, maxY + offset.Y, fringe,
+                       _viewSize.X, _viewSize.Y, _devicePixelRatio);
+        MNVGfragUniforms frag = default;
+        ConvertPaint(&frag, ref paint, ref scissor, fringe, fringe, -1.0f, cuts);
+        frag.strokeMult = -1.0f;
+        var size = sizeof(MNVGfragUniforms);
+        ReadOnlySpan<byte> previousFrag = _uniforms.AsSpan((previous.uniformOffset + 1) * MNVG_UNIFORM_ALIGN, size);
+        var fragBytes = new ReadOnlySpan<byte>(&frag, size);
+        if (!previousFrag[..INNER_COLOR_OFFSET].SequenceEqual(fragBytes[..INNER_COLOR_OFFSET]) ||
+            !previousFrag[(INNER_COLOR_OFFSET + COLORS_SIZE)..].SequenceEqual(fragBytes[(INNER_COLOR_OFFSET + COLORS_SIZE)..]))
+        {
+            return false;
+        }
+
+        var tinted = !previousFrag.Slice(INNER_COLOR_OFFSET, COLORS_SIZE).SequenceEqual(fragBytes.Slice(INNER_COLOR_OFFSET, COLORS_SIZE));
+        if (tinted && (!TakesTint(previousFrag) || !TakesTint(fragBytes)))
+        {
+            return false;
+        }
+
+        if (previous.instanceCount == 0)
+        {
+            // Each instance moves the stored geometry by its whole offset, the sum the vertices would otherwise have been
+            // moved by.
+            AppendInstanceGeometry(ref previous, paths, verts);
+            previous.instanceOffset = _instanceCount;
+            previous.instanceCount = 1;
+            fixed (byte* ptr = &_uniforms[(previous.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
+            {
+                AddInstance(previous.sourceOffset, ((MNVGfragUniforms*)ptr)->innerCol);
+            }
+        }
+
+        AddInstance(offset, frag.innerCol);
+        previous.instanceCount++;
+        previous.instanceTinted |= tinted;
+        var reach = previous.pathCount > 0 && HasFringe(in previous) ? fringe * 2.0f : 0.0f;
+        previous.minX = MathF.Min(previous.minX, bounds[0] - reach);
+        previous.minY = MathF.Min(previous.minY, bounds[1] - reach);
+        previous.maxX = MathF.Max(previous.maxX, bounds[2] + reach);
+        previous.maxY = MathF.Max(previous.maxY, bounds[3] + reach);
+        return true;
+    }
+
+    private bool HasFringe(in MNVGcall call)
+    {
+        for (var index = 0; index < call.pathCount; index++)
+        {
+            if (_paths[call.pathOffset + index].strokeCount > 0)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>True when the fill's body is one convex path; paths with a fringe alone leave the body as it is.</summary>
+    private static bool IsConvexFill(ReadOnlySpan<NVGpathData> paths)
+    {
+        var fillPathCount = 0;
+        var fillPathIndex = -1;
+        for (var index = 0; index < paths.Length; index++)
+        {
+            if (paths[index].NFill > 0)
+            {
+                fillPathCount++;
+                fillPathIndex = index;
+            }
+        }
+
+        return fillPathCount == 1 && paths[fillPathIndex].Convex;
+    }
+
+    /// <summary>
+    /// Lays out a fill's stored, unmoved geometry once as one triangle list, every body before every fringe as the fill
+    /// draws them, so one instanced draw draws each instance whole before the next.
+    /// </summary>
+    private void AppendInstanceGeometry(ref MNVGcall call, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts)
+    {
+        var start = _vertCount;
+        foreach (ref readonly var path in paths)
+        {
+            if (path.NFill > 0)
+            {
+                EnsureVerts(_vertCount + path.NFill);
+                verts.Slice(path.FillOffset, path.NFill).CopyTo(_verts.AsSpan(_vertCount));
+                _vertCount += path.NFill;
+            }
+        }
+
+        foreach (ref readonly var path in paths)
+        {
+            if (path.NStroke >= 3)
+            {
+                // Each strip triangle in turn, with the winding the strip gives it.
+                var strip = verts.Slice(path.StrokeOffset, path.NStroke);
+                EnsureVerts(_vertCount + (strip.Length - 2) * 3);
+                for (var index = 0; index < strip.Length - 2; index++)
+                {
+                    if ((index & 1) == 0)
+                    {
+                        _verts[_vertCount++] = strip[index];
+                        _verts[_vertCount++] = strip[index + 1];
+                    }
+                    else
+                    {
+                        _verts[_vertCount++] = strip[index + 1];
+                        _verts[_vertCount++] = strip[index];
+                    }
+
+                    _verts[_vertCount++] = strip[index + 2];
+                }
+            }
+        }
+
+        call.instanceVertexOffset = start;
+        call.instanceVertexCount = _vertCount - start;
+    }
+
+    private void AddInstance(Vector2 offset, MewVGColor color)
+    {
+        if (_instanceCount == _instances.Length)
+        {
+            Array.Resize(ref _instances, _instances.Length * 2);
+        }
+
+        _instances[_instanceCount++] = new MNVGinstance { offset = offset, tint = new Vector4(color.R, color.G, color.B, color.A) };
+    }
+
+    /// <summary>Gives each tinted instanced fill a copy of its paint uniforms with white colours, which the instance tints multiply.</summary>
+    private void PrepareInstancedFills()
+    {
+        for (var callIndex = 0; callIndex < _callCount; callIndex++)
+        {
+            ref var call = ref _calls[callIndex];
+            if (call.instanceCount > 1 && call.instanceTinted)
+            {
+                // A fill reads its paint one slot past its uniform offset, so the copy goes in a pair.
+                var source = call.uniformOffset + 1;
+                call.uniformOffset = AllocUniforms(2);
+                _uniforms.AsSpan(source * MNVG_UNIFORM_ALIGN, MNVG_UNIFORM_ALIGN)
+                    .CopyTo(_uniforms.AsSpan((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
+                fixed (byte* ptr = &_uniforms[(call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN])
+                {
+                    var frag = (MNVGfragUniforms*)ptr;
+                    frag->innerCol = new MewVGColor(1.0f, 1.0f, 1.0f, 1.0f);
+                    frag->outerCol = new MewVGColor(1.0f, 1.0f, 1.0f, 1.0f);
+                }
+            }
+            else if (call.instanceCount > 1)
+            {
+                // Untinted instances keep the colour in the uniforms; their tints are white.
+                for (var index = 0; index < call.instanceCount; index++)
+                {
+                    _instances[call.instanceOffset + index].tint = Vector4.One;
+                }
+            }
+        }
+    }
+
+    /// <summary>Copies this frame's instances into the frame's instance buffer, and makes the single instance once.</summary>
+    private void UpdateInstanceBuffers(ref MNVGbuffers buffers)
+    {
+        if (_singleInstanceBuffer == IntPtr.Zero)
+        {
+            _singleInstanceBuffer = ObjCRuntime.SendMessage(_device, MetalSelectors.newBufferWithLength_options,
+                (nuint)sizeof(MNVGinstance), (ulong)MTLResourceOptions.StorageModeShared);
+            *(MNVGinstance*)ObjCRuntime.SendMessage(_singleInstanceBuffer, MetalSelectors.contents) =
+                new MNVGinstance { offset = Vector2.Zero, tint = Vector4.One };
+        }
+
+        if (_instanceCount == 0)
+        {
+            return;
+        }
+
+        if (buffers.instanceBuffer == IntPtr.Zero || buffers.ninstances < _instanceCount)
+        {
+            if (buffers.instanceBuffer != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(buffers.instanceBuffer, ObjCRuntime.Selectors.release);
+            }
+
+            var capacity = Math.Max(_instanceCount, buffers.ninstances * 2);
+            buffers.instanceBuffer = ObjCRuntime.SendMessage(_device, MetalSelectors.newBufferWithLength_options,
+                (nuint)(capacity * sizeof(MNVGinstance)), (ulong)MTLResourceOptions.StorageModeShared);
+            buffers.ninstances = capacity;
+        }
+
+        var contents = (MNVGinstance*)ObjCRuntime.SendMessage(buffers.instanceBuffer, MetalSelectors.contents);
+        _instances.AsSpan(0, _instanceCount).CopyTo(new Span<MNVGinstance>(contents, _instanceCount));
     }
 
     private void RenderFill(ref MNVGbuffers buffers, ref MNVGcall call)
@@ -3345,8 +3641,14 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset)
+        Vector2 offset,
+        NVGGeometrySource source = default)
     {
+        if (source.Owner != null && TryAddFillInstance(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts, offset, source))
+        {
+            return;
+        }
+
         var pathOffset = _pathCount;
         var firstVert = _vertCount;
         EnsurePaths(_pathCount + paths.Length);
@@ -3447,6 +3749,9 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         // back via framebuffer fetch.
         call.hasCoverageAA = !convex && _coverageTexture != IntPtr.Zero
             && PaintHasTransparency(paint);
+        call.source = source.Owner;
+        call.sourceVersion = source.Version;
+        call.sourceOffset = offset;
 
         // Always allocate 2 uniforms (simple at +0, fill paint at +1)
         // to match GL layout - CpuResolvedFill uses +1 directly.
@@ -4055,8 +4360,9 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset)
-        => RenderFill(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts, offset);
+        Vector2 offset,
+        NVGGeometrySource source)
+        => RenderFill(ref paint, compositeOperation, ref scissor, fringe, bounds, paths, verts, offset, source);
 
     void INVGRenderer.RenderStroke(
         ref MewVGPaint paint,
@@ -4394,6 +4700,16 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             {
                 ObjCRuntime.SendMessage(_buffers[i].tintBuffer, ObjCRuntime.Selectors.release);
             }
+
+            if (_buffers[i].instanceBuffer != IntPtr.Zero)
+            {
+                ObjCRuntime.SendMessage(_buffers[i].instanceBuffer, ObjCRuntime.Selectors.release);
+            }
+        }
+
+        if (_singleInstanceBuffer != IntPtr.Zero)
+        {
+            ObjCRuntime.SendMessage(_singleInstanceBuffer, ObjCRuntime.Selectors.release);
         }
 
         if (_whiteTintBuffer != IntPtr.Zero)

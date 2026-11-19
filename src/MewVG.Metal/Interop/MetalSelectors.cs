@@ -94,6 +94,7 @@ public static class MetalSelectors
     public static readonly nint setStencilReferenceValue = Metal.Sel.SetStencilReferenceValue;
     public static readonly nint setFragmentBuffer_offset_atIndex = Metal.Sel.SetFragmentBuffer;
     public static readonly nint drawPrimitives_vertexStart_vertexCount = Metal.Sel.DrawPrimitives;
+    public static readonly nint drawPrimitives_vertexStart_vertexCount_instanceCount = Metal.Sel.DrawPrimitivesInstanced;
 
     // Render pass
     public static readonly nint renderPassDescriptor = Metal.Sel.RenderPassDescriptor;

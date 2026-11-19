@@ -65,6 +65,9 @@ public static unsafe partial class ObjCRuntime
     public static partial nint SendMessage(nint receiver, nint selector, ulong arg1, nuint arg2, nuint arg3);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
+    public static partial nint SendMessage(nint receiver, nint selector, ulong arg1, nuint arg2, nuint arg3, nuint arg4);
+
+    [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
     public static partial nint SendMessage(nint receiver, nint selector, ulong arg1, nuint arg2, nuint arg3, [MarshalAs(UnmanagedType.I1)] bool arg4);
 
     [LibraryImport(LibObjC, EntryPoint = "objc_msgSend")]
