@@ -72,6 +72,7 @@ public static unsafe partial class Metal
         public static readonly nint SetFragmentTexture = ObjCRuntime.RegisterSelector("setFragmentTexture:atIndex:");
         public static readonly nint SetFragmentSamplerState = ObjCRuntime.RegisterSelector("setFragmentSamplerState:atIndex:");
         public static readonly nint DrawPrimitives = ObjCRuntime.RegisterSelector("drawPrimitives:vertexStart:vertexCount:");
+        public static readonly nint DrawPrimitivesInstanced = ObjCRuntime.RegisterSelector("drawPrimitives:vertexStart:vertexCount:instanceCount:");
 
         // BlitCommandEncoder
         public static readonly nint CopyFromBufferToTexture = ObjCRuntime.RegisterSelector("copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:");
