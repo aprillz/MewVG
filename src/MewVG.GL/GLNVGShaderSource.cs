@@ -44,6 +44,7 @@ internal static class GLNVGShaderSource
             "\tuniform vec2 viewSize;\n" +
             "\tin vec2 vertex;\n" +
             "\tin vec2 tcoord;\n" +
+            "\tin vec2 instanceOffset;\n" +
             "\tout vec2 ftcoord;\n" +
             "\tout vec2 fpos;\n" +
             "#ifdef TINT\n" +
@@ -66,26 +67,27 @@ internal static class GLNVGShaderSource
             "\tout float fgradT;\n" +
             "#endif\n" +
             "void main(void) {\n" +
+            "\tvec2 position = vertex + instanceOffset;\n" +
             "\tftcoord = tcoord;\n" +
-            "\tfpos = vertex;\n" +
+            "\tfpos = position;\n" +
             "#ifdef TINT\n" +
             "\tftint = tint;\n" +
             "#endif\n" +
             "#ifdef SCISSOR\n" +
-            "\tfscissor = (mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "\tfscissor = (mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz) * vec3(position,1.0)).xy;\n" +
             "#endif\n" +
             "#if defined(PAINT_IMAGE)\n" +
-            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy / frag[9].xy;\n" +
+            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(position,1.0)).xy / frag[9].xy;\n" +
             "#elif defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
-            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "\tfpaint = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(position,1.0)).xy;\n" +
             "#endif\n" +
             "#ifdef PAINT_LINEAR_GRADIENT\n" +
-            "\tvec2 pt = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(vertex,1.0)).xy;\n" +
+            "\tvec2 pt = (mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz) * vec3(position,1.0)).xy;\n" +
             "\tvec2 axis = frag[11].xy - frag[10].xy;\n" +
             "\tfloat len2 = dot(axis, axis);\n" +
             "\tfgradT = len2 <= 1e-6 ? 0.0 : dot(pt - frag[10].xy, axis) / len2;\n" +
             "#endif\n" +
-            "\tgl_Position = vec4(2.0*vertex.x/viewSize.x - 1.0, 1.0 - 2.0*vertex.y/viewSize.y, 0, 1);\n" +
+            "\tgl_Position = vec4(2.0*position.x/viewSize.x - 1.0, 1.0 - 2.0*position.y/viewSize.y, 0, 1);\n" +
             "}\n";
 
     internal const string FILL_FRAG_SHADER =
