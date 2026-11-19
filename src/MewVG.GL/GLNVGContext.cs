@@ -141,6 +141,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     private const int TINT_ATTRIBUTE = 2;
+    // Flushes in a row under a quarter of the vertex buffer capacity before it shrinks.
+    private const int VBO_SHRINK_FLUSHES = 120;
     // MEWVG_GL_BATCH=0 draws every call on its own (A/B comparison).
     private static readonly bool _batchingOff = Environment.GetEnvironmentVariable("MEWVG_GL_BATCH") == "0";
     // How many batches back a call looks for one to join; each step is one bounds test.
@@ -233,6 +235,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _coverageFbo;
     private int _coverageTex;
     private int _vboCapacity;
+    // Flushes in a row that used under a quarter of the capacity.
+    private int _vboSmallFlushes;
     // Device copies of coverage masks; see MaskImageCache for the reuse and eviction policy.
     private readonly MaskImageCache _maskImages;
     private int _coverageTexWidth;
@@ -386,6 +390,17 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (uploadBytes > _vboCapacity)
         {
             _vboCapacity = Math.Max(256 * 1024, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)uploadBytes));
+            _vboSmallFlushes = 0;
+        }
+        else if (uploadBytes < _vboCapacity / 4 && ++_vboSmallFlushes >= VBO_SHRINK_FLUSHES)
+        {
+            // Every flush orphans the whole capacity, so one large frame would otherwise cost every small one after it.
+            _vboCapacity = Math.Max(256 * 1024, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)uploadBytes * 2));
+            _vboSmallFlushes = 0;
+        }
+        else if (uploadBytes >= _vboCapacity / 4)
+        {
+            _vboSmallFlushes = 0;
         }
         GL.BufferDataOrphan(BufferTarget.ArrayBuffer, _vboCapacity, BufferUsageHint.StreamDraw);
         GL.BufferSubData(BufferTarget.ArrayBuffer, 0, vertexBytes, _verts);
