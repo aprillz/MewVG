@@ -3,6 +3,7 @@
 
 using System.Numerics;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 
 namespace Aprillz.MewVG;
 
@@ -83,6 +84,34 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         public int MergedStrokeOffset;
         public int MergedStrokeCount;
         public bool MergedStrokeIsStrip;
+        // Device box of every vertex the call draws, which tells whether a later call may be moved in front of it.
+        public float MinX;
+        public float MinY;
+        public float MaxX;
+        public float MaxY;
+        // Next call drawn in the same batch, or -1 (see BuildBatches).
+        public int NextInBatch;
+    }
+
+    /// <summary>Calls the flush draws as one: the first call's state, every member's geometry in member order.</summary>
+    private struct GLNVGBatch
+    {
+        public int FirstCall;
+        public int LastCall;
+        public int MemberCount;
+        public float MinX;
+        public float MinY;
+        public float MaxX;
+        public float MaxY;
+        // Moves no call across it: it changes state the calls after it draw under, or draws through other targets.
+        public bool Barrier;
+        // Takes no further call: its call is too large to be worth copying (see BATCH_MAX_CALL_VERTICES).
+        public bool Closed;
+        // Members differ in their colour, which then goes per vertex while the uniforms hold white.
+        public bool Tinted;
+        public int VertexOffset;
+        public int VertexCount;
+        public int UniformOffset;
     }
 
     private struct GLNVGPath
@@ -111,6 +140,18 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         RoundedRect = 8,
     }
 
+    private const int TINT_ATTRIBUTE = 2;
+    // MEWVG_GL_BATCH=0 draws every call on its own (A/B comparison).
+    private static readonly bool _batchingOff = Environment.GetEnvironmentVariable("MEWVG_GL_BATCH") == "0";
+    // How many batches back a call looks for one to join; each step is one bounds test.
+    private const int BATCH_LOOKBACK = 10;
+    // A call with more vertices than this is drawn on its own: copying its geometry into a batch costs more than the
+    // draw it saves.
+    private const int BATCH_MAX_CALL_VERTICES = 128;
+    // A batch of fewer calls is drawn call by call: copying their geometry costs more than the draws it saves.
+    private const int BATCH_MIN_MEMBERS = 8;
+    // Index of innerCol in the fragment uniforms; outerCol follows it.
+    private const int INNER_COLOR_INDEX = 6 * 4;
     // MEWVG_GL_DEBUG=1 turns on the glGetError check after each state change.
     private static readonly bool _debugChecks = Environment.GetEnvironmentVariable("MEWVG_GL_DEBUG") == "1";
     // Fill programs: the variants that drop the branches a draw does not need, then the uber shader
@@ -119,7 +160,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private const int VARIANT_FLAG_CLIP = 2;
     private const int VARIANT_FLAG_MASK = 4;
     private const int VARIANT_FLAG_FULL_COVERAGE = 8;
-    private const int VARIANT_FLAG_COUNT = 16;
+    private const int VARIANT_FLAG_TINT = 16;
+    private const int VARIANT_FLAG_COUNT = 32;
     private const int VARIANT_PAINT_SOLID = 1;
     private const int VARIANT_PAINT_IMAGE = 2;
     private const int VARIANT_PAINT_IMAGE_TRIANGLES = 3;
@@ -146,6 +188,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private readonly int[] _programFlush = new int[UBER_SHADER + 1];
     private readonly bool[] _variantFailed = new bool[UBER_SHADER];
     private int _flushNumber;
+    private GLNVGBatch[] _batches = new GLNVGBatch[128];
+    private int _batchCount;
+    // Tint of each vertex a tinted batch draws, indexed like _verts.
+    private Vector4[] _tints = Array.Empty<Vector4>();
+    private bool _tintArrayEnabled;
     private int _currentProgram = -1;
     private bool _clipUnitBound;
 
@@ -320,12 +367,20 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _flushMainFbo = GL.GetInteger(GetPName.FramebufferBinding);
         GL.GetViewport(out _flushViewportX, out _flushViewportY, out _flushViewportWidth, out _flushViewportHeight);
 
+        // Batches draw their geometry from copies put after what the calls recorded, so they are formed before the upload.
+        BuildBatches();
+        var tintStart = AppendBatchGeometry(out var tintEnd);
+
         // Upload vertex data. Orphan at a fixed, power-of-two capacity and copy in with SubData:
         // orphaning with a different size every flush defeats the driver's buffer-storage reuse
         // pool, so a burst of many small flushes leaves one freshly sized storage per flush in
         // flight instead of recycling a handful of same-sized ones.
         var vertexSize = Unsafe.SizeOf<NVGvertex>();
-        int uploadBytes = _vertCount * vertexSize;
+        var tintSize = Unsafe.SizeOf<Vector4>();
+        int vertexBytes = _vertCount * vertexSize;
+        // The tints follow the vertices, and the tint attribute starts tintStart tints before them, so it reads the tint
+        // of vertex v at its own index.
+        int uploadBytes = tintStart < tintEnd ? vertexBytes + (tintEnd - tintStart) * tintSize : vertexBytes;
         GL.BindVertexArray(_vao);
         GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
         if (uploadBytes > _vboCapacity)
@@ -333,12 +388,22 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             _vboCapacity = Math.Max(256 * 1024, (int)System.Numerics.BitOperations.RoundUpToPowerOf2((uint)uploadBytes));
         }
         GL.BufferDataOrphan(BufferTarget.ArrayBuffer, _vboCapacity, BufferUsageHint.StreamDraw);
-        GL.BufferSubData(BufferTarget.ArrayBuffer, 0, uploadBytes, _verts);
+        GL.BufferSubData(BufferTarget.ArrayBuffer, 0, vertexBytes, _verts);
 
         GL.EnableVertexAttribArray(0);
         GL.EnableVertexAttribArray(1);
         GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, vertexSize, 0);
         GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, vertexSize, sizeof(float) * 2);
+        if (tintStart < tintEnd)
+        {
+            GL.BufferSubData(BufferTarget.ArrayBuffer, vertexBytes, (tintEnd - tintStart) * tintSize, _tints.AsSpan(tintStart, tintEnd - tintStart));
+            GL.VertexAttribPointer(TINT_ATTRIBUTE, 4, VertexAttribPointerType.Float, false, tintSize, vertexBytes - tintStart * tintSize);
+        }
+
+        // Every call outside a tinted batch reads the tint as white.
+        GL.DisableVertexAttribArray(TINT_ATTRIBUTE);
+        GL.VertexAttrib4(TINT_ATTRIBUTE, 1.0f, 1.0f, 1.0f, 1.0f);
+        _tintArrayEnabled = false;
 
         _clipMaskActive = false;
         _clipMaskEmpty = false;
@@ -347,39 +412,26 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _clipUnitBound = true;
         UnbindClipMask();
 
-        for (var i = 0; i < _callCount; i++)
+        for (var batchIndex = 0; batchIndex < _batchCount; batchIndex++)
         {
-            ref var call = ref _calls[i];
-
-            switch (call.Type)
+            ref readonly var batch = ref _batches[batchIndex];
+            if (batch.MemberCount >= BATCH_MIN_MEMBERS)
             {
-                case GLNVGCallType.ClipReset:
-                    ClipReset(call);
-                    break;
-                case GLNVGCallType.Clip:
-                    Clip(call);
-                    break;
-                case GLNVGCallType.Fill:
-                    BlendFuncSeparate(call.BlendFunc);
-                    Fill(call);
-                    break;
-                case GLNVGCallType.Stroke:
-                    BlendFuncSeparate(call.BlendFunc);
-                    Stroke(call);
-                    break;
-                case GLNVGCallType.Triangles:
-                    BlendFuncSeparate(call.BlendFunc);
-                    Triangles(call);
-                    break;
-                case GLNVGCallType.MaskFill:
-                    BlendFuncSeparate(call.BlendFunc);
-                    MaskFill(call);
-                    break;
+                DrawBatch(in batch);
+                continue;
+            }
+
+            // A batch too small to be drawn as one draws its calls one by one, in its place and member order.
+            SetTintArray(false);
+            for (var member = batch.FirstCall; member >= 0; member = _calls[member].NextInBatch)
+            {
+                DrawCall(in _calls[member]);
             }
         }
 
         GL.DisableVertexAttribArray(0);
         GL.DisableVertexAttribArray(1);
+        SetTintArray(false);
         GL.BindVertexArray(0);
         GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
         GL.UseProgram(0);
@@ -399,8 +451,332 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _pathCount = 0;
         _callCount = 0;
         _uniformCount = 0;
+        _batchCount = 0;
 
         CheckError("flush");
+    }
+
+    /// <summary>
+    /// Groups the calls into batches, in draw order. A call joins an earlier batch drawn with the same state when
+    /// nothing drawn between them overlaps it, so drawing it with that batch changes no pixel.
+    /// </summary>
+    private void BuildBatches()
+    {
+        _batchCount = 0;
+        for (var callIndex = 0; callIndex < _callCount; callIndex++)
+        {
+            ref var call = ref _calls[callIndex];
+            call.NextInBatch = -1;
+            if (call.Type == GLNVGCallType.None)
+            {
+                continue;
+            }
+
+            var batchable = !_batchingOff && IsBatchable(in call);
+            var joinable = batchable && BatchVertexCount(in call) <= BATCH_MAX_CALL_VERTICES;
+            if (joinable && TryFindBatch(in call, out var found, out var tinted))
+            {
+                ref var batch = ref _batches[found];
+                _calls[batch.LastCall].NextInBatch = callIndex;
+                batch.LastCall = callIndex;
+                batch.MemberCount++;
+                batch.Tinted |= tinted;
+                batch.MinX = MathF.Min(batch.MinX, call.MinX);
+                batch.MinY = MathF.Min(batch.MinY, call.MinY);
+                batch.MaxX = MathF.Max(batch.MaxX, call.MaxX);
+                batch.MaxY = MathF.Max(batch.MaxY, call.MaxY);
+            }
+            else
+            {
+                if (_batchCount == _batches.Length)
+                {
+                    Array.Resize(ref _batches, _batches.Length * 2);
+                }
+
+                _batches[_batchCount++] = new GLNVGBatch
+                {
+                    FirstCall = callIndex,
+                    LastCall = callIndex,
+                    MemberCount = 1,
+                    MinX = call.MinX,
+                    MinY = call.MinY,
+                    MaxX = call.MaxX,
+                    MaxY = call.MaxY,
+                    Barrier = !batchable,
+                    Closed = !joinable,
+                    UniformOffset = call.UniformOffset,
+                };
+            }
+        }
+    }
+
+    /// <summary>A call drawn by one draw of its own geometry under one program, which a batch can draw for it.</summary>
+    private static bool IsBatchable(in GLNVGCall call) => call.Type switch
+    {
+        GLNVGCallType.Fill or GLNVGCallType.Stroke => !call.UsesCoverageAA,
+        GLNVGCallType.Triangles => true,
+        _ => false,
+    };
+
+    /// <summary>
+    /// Finds the latest batch among the last few that the call can join: drawn the same way, with nothing drawn
+    /// after it that the call overlaps.
+    /// </summary>
+    private bool TryFindBatch(in GLNVGCall call, out int found, out bool tinted)
+    {
+        // What the batches after the one looked at cover, empty at first.
+        var laterMinX = float.PositiveInfinity;
+        var laterMinY = float.PositiveInfinity;
+        var laterMaxX = float.NegativeInfinity;
+        var laterMaxY = float.NegativeInfinity;
+        var stop = Math.Max(0, _batchCount - BATCH_LOOKBACK);
+        for (var index = _batchCount - 1; index >= stop; index--)
+        {
+            ref readonly var batch = ref _batches[index];
+            if (batch.Barrier)
+            {
+                break;
+            }
+
+            if (!batch.Closed && CanShareBatch(in _calls[batch.FirstCall], in call, out tinted))
+            {
+                found = index;
+                return true;
+            }
+
+            laterMinX = MathF.Min(laterMinX, batch.MinX);
+            laterMinY = MathF.Min(laterMinY, batch.MinY);
+            laterMaxX = MathF.Max(laterMaxX, batch.MaxX);
+            laterMaxY = MathF.Max(laterMaxY, batch.MaxY);
+            if (call.MinX < laterMaxX && laterMinX < call.MaxX && call.MinY < laterMaxY && laterMinY < call.MaxY)
+            {
+                break;
+            }
+        }
+
+        found = -1;
+        tinted = false;
+        return false;
+    }
+
+    /// <summary>
+    /// True when the call draws with the state the batch's first call draws with, its colour aside when that colour
+    /// can go per vertex (<paramref name="tinted"/>).
+    /// </summary>
+    private bool CanShareBatch(in GLNVGCall first, in GLNVGCall call, out bool tinted)
+    {
+        tinted = false;
+        if (first.Type != call.Type || first.Image != call.Image || DrawsFullCoverage(in first) != DrawsFullCoverage(in call) ||
+            first.BlendFunc.SrcRGB != call.BlendFunc.SrcRGB || first.BlendFunc.DstRGB != call.BlendFunc.DstRGB ||
+            first.BlendFunc.SrcAlpha != call.BlendFunc.SrcAlpha || first.BlendFunc.DstAlpha != call.BlendFunc.DstAlpha)
+        {
+            return false;
+        }
+
+        // Uniforms compare bit for bit, which vectorizes where comparing them as floats does not.
+        var firstFrag = MemoryMarshal.AsBytes(_uniforms[first.UniformOffset].Data.AsSpan());
+        var frag = MemoryMarshal.AsBytes(_uniforms[call.UniformOffset].Data.AsSpan());
+        const int COLORS_START = INNER_COLOR_INDEX * sizeof(float);
+        const int COLORS_END = (INNER_COLOR_INDEX + 8) * sizeof(float);
+        if (!firstFrag[..COLORS_START].SequenceEqual(frag[..COLORS_START]) ||
+            !firstFrag[COLORS_END..].SequenceEqual(frag[COLORS_END..]))
+        {
+            return false;
+        }
+
+        if (firstFrag[COLORS_START..COLORS_END].SequenceEqual(frag[COLORS_START..COLORS_END]))
+        {
+            return true;
+        }
+
+        // The paint type lies outside the colours, so it is the same for both.
+        tinted = TakesTint(_uniforms[call.UniformOffset].Data) && TakesTint(_uniforms[first.UniformOffset].Data);
+        return tinted;
+    }
+
+    /// <summary>
+    /// True when the paint's colour is its inner colour alone, or that colour times what it samples, so a white inner
+    /// colour times a per-vertex tint draws it the same.
+    /// </summary>
+    private static bool TakesTint(float[] frag) => (GLNVGShaderType)(int)frag[12 * 4 + 3] switch
+    {
+        GLNVGShaderType.FillGrad => IsSolidPaint(frag),
+        GLNVGShaderType.Img or GLNVGShaderType.RoundedRect => true,
+        _ => false,
+    };
+
+    /// <summary>How many vertices the call adds to a batch, its strips turned into triangles.</summary>
+    private int BatchVertexCount(in GLNVGCall call)
+    {
+        switch (call.Type)
+        {
+            case GLNVGCallType.Fill:
+                var count = call.MergedFringeIsStrip ? StripToTriangleCount(call.MergedFringeCount) : call.MergedFringeCount;
+                for (var index = 0; index < call.PathCount; index++)
+                {
+                    count += _paths[call.PathOffset + index].FillCount;
+                }
+
+                return count;
+            case GLNVGCallType.Stroke:
+                return call.MergedStrokeIsStrip ? StripToTriangleCount(call.MergedStrokeCount) : call.MergedStrokeCount;
+            default:
+                return call.TriangleCount;
+        }
+    }
+
+    private static bool DrawsFullCoverage(in GLNVGCall call) => call.Type == GLNVGCallType.Fill && call.MergedFringeCount == 0;
+
+    /// <summary>
+    /// Copies the geometry of every batch of more than one call after the recorded vertices, as one triangle list in
+    /// member order, and gives a tinted batch its tints and white uniforms. Returns the first vertex that has a tint, and
+    /// in <paramref name="tintEnd"/> the end of the last.
+    /// </summary>
+    private int AppendBatchGeometry(out int tintEnd)
+    {
+        var tintStart = int.MaxValue;
+        tintEnd = 0;
+        for (var batchIndex = 0; batchIndex < _batchCount; batchIndex++)
+        {
+            ref var batch = ref _batches[batchIndex];
+            if (batch.MemberCount < BATCH_MIN_MEMBERS)
+            {
+                continue;
+            }
+
+            batch.VertexOffset = _vertCount;
+            for (var member = batch.FirstCall; member >= 0; member = _calls[member].NextInBatch)
+            {
+                var memberStart = _vertCount;
+                AppendCallGeometry(in _calls[member]);
+                if (batch.Tinted)
+                {
+                    var frag = _uniforms[_calls[member].UniformOffset].Data;
+                    var tint = new Vector4(frag[INNER_COLOR_INDEX], frag[INNER_COLOR_INDEX + 1], frag[INNER_COLOR_INDEX + 2], frag[INNER_COLOR_INDEX + 3]);
+                    if (_tints.Length < _vertCapacity)
+                    {
+                        Array.Resize(ref _tints, _vertCapacity);
+                    }
+
+                    _tints.AsSpan(memberStart, _vertCount - memberStart).Fill(tint);
+                }
+            }
+
+            batch.VertexCount = _vertCount - batch.VertexOffset;
+            if (batch.Tinted)
+            {
+                tintStart = Math.Min(tintStart, batch.VertexOffset);
+                tintEnd = batch.VertexOffset + batch.VertexCount;
+                batch.UniformOffset = AllocUniforms(1);
+                var white = _uniforms[batch.UniformOffset].Data;
+                _uniforms[_calls[batch.FirstCall].UniformOffset].Data.CopyTo(white, 0);
+                white.AsSpan(INNER_COLOR_INDEX, 8).Fill(1.0f);
+            }
+        }
+
+        return tintStart;
+    }
+
+    /// <summary>Appends what the call draws as a triangle list, in the order its own draw takes it.</summary>
+    private void AppendCallGeometry(in GLNVGCall call)
+    {
+        switch (call.Type)
+        {
+            case GLNVGCallType.Fill:
+                for (var index = 0; index < call.PathCount; index++)
+                {
+                    ref readonly var path = ref _paths[call.PathOffset + index];
+                    if (path.FillCount > 0)
+                    {
+                        AppendVertices(path.FillOffset, path.FillCount, strip: false);
+                    }
+                }
+
+                AppendVertices(call.MergedFringeOffset, call.MergedFringeCount, call.MergedFringeIsStrip);
+                break;
+            case GLNVGCallType.Stroke:
+                AppendVertices(call.MergedStrokeOffset, call.MergedStrokeCount, call.MergedStrokeIsStrip);
+                break;
+            case GLNVGCallType.Triangles:
+                AppendVertices(call.TriangleOffset, call.TriangleCount, strip: false);
+                break;
+        }
+    }
+
+    private void AppendVertices(int offset, int count, bool strip)
+    {
+        if (count <= 0)
+        {
+            return;
+        }
+
+        if (strip)
+        {
+            var destination = AllocVerts(StripToTriangleCount(count));
+            var written = ConvertStripToTriangles(_verts.AsSpan(offset, count), _verts.AsSpan(destination), Vector2.Zero);
+            _vertCount = destination + written;
+        }
+        else
+        {
+            var destination = AllocVerts(count);
+            _verts.AsSpan(offset, count).CopyTo(_verts.AsSpan(destination, count));
+        }
+    }
+
+    private void DrawCall(in GLNVGCall call)
+    {
+        switch (call.Type)
+        {
+            case GLNVGCallType.ClipReset:
+                ClipReset(call);
+                break;
+            case GLNVGCallType.Clip:
+                Clip(call);
+                break;
+            case GLNVGCallType.Fill:
+                BlendFuncSeparate(call.BlendFunc);
+                Fill(call);
+                break;
+            case GLNVGCallType.Stroke:
+                BlendFuncSeparate(call.BlendFunc);
+                Stroke(call);
+                break;
+            case GLNVGCallType.Triangles:
+                BlendFuncSeparate(call.BlendFunc);
+                Triangles(call);
+                break;
+            case GLNVGCallType.MaskFill:
+                BlendFuncSeparate(call.BlendFunc);
+                MaskFill(call);
+                break;
+        }
+    }
+
+    private void DrawBatch(in GLNVGBatch batch)
+    {
+        ref readonly var first = ref _calls[batch.FirstCall];
+        BlendFuncSeparate(first.BlendFunc);
+        SetTintArray(batch.Tinted);
+        SetUniforms(batch.UniformOffset, first.Image, fullCoverage: DrawsFullCoverage(in first), tint: batch.Tinted);
+        GL.DrawArrays(PrimitiveType.Triangles, batch.VertexOffset, batch.VertexCount);
+    }
+
+    private void SetTintArray(bool enabled)
+    {
+        if (_tintArrayEnabled == enabled)
+        {
+            return;
+        }
+
+        _tintArrayEnabled = enabled;
+        if (enabled)
+        {
+            GL.EnableVertexAttribArray(TINT_ATTRIBUTE);
+        }
+        else
+        {
+            GL.DisableVertexAttribArray(TINT_ATTRIBUTE);
+        }
     }
 
     void INVGRenderer.BeginFrame(float windowWidth, float windowHeight, float devicePixelRatio) => BeginFrame(windowWidth, windowHeight, devicePixelRatio);
@@ -561,7 +937,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
         }
 
-        // Pass 2: fringe vertices (strip→triangle, or keep strip for single path)
+        // Pass 2: fringe vertices (strip?뭪riangle, or keep strip for single path)
         var singleFringePath = paths.Length == 1 && paths[0].NStroke > 0;
         call.MergedFringeOffset = vertOffset;
         call.MergedFringeIsStrip = singleFringePath;
@@ -590,6 +966,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             }
         }
         call.MergedFringeCount = vertOffset - call.MergedFringeOffset;
+        SetFillBounds(ref call, bounds, call.MergedFringeCount > 0 ? fringe * 2.0f : 0.0f);
 #if DEBUG
         if (call.MergedFringeCount == 0)
         {
@@ -676,8 +1053,20 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
-            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0 → analytical fill coverage
+            SetUniformValue(_uniforms[call.UniformOffset].Data, 12, 0, -1.0f); // strokeMult < 0 ??analytical fill coverage
         }
+    }
+
+    /// <summary>
+    /// Sets the box of a fill from the path bounds the core passes, which already include the replay offset, widened by
+    /// how far the fringe reaches past the points.
+    /// </summary>
+    private static void SetFillBounds(ref GLNVGCall call, ReadOnlySpan<float> bounds, float reach)
+    {
+        call.MinX = bounds[0] - reach;
+        call.MinY = bounds[1] - reach;
+        call.MaxX = bounds[2] + reach;
+        call.MaxY = bounds[3] + reach;
     }
 
     /// <summary>Copies vertices moved by an offset, in one pass.</summary>
@@ -784,6 +1173,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _verts[vertOffset++] = new NVGvertex(maxX, minY, 0.5f, 1.0f);
         _verts[vertOffset++] = new NVGvertex(minX, maxY, 0.5f, 1.0f);
         _verts[vertOffset++] = new NVGvertex(minX, minY, 0.5f, 1.0f);
+        call.MinX = minX;
+        call.MinY = minY;
+        call.MaxX = maxX;
+        call.MaxY = maxY;
 
         // The stroke geometry and the composite quad both lie within these bounds.
         var scissorCuts = ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe);
@@ -860,6 +1253,11 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             WriteQuad(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight);
         }
+
+        call.MinX = shape.CenterX - coverHalfWidth;
+        call.MinY = shape.CenterY - coverHalfHeight;
+        call.MaxX = shape.CenterX + coverHalfWidth;
+        call.MaxY = shape.CenterY + coverHalfHeight;
 
         call.UniformOffset = AllocUniforms(1);
         var frag = _uniforms[call.UniformOffset].Data;
@@ -973,6 +1371,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             maxY = MathF.Max(maxY, vert.Y);
         }
 
+        call.MinX = minX;
+        call.MinY = minY;
+        call.MaxX = maxX;
+        call.MaxY = maxY;
         call.UniformOffset = AllocUniforms(1);
         var scissorCuts = verts.Length == 0 || ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe);
         if (!ConvertPaint(_uniforms[call.UniformOffset].Data, ref paint, ref scissor, 1.0f, fringe, -1.0f, scissorCuts))
@@ -1012,6 +1414,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
 
         previous.TriangleCount += call.TriangleCount;
+        previous.MinX = MathF.Min(previous.MinX, call.MinX);
+        previous.MinY = MathF.Min(previous.MinY, call.MinY);
+        previous.MaxX = MathF.Max(previous.MaxX, call.MaxX);
+        previous.MaxY = MathF.Max(previous.MaxY, call.MaxY);
         _callCount--;
         _uniformCount--;
     }
@@ -1879,14 +2285,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     /// Makes the program for a set of uniforms current and loads them; <paramref name="fullCoverage"/> says every
     /// vertex the call draws carries the fill-body texcoord, so its stroke mask is 1 throughout.
     /// </summary>
-    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true, bool mask = false, bool callerBindsClip = false, bool fullCoverage = false)
+    private void SetUniforms(int uniformOffset, int image, bool bindTexture = true, bool applyClipMask = true, bool mask = false, bool callerBindsClip = false, bool fullCoverage = false, bool tint = false)
     {
         var frag = _uniforms[uniformOffset].Data;
         var clip = applyClipMask && _clipMaskActive;
         // A caller that binds a clip itself (a nested clip reading the previous one) needs a program that samples it.
         UseProgram(callerBindsClip
-            ? SelectProgram(frag, true, mask, clipEmpty: false, fullCoverage)
-            : SelectProgram(frag, clip, mask, _clipMaskEmpty, fullCoverage));
+            ? SelectProgram(frag, true, mask, clipEmpty: false, fullCoverage, tint)
+            : SelectProgram(frag, clip, mask, _clipMaskEmpty, fullCoverage, tint));
         GL.Uniform4(_programs[_currentProgram].LocFrag, UniformArraySize, frag);
 
         if (bindTexture)
@@ -2313,6 +2719,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
         GL.BindAttribLocation(program, 0, "vertex");
         GL.BindAttribLocation(program, 1, "tcoord");
+        GL.BindAttribLocation(program, TINT_ATTRIBUTE, "tint");
 
         GL.LinkProgram(program);
         GL.GetProgram(program, GetProgramParameterName.LinkStatus, out var statusProg);
@@ -2333,7 +2740,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     /// Picks the program for a draw from its uniforms and the flush state: a variant when one draws
     /// it exactly as the uber shader would, the uber shader otherwise.
     /// </summary>
-    private int SelectProgram(float[] frag, bool clip, bool mask, bool clipEmpty, bool fullCoverage)
+    private int SelectProgram(float[] frag, bool clip, bool mask, bool clipEmpty, bool fullCoverage, bool tint)
     {
         // An empty clip is drawn by the uber shader (clipEnabled 2); the variants have no such state.
         if (_uberShaderOnly || (clip && clipEmpty))
@@ -2368,7 +2775,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         var flags = (HasScissor(frag) ? VARIANT_FLAG_SCISSOR : 0) |
                     (clip ? VARIANT_FLAG_CLIP : 0) |
                     (mask ? VARIANT_FLAG_MASK : 0) |
-                    (fullCoverage && ReadsStrokeMask(paint) ? VARIANT_FLAG_FULL_COVERAGE : 0);
+                    (fullCoverage && ReadsStrokeMask(paint) ? VARIANT_FLAG_FULL_COVERAGE : 0) |
+                    (tint ? VARIANT_FLAG_TINT : 0);
         var index = paint * VARIANT_FLAG_COUNT + flags;
         return _variantFailed[index] ? UBER_SHADER : index;
     }
@@ -2480,7 +2888,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                ((flags & VARIANT_FLAG_SCISSOR) != 0 ? "#define SCISSOR\n" : string.Empty) +
                ((flags & VARIANT_FLAG_CLIP) != 0 ? "#define CLIP\n" : string.Empty) +
                ((flags & VARIANT_FLAG_MASK) != 0 ? "#define MASK\n" : string.Empty) +
-               ((flags & VARIANT_FLAG_FULL_COVERAGE) != 0 ? "#define FULL_COVERAGE\n" : string.Empty);
+               ((flags & VARIANT_FLAG_FULL_COVERAGE) != 0 ? "#define FULL_COVERAGE\n" : string.Empty) +
+               ((flags & VARIANT_FLAG_TINT) != 0 ? "#define TINT\n" : string.Empty);
     }
 
     private static void GetUniforms(ref GLNVGShader shader)

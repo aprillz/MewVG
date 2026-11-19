@@ -236,6 +236,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glEnableVertexAttribArray;
     private static delegate* unmanaged<uint, void> _glDisableVertexAttribArray;
     private static delegate* unmanaged<uint, int, uint, byte, int, void*, void> _glVertexAttribPointer;
+    private static delegate* unmanaged<uint, float, float, float, float, void> _glVertexAttrib4f;
     private static delegate* unmanaged<int, int, void> _glUniform1i;
     private static delegate* unmanaged<int, float, void> _glUniform1f;
     private static delegate* unmanaged<int, int, float*, void> _glUniform2fv;
@@ -338,6 +339,7 @@ internal static unsafe class GL
         _glEnableVertexAttribArray = (delegate* unmanaged<uint, void>)LoadProc("glEnableVertexAttribArray");
         _glDisableVertexAttribArray = (delegate* unmanaged<uint, void>)LoadProc("glDisableVertexAttribArray");
         _glVertexAttribPointer = (delegate* unmanaged<uint, int, uint, byte, int, void*, void>)LoadProc("glVertexAttribPointer");
+        _glVertexAttrib4f = (delegate* unmanaged<uint, float, float, float, float, void>)LoadProc("glVertexAttrib4f");
         _glUniform1i = (delegate* unmanaged<int, int, void>)LoadProc("glUniform1i");
         _glUniform1f = (delegate* unmanaged<int, float, void>)LoadProc("glUniform1f");
         _glUniform2fv = (delegate* unmanaged<int, int, float*, void>)LoadProc("glUniform2fv");
@@ -421,6 +423,16 @@ internal static unsafe class GL
             _glBufferSubData((uint)target, offset, size, ptr);
         }
     }
+
+    public static void BufferSubData(BufferTarget target, int offset, int size, ReadOnlySpan<System.Numerics.Vector4> data)
+    {
+        fixed (System.Numerics.Vector4* ptr = data)
+        {
+            _glBufferSubData((uint)target, offset, size, ptr);
+        }
+    }
+
+    public static void VertexAttrib4(int index, float x, float y, float z, float w) => _glVertexAttrib4f((uint)index, x, y, z, w);
 
     public static void EnableVertexAttribArray(int index) => _glEnableVertexAttribArray((uint)index);
 
