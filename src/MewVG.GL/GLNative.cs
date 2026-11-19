@@ -249,6 +249,8 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, uint, int, void> _glTexParameteri;
     private static delegate* unmanaged<uint, void> _glGenerateMipmap;
     private static delegate* unmanaged<uint, int, int, void> _glDrawArrays;
+    private static delegate* unmanaged<uint, int, int, int, void> _glDrawArraysInstanced;
+    private static delegate* unmanaged<uint, uint, void> _glVertexAttribDivisor;
     private static delegate* unmanaged<uint, uint, uint, uint, void> _glBlendFuncSeparate;
     private static delegate* unmanaged<uint, uint> _glCreateShader;
     private static delegate* unmanaged<uint, int, byte**, int*, void> _glShaderSource;
@@ -352,6 +354,9 @@ internal static unsafe class GL
         _glTexParameteri = (delegate* unmanaged<uint, uint, int, void>)LoadProc("glTexParameteri");
         _glGenerateMipmap = (delegate* unmanaged<uint, void>)LoadProc("glGenerateMipmap");
         _glDrawArrays = (delegate* unmanaged<uint, int, int, void>)LoadProc("glDrawArrays");
+        // Instanced arrays are core from GL 3.3 and GLES 3.0; a GL 3.1 or 3.2 context may lack the divisor.
+        _glDrawArraysInstanced = (delegate* unmanaged<uint, int, int, int, void>)_getProcAddress!("glDrawArraysInstanced");
+        _glVertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)_getProcAddress!("glVertexAttribDivisor");
         _glBlendFuncSeparate = (delegate* unmanaged<uint, uint, uint, uint, void>)LoadProc("glBlendFuncSeparate");
         _glCreateShader = (delegate* unmanaged<uint, uint>)LoadProc("glCreateShader");
         _glShaderSource = (delegate* unmanaged<uint, int, byte**, int*, void>)LoadProc("glShaderSource");
@@ -432,6 +437,15 @@ internal static unsafe class GL
         }
     }
 
+    public static void BufferSubData<T>(BufferTarget target, int offset, int size, ReadOnlySpan<T> data)
+        where T : unmanaged
+    {
+        fixed (T* ptr = data)
+        {
+            _glBufferSubData((uint)target, offset, size, ptr);
+        }
+    }
+
     public static void VertexAttrib4(int index, float x, float y, float z, float w) => _glVertexAttrib4f((uint)index, x, y, z, w);
 
     public static void EnableVertexAttribArray(int index) => _glEnableVertexAttribArray((uint)index);
@@ -496,6 +510,14 @@ internal static unsafe class GL
     public static void GenerateMipmap(GenerateMipmapTarget target) => _glGenerateMipmap((uint)target);
 
     public static void DrawArrays(PrimitiveType mode, int first, int count) => _glDrawArrays((uint)mode, first, count);
+
+    /// <summary>True when the context draws instances with per-instance attributes.</summary>
+    public static bool SupportsInstancing => _glDrawArraysInstanced != null && _glVertexAttribDivisor != null;
+
+    public static void DrawArraysInstanced(PrimitiveType mode, int first, int count, int instances)
+        => _glDrawArraysInstanced((uint)mode, first, count, instances);
+
+    public static void VertexAttribDivisor(int index, int divisor) => _glVertexAttribDivisor((uint)index, (uint)divisor);
 
     public static void BlendFuncSeparate(BlendingFactorSrc srcRGB, BlendingFactorDest dstRGB, BlendingFactorSrc srcAlpha, BlendingFactorDest dstAlpha)
         => _glBlendFuncSeparate((uint)srcRGB, (uint)dstRGB, (uint)srcAlpha, (uint)dstAlpha);
