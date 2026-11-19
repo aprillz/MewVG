@@ -43,6 +43,7 @@ internal enum MNVGshaderType
     MNVG_SHADER_COVERAGE_COMPOSITE = 5,
     MNVG_SHADER_GRADIENT_RADIAL = 6,
     MNVG_SHADER_GRADIENT_LINEAR = 7,
+    MNVG_SHADER_ROUNDED_RECT = 8,
 }
 
 /// <summary>
@@ -203,6 +204,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private const int TINT_BUFFER_INDEX = 3;
     // How many batches back a call looks for one to join; each step is one bounds test.
     private const int BATCH_LOOKBACK = 10;
+    // The inner half extent of a filled rounded rectangle: every point lies far outside a box this inside out.
+    private const float EMPTY_INNER_HALF_EXTENT = -1.0e4f;
     // A call with more vertices than this is drawn on its own: copying its geometry into a batch costs more than the
     // draw it saves.
     private const int BATCH_MAX_CALL_VERTICES = 128;
@@ -317,6 +320,25 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
           return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - uniforms.radius;
         }
 
+        // The signed distance to a rounded rectangle centred on the origin; radii are top-left, top-right,
+        // bottom-right and bottom-left.
+        float sdRoundedBox(float2 p, float2 halfExtent, float4 radii) {
+          float2 side = p.x > 0.0f ? radii.zy : radii.wx;
+          float r = p.y > 0.0f ? side.x : side.y;
+          float2 q = abs(p) - halfExtent + float2(r);
+          return min(max(q.x, q.y), 0.0f) + length(max(q, 0.0f)) - r;
+        }
+
+        // A rounded rectangle covers what its outer box covers and its inner one does not; a fill's inner box covers
+        // nothing. The paint matrix columns hold the half extents and the two sets of radii, four floats each, and
+        // extent.x the coverage per unit of distance.
+        float roundedRectCoverage(constant Uniforms& uniforms, float2 p) {
+          constant float4* shape = reinterpret_cast<constant float4*>(&uniforms.paintMat);
+          float outer = saturate(0.5f - sdRoundedBox(p, shape[0].xy, shape[1]) * uniforms.extent.x);
+          float inner = saturate(0.5f - sdRoundedBox(p, shape[0].zw, shape[2]) * uniforms.extent.x);
+          return max(outer - inner, 0.0f);
+        }
+
         float strokeMask(constant Uniforms& uniforms, float2 ftcoord) {
           if (uniforms.strokeMult < 0.0) {
             return clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);
@@ -357,6 +379,10 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
           if (uniforms.type == 2) {  // MNVG_SHADER_SIMPLE
             return uniforms.innerCol * scissor;
+          }
+
+          if (uniforms.type == 8) {  // MNVG_SHADER_ROUNDED_RECT
+            return (uniforms.innerCol * in.ftint) * (roundedRectCoverage(uniforms, in.ftcoord) * scissor);
           }
 
           float strokeAlpha = strokeMask(uniforms, in.ftcoord);
@@ -476,6 +502,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             color = color * (uniforms.innerCol * in.ftint);
           } else if (VARIANT_PAINT == 7) {  // simple
             color = uniforms.innerCol * scissor;
+          } else if (VARIANT_PAINT == 8) {  // rounded rectangle
+            color = (uniforms.innerCol * in.ftint) * (roundedRectCoverage(uniforms, in.ftcoord) * scissor);
           } else {
             float strokeAlpha = strokeMask(uniforms, in.ftcoord);
             if (VARIANT_PAINT == 1) {       // solid
@@ -696,7 +724,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private const int VARIANT_PAINT_LINEAR_GRADIENT = 5;
     private const int VARIANT_PAINT_RADIAL_GRADIENT = 6;
     private const int VARIANT_PAINT_SIMPLE = 7;
-    private const int VARIANT_COUNT = 8 * 3 * 8;
+    private const int VARIANT_PAINT_ROUNDED_RECT = 8;
+    private const int VARIANT_COUNT = 9 * 3 * 8;
     // MEWVG_METAL_UBERSHADER=1 draws everything with the uber shader (A/B comparison).
     private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_METAL_UBERSHADER") == "1";
     private readonly IntPtr[] _variantVertexFunctions = new IntPtr[VARIANT_COUNT];
@@ -1961,7 +1990,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             return (MNVGshaderType)frag->type switch
             {
                 MNVGshaderType.MNVG_SHADER_FILLGRAD => IsSolidPaint(frag),
-                MNVGshaderType.MNVG_SHADER_IMG => true,
+                MNVGshaderType.MNVG_SHADER_IMG or MNVGshaderType.MNVG_SHADER_ROUNDED_RECT => true,
                 _ => false,
             };
         }
@@ -2228,6 +2257,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             MNVGshaderType.MNVG_SHADER_GRADIENT_LINEAR => VARIANT_PAINT_LINEAR_GRADIENT,
             MNVGshaderType.MNVG_SHADER_GRADIENT_RADIAL => VARIANT_PAINT_RADIAL_GRADIENT,
             MNVGshaderType.MNVG_SHADER_SIMPLE => VARIANT_PAINT_SIMPLE,
+            MNVGshaderType.MNVG_SHADER_ROUNDED_RECT => VARIANT_PAINT_ROUNDED_RECT,
             _ => 0,
         };
         if (paint == 0)
@@ -4014,13 +4044,163 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         => RenderTriangles(ref paint, compositeOperation, ref scissor, verts, fringe);
 
     // Metal has no per-pixel rounded rectangle; the context draws the rectangle's path.
+    /// <summary>
+    /// Draws a solid rounded rectangle, or its outline, as geometry around it whose fragments work out their coverage
+    /// from signed distances to rounded rectangles; the texcoord carries each vertex's position relative to the centre.
+    /// </summary>
     bool INVGRenderer.TryRenderRoundedRect(
         ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
         ref NVGscissorState scissor,
         float fringe,
         in NVGRoundedRect shape)
-        => false;
+    {
+        var outline = shape.StrokeHalfWidth >= 0.0f;
+        var strokeHalfWidth = Math.Max(shape.StrokeHalfWidth, 0.0f);
+        var antialias = Math.Max(fringe, 1.0f / _devicePixelRatio);
+
+        // The geometry reaches past the outer edge by a pixel of antialiasing.
+        var outerHalfWidth = shape.HalfWidth + strokeHalfWidth;
+        var outerHalfHeight = shape.HalfHeight + strokeHalfWidth;
+        var coverHalfWidth = outerHalfWidth + antialias;
+        var coverHalfHeight = outerHalfHeight + antialias;
+
+        // Inside an outline lies a box that the inner edge leaves uncovered by at least a pixel; the outline is
+        // drawn as the ring around it, so the fragments in the middle are never run.
+        var innerHalfWidth = shape.HalfWidth - strokeHalfWidth;
+        var innerHalfHeight = shape.HalfHeight - strokeHalfWidth;
+        var innerTopLeft = Math.Max(shape.TopLeft - strokeHalfWidth, 0.0f);
+        var innerTopRight = Math.Max(shape.TopRight - strokeHalfWidth, 0.0f);
+        var innerBottomRight = Math.Max(shape.BottomRight - strokeHalfWidth, 0.0f);
+        var innerBottomLeft = Math.Max(shape.BottomLeft - strokeHalfWidth, 0.0f);
+        var innerRadius = Math.Max(Math.Max(innerTopLeft, innerTopRight), Math.Max(innerBottomRight, innerBottomLeft));
+        var holeHalfWidth = innerHalfWidth - innerRadius - antialias;
+        var holeHalfHeight = innerHalfHeight - innerRadius - antialias;
+        var hollow = outline && holeHalfWidth > 0.0f && holeHalfHeight > 0.0f;
+
+        EnsureCalls(_callCount + 1);
+        ref var call = ref _calls[_callCount++];
+        call = default;
+        call.type = MNVGcallType.MNVG_TRIANGLES;
+        call.blendFunc = compositeOperation;
+        call.triangleOffset = _vertCount;
+        call.triangleCount = hollow ? 24 : 6;
+        EnsureVerts(_vertCount + call.triangleCount);
+        var geometry = _verts.AsSpan(_vertCount, call.triangleCount);
+        if (hollow)
+        {
+            WriteRing(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight, holeHalfWidth, holeHalfHeight);
+        }
+        else
+        {
+            WriteQuad(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight);
+        }
+
+        _vertCount += call.triangleCount;
+        call.minX = shape.CenterX - coverHalfWidth;
+        call.minY = shape.CenterY - coverHalfHeight;
+        call.maxX = shape.CenterX + coverHalfWidth;
+        call.maxY = shape.CenterY + coverHalfHeight;
+
+        call.uniformOffset = AllocUniforms(1);
+        fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
+        {
+            var frag = (MNVGfragUniforms*)ptr;
+            ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f, ScissorCuts(ref scissor, in call, fringe));
+
+            // A hard edge is a ramp too steep to leave any pixel partly covered.
+            frag->extent[0] = fringe > 0.0f ? 1.0f / fringe : 1.0e6f;
+
+            // Fills and outlines share one pipeline, so a run of them never switches pipelines: a fill is an outline
+            // whose inner rectangle lies so far inside out that it covers nothing.
+            if (outline)
+            {
+                // Round corners grow and shrink with the outline; square ones stay square.
+                SetShape(frag, outerHalfWidth, outerHalfHeight, innerHalfWidth, innerHalfHeight,
+                    GrowCorner(shape.TopLeft, strokeHalfWidth), GrowCorner(shape.TopRight, strokeHalfWidth),
+                    GrowCorner(shape.BottomRight, strokeHalfWidth), GrowCorner(shape.BottomLeft, strokeHalfWidth),
+                    innerTopLeft, innerTopRight, innerBottomRight, innerBottomLeft);
+            }
+            else
+            {
+                SetShape(frag, shape.HalfWidth, shape.HalfHeight, EMPTY_INNER_HALF_EXTENT, EMPTY_INNER_HALF_EXTENT,
+                    shape.TopLeft, shape.TopRight, shape.BottomRight, shape.BottomLeft, 0.0f, 0.0f, 0.0f, 0.0f);
+            }
+
+            frag->type = (int)MNVGshaderType.MNVG_SHADER_ROUNDED_RECT;
+        }
+
+        return true;
+    }
+
+    /// <summary>Puts the half extents and the radii of both boxes in the paint matrix columns the shader reads them from.</summary>
+    private static void SetShape(MNVGfragUniforms* frag, float outerHalfWidth, float outerHalfHeight, float innerHalfWidth,
+        float innerHalfHeight, float outerTopLeft, float outerTopRight, float outerBottomRight, float outerBottomLeft,
+        float innerTopLeft, float innerTopRight, float innerBottomRight, float innerBottomLeft)
+    {
+        frag->paintMat[0] = outerHalfWidth;
+        frag->paintMat[1] = outerHalfHeight;
+        frag->paintMat[2] = innerHalfWidth;
+        frag->paintMat[3] = innerHalfHeight;
+        frag->paintMat[4] = outerTopLeft;
+        frag->paintMat[5] = outerTopRight;
+        frag->paintMat[6] = outerBottomRight;
+        frag->paintMat[7] = outerBottomLeft;
+        frag->paintMat[8] = innerTopLeft;
+        frag->paintMat[9] = innerTopRight;
+        frag->paintMat[10] = innerBottomRight;
+        frag->paintMat[11] = innerBottomLeft;
+    }
+
+    private static float GrowCorner(float radius, float amount) => radius > 0.0f ? radius + amount : 0.0f;
+
+    /// <summary>Writes two triangles covering a box around a centre, with texcoords relative to the centre.</summary>
+    private static void WriteQuad(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight)
+    {
+        var topLeft = Relative(centerX, centerY, -halfWidth, -halfHeight);
+        var topRight = Relative(centerX, centerY, halfWidth, -halfHeight);
+        var bottomRight = Relative(centerX, centerY, halfWidth, halfHeight);
+        var bottomLeft = Relative(centerX, centerY, -halfWidth, halfHeight);
+        output[0] = topLeft;
+        output[1] = topRight;
+        output[2] = bottomRight;
+        output[3] = topLeft;
+        output[4] = bottomRight;
+        output[5] = bottomLeft;
+    }
+
+    /// <summary>Writes eight triangles covering a box around a centre less a smaller box, with texcoords relative to the centre.</summary>
+    private static void WriteRing(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight, float holeHalfWidth, float holeHalfHeight)
+    {
+        Span<NVGvertex> outer =
+        [
+            Relative(centerX, centerY, -halfWidth, -halfHeight),
+            Relative(centerX, centerY, halfWidth, -halfHeight),
+            Relative(centerX, centerY, halfWidth, halfHeight),
+            Relative(centerX, centerY, -halfWidth, halfHeight),
+        ];
+        Span<NVGvertex> hole =
+        [
+            Relative(centerX, centerY, -holeHalfWidth, -holeHalfHeight),
+            Relative(centerX, centerY, holeHalfWidth, -holeHalfHeight),
+            Relative(centerX, centerY, holeHalfWidth, holeHalfHeight),
+            Relative(centerX, centerY, -holeHalfWidth, holeHalfHeight),
+        ];
+        var written = 0;
+        for (var side = 0; side < 4; side++)
+        {
+            var next = (side + 1) % 4;
+            output[written++] = outer[side];
+            output[written++] = outer[next];
+            output[written++] = hole[next];
+            output[written++] = outer[side];
+            output[written++] = hole[next];
+            output[written++] = hole[side];
+        }
+    }
+
+    private static NVGvertex Relative(float centerX, float centerY, float offsetX, float offsetY)
+        => new(centerX + offsetX, centerY + offsetY, offsetX, offsetY);
 
     /// <summary>Moves the vertices just copied into the frame's vertex buffer by the caller's offset.</summary>
     private void MoveVerts(int start, int count, Vector2 offset)
