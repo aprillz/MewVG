@@ -2214,7 +2214,7 @@ internal sealed class NVGContext
             fillPaint.OuterColor.A *= state.Alpha;
             var storedPaths = stored.Paths.AsSpan(0, stored.PathCount);
             _renderer.RenderFill(ref fillPaint, state.CompositeOperation, ref state.Scissor, fringe, ShiftBounds(stored.Bounds, shiftX, shiftY),
-                storedPaths, stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY));
+                storedPaths, stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY), new NVGGeometrySource(stored, stored.Version));
             CountFill(storedPaths);
             ClearPathCache();
             return;
@@ -2664,7 +2664,8 @@ internal sealed class NVGContext
             ShiftBounds(cache.SnapshotBounds, shiftX, shiftY),
             paths,
             cache.SnapshotVerts.AsSpan(0, cache.SnapshotNVerts),
-            new Vector2(shiftX, shiftY));
+            new Vector2(shiftX, shiftY),
+            new NVGGeometrySource(cache, cache.SnapshotVersion));
         CountFill(paths);
 
         ClearPathCache();
@@ -2703,6 +2704,7 @@ internal sealed class NVGContext
         cache.SnapshotFringe = fringe;
         cache.SnapshotWindingRule = windingRule;
         cache.SnapshotValid = true;
+        cache.SnapshotVersion++;
     }
 
     private void RestoreAndTransformContours(FrozenFillCache cache, Buffer6<float> xform)

@@ -12,7 +12,10 @@ internal interface INVGRenderer
 
     void Flush();
 
-    /// <summary>Draws a fill whose vertices are moved by <paramref name="offset"/>, which <paramref name="bounds"/> already includes.</summary>
+    /// <summary>
+    /// Draws a fill whose vertices are moved by <paramref name="offset"/>, which <paramref name="bounds"/> already includes;
+    /// <paramref name="source"/> names the stored geometry they come from, if any.
+    /// </summary>
     void RenderFill(
         ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
@@ -21,7 +24,8 @@ internal interface INVGRenderer
         ReadOnlySpan<float> bounds,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset);
+        Vector2 offset,
+        NVGGeometrySource source = default);
 
     /// <summary>Draws a stroke whose vertices are moved by <paramref name="offset"/>.</summary>
     void RenderStroke(
