@@ -24,6 +24,7 @@
 
 using System.Numerics;
 using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 
 using Aprillz.MewVG.Interop;
 
@@ -2158,22 +2159,27 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         );
     }
 
-    private void SetBounds(ref MNVGcall call, int start, int end)
+    private static void SetBounds(ref MNVGcall call, ReadOnlySpan<NVGvertex> verts)
     {
-        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
-        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
-        foreach (ref readonly var vert in _verts.AsSpan(start, end - start))
+        BoundsOf(verts, out call.minX, out call.minY, out call.maxX, out call.maxY);
+    }
+
+    /// <summary>The box of the vertices' positions; inverted (min above max) for none.</summary>
+    private static void BoundsOf(ReadOnlySpan<NVGvertex> verts, out float minX, out float minY, out float maxX, out float maxY)
+    {
+        // A vertex is four floats, so one vector min and max per vertex covers its position without a branch.
+        var low = Vector128.Create(float.PositiveInfinity);
+        var high = Vector128.Create(float.NegativeInfinity);
+        foreach (var vertex in MemoryMarshal.Cast<NVGvertex, Vector128<float>>(verts))
         {
-            if (vert.X < minX) minX = vert.X;
-            if (vert.Y < minY) minY = vert.Y;
-            if (vert.X > maxX) maxX = vert.X;
-            if (vert.Y > maxY) maxY = vert.Y;
+            low = Vector128.Min(low, vertex);
+            high = Vector128.Max(high, vertex);
         }
 
-        call.minX = minX;
-        call.minY = minY;
-        call.maxX = maxX;
-        call.maxY = maxY;
+        minX = low.GetElement(0);
+        minY = low.GetElement(1);
+        maxX = high.GetElement(0);
+        maxY = high.GetElement(1);
     }
 
     private void SetBlendState(NVGcompositeOperationState blend)
@@ -3463,7 +3469,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         call = default;
 
         call.type = MNVGcallType.MNVG_STROKE;
-        SetBounds(ref call, _vertCount - maxverts, _vertCount);
+        SetBounds(ref call, _verts.AsSpan(_vertCount - maxverts, maxverts));
         call.pathOffset = pathOffset;
         call.pathCount = paths.Length;
         call.image = paint.Image;
@@ -3483,7 +3489,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         {
             var frag = (MNVGfragUniforms*)ptr;
             ConvertPaint(frag, ref paint, ref scissor, strokeWidth, fringe, -1.0f,
-                ScissorCuts(ref scissor, _verts.AsSpan(_vertCount - maxverts, maxverts), fringe));
+                ScissorCuts(ref scissor, in call, fringe));
         }
 
         // Coverage AA composite needs a bounds quad. Compute from stroke verts
@@ -3546,13 +3552,14 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.type = MNVGcallType.MNVG_TRIANGLES;
         call.image = paint.Image;
         call.blendFunc = compositeOperation;
+        SetBounds(ref call, verts);
 
         // Allocate uniforms
         call.uniformOffset = AllocUniforms(1);
         fixed (byte* ptr = &_uniforms[call.uniformOffset * MNVG_UNIFORM_ALIGN])
         {
             var frag = (MNVGfragUniforms*)ptr;
-            ConvertPaint(frag, ref paint, ref scissor, 1.0f, fringe, -1.0f, ScissorCuts(ref scissor, verts, fringe));
+            ConvertPaint(frag, ref paint, ref scissor, 1.0f, fringe, -1.0f, ScissorCuts(ref scissor, in call, fringe));
             frag->type = (int)MNVGshaderType.MNVG_SHADER_IMG;
         }
 
@@ -3562,7 +3569,6 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         EnsureVerts(_vertCount + verts.Length);
         verts.CopyTo(_verts.AsSpan(_vertCount));
         _vertCount += verts.Length;
-        SetBounds(ref call, call.triangleOffset, _vertCount);
         MergeWithPreviousTriangles();
     }
 
@@ -3755,18 +3761,14 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
             return true;
         }
 
-        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
-        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
-        foreach (ref readonly var vert in verts)
-        {
-            minX = MathF.Min(minX, vert.X);
-            minY = MathF.Min(minY, vert.Y);
-            maxX = MathF.Max(maxX, vert.X);
-            maxY = MathF.Max(maxY, vert.Y);
-        }
-
+        BoundsOf(verts, out var minX, out var minY, out var maxX, out var maxY);
         return NVGScissorCoverage.Cuts(ref scissor, minX, minY, maxX, maxY, fringe, _viewSize.X, _viewSize.Y, _devicePixelRatio);
     }
+
+    /// <summary>As above, for a call whose box is already worked out; true for a call that draws nothing.</summary>
+    private bool ScissorCuts(ref NVGscissorState scissor, in MNVGcall call, float fringe)
+        => call.minX > call.maxX ||
+           NVGScissorCoverage.Cuts(ref scissor, call.minX, call.minY, call.maxX, call.maxY, fringe, _viewSize.X, _viewSize.Y, _devicePixelRatio);
 
     private void ConvertPaint(MNVGfragUniforms* frag, ref MewVGPaint paint, ref NVGscissorState scissor, float width, float fringe, float strokeThr,
         bool scissorCuts = true)
