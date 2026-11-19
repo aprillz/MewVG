@@ -437,6 +437,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         constant bool VARIANT_SCISSOR [[function_constant(2)]];
         constant bool VARIANT_CLIP [[function_constant(3)]];
         constant bool VARIANT_MASK [[function_constant(4)]];
+        // A fill drawn without a fringe: every vertex carries the body texcoord, for which the stroke mask is 1.
+        constant bool VARIANT_FULL_COVERAGE [[function_constant(5)]];
 
         typedef struct {
           float4 pos [[position]];
@@ -505,7 +507,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
           } else if (VARIANT_PAINT == 8) {  // rounded rectangle
             color = (uniforms.innerCol * in.ftint) * (roundedRectCoverage(uniforms, in.ftcoord) * scissor);
           } else {
-            float strokeAlpha = strokeMask(uniforms, in.ftcoord);
+            float strokeAlpha = VARIANT_FULL_COVERAGE ? 1.0f : strokeMask(uniforms, in.ftcoord);
             if (VARIANT_PAINT == 1) {       // solid
               color = uniforms.innerCol * in.ftint;
               color *= scissor;
@@ -717,6 +719,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private const int VARIANT_FLAG_SCISSOR = 1;
     private const int VARIANT_FLAG_CLIP = 2;
     private const int VARIANT_FLAG_MASK = 4;
+    private const int VARIANT_FLAG_FULL_COVERAGE = 8;
+    private const int VARIANT_FLAG_COUNT = 16;
     private const int VARIANT_PAINT_SOLID = 1;
     private const int VARIANT_PAINT_IMAGE = 2;
     private const int VARIANT_PAINT_IMAGE_TRIANGLES = 3;
@@ -725,7 +729,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private const int VARIANT_PAINT_RADIAL_GRADIENT = 6;
     private const int VARIANT_PAINT_SIMPLE = 7;
     private const int VARIANT_PAINT_ROUNDED_RECT = 8;
-    private const int VARIANT_COUNT = 9 * 3 * 8;
+    private const int VARIANT_COUNT = 9 * 3 * VARIANT_FLAG_COUNT;
     // MEWVG_METAL_UBERSHADER=1 draws everything with the uber shader (A/B comparison).
     private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_METAL_UBERSHADER") == "1";
     private readonly IntPtr[] _variantVertexFunctions = new IntPtr[VARIANT_COUNT];
@@ -1042,16 +1046,18 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
 
         try
         {
-            int paint = variant / 24;
-            int texType = (variant / 8) % 3;
+            int paint = variant / (3 * VARIANT_FLAG_COUNT);
+            int texType = (variant / VARIANT_FLAG_COUNT) % 3;
             byte scissor = (byte)((variant & VARIANT_FLAG_SCISSOR) != 0 ? 1 : 0);
             byte clip = (byte)((variant & VARIANT_FLAG_CLIP) != 0 ? 1 : 0);
             byte mask = (byte)((variant & VARIANT_FLAG_MASK) != 0 ? 1 : 0);
+            byte fullCoverage = (byte)((variant & VARIANT_FLAG_FULL_COVERAGE) != 0 ? 1 : 0);
             ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &paint, MetalMessages.DATA_TYPE_INT, (nuint)0);
             ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &texType, MetalMessages.DATA_TYPE_INT, (nuint)1);
             ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &scissor, MetalMessages.DATA_TYPE_BOOL, (nuint)2);
             ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &clip, MetalMessages.DATA_TYPE_BOOL, (nuint)3);
             ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &mask, MetalMessages.DATA_TYPE_BOOL, (nuint)4);
+            ObjCRuntime.SendMessage(values, MetalMessages.SetConstantValueSelector, &fullCoverage, MetalMessages.DATA_TYPE_BOOL, (nuint)5);
 
             var vertex = CreateSpecializedFunction("vertexVariant", values);
             if (vertex == IntPtr.Zero)
@@ -1953,7 +1959,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     private bool CanShareBatch(in MNVGcall first, in MNVGcall call, out bool tinted)
     {
         tinted = false;
-        if (first.type != call.type || first.image != call.image ||
+        if (first.type != call.type || first.image != call.image || DrawsFullCoverage(in first) != DrawsFullCoverage(in call) ||
             first.blendFunc.SrcRGB != call.blendFunc.SrcRGB || first.blendFunc.DstRGB != call.blendFunc.DstRGB ||
             first.blendFunc.SrcAlpha != call.blendFunc.SrcAlpha || first.blendFunc.DstAlpha != call.blendFunc.DstAlpha)
         {
@@ -2178,7 +2184,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Glyph quads keep the back-face culling their own draw takes; fill and stroke strips are drawn unculled.
         SetCullMode(_calls[batch.firstCall].type == MNVGcallType.MNVG_TRIANGLES ? MTLCullMode.Back : MTLCullMode.None);
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)(batch.uniformIndex * MNVG_UNIFORM_ALIGN));
-        ApplyPaintPipeline(ref buffers, batch.uniformIndex, _calls[batch.firstCall].blendFunc);
+        ApplyPaintPipeline(ref buffers, batch.uniformIndex, _calls[batch.firstCall].blendFunc, DrawsFullCoverage(in _calls[batch.firstCall]));
         ObjCRuntime.SendMessage(
             _renderEncoder,
             MetalSelectors.drawPrimitives_vertexStart_vertexCount,
@@ -2221,12 +2227,12 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     /// Sets the pipeline that draws a paint call: the variant that draws its uniforms exactly as the uber shader
     /// would when there is one, the uber shader otherwise.
     /// </summary>
-    private void ApplyPaintPipeline(ref MNVGbuffers buffers, int uniformIndex, NVGcompositeOperationState blend)
+    private void ApplyPaintPipeline(ref MNVGbuffers buffers, int uniformIndex, NVGcompositeOperationState blend, bool fullCoverage = false)
     {
         int variant;
         fixed (byte* ptr = &_uniforms[uniformIndex * MNVG_UNIFORM_ALIGN])
         {
-            variant = SelectVariant((MNVGfragUniforms*)ptr, _clipActive);
+            variant = SelectVariant((MNVGfragUniforms*)ptr, _clipActive, fullCoverage);
         }
 
         var pipeline = variant < 0 ? IntPtr.Zero : GetOrCreateVariantPipeline(variant, blend);
@@ -2241,7 +2247,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
     }
 
     /// <summary>The variant for a call's uniforms, or -1 for the uber shader.</summary>
-    private static int SelectVariant(MNVGfragUniforms* frag, bool clip)
+    private static int SelectVariant(MNVGfragUniforms* frag, bool clip, bool fullCoverage)
     {
         // The variants leave out the discard, which only a non-negative stroke threshold can trigger.
         if (_uberShaderOnly || frag->strokeThr >= 0.0f)
@@ -2268,8 +2274,36 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         int texType = paint is VARIANT_PAINT_IMAGE or VARIANT_PAINT_IMAGE_TRIANGLES ? Math.Clamp(frag->texType, 0, 2) : 0;
         int flags = (HasScissor(frag) ? VARIANT_FLAG_SCISSOR : 0) |
                     (clip ? VARIANT_FLAG_CLIP : 0) |
-                    (frag->maskEnabled != 0 ? VARIANT_FLAG_MASK : 0);
-        return (((paint * 3) + texType) * 8) + flags;
+                    (frag->maskEnabled != 0 ? VARIANT_FLAG_MASK : 0) |
+                    (fullCoverage && ReadsStrokeMask(paint) ? VARIANT_FLAG_FULL_COVERAGE : 0);
+        return (((paint * 3) + texType) * VARIANT_FLAG_COUNT) + flags;
+    }
+
+    /// <summary>Whether the variant paint's colour depends on the stroke mask, which full coverage replaces by 1.</summary>
+    private static bool ReadsStrokeMask(int paint) => paint switch
+    {
+        VARIANT_PAINT_SOLID or VARIANT_PAINT_BOX_GRADIENT or VARIANT_PAINT_LINEAR_GRADIENT or VARIANT_PAINT_RADIAL_GRADIENT or
+        VARIANT_PAINT_IMAGE => true,
+        _ => false,
+    };
+
+    /// <summary>True for a fill drawn without a fringe, whose vertices all carry the body texcoord.</summary>
+    private bool DrawsFullCoverage(in MNVGcall call)
+    {
+        if (call.type != MNVGcallType.MNVG_FILL)
+        {
+            return false;
+        }
+
+        for (var index = 0; index < call.pathCount; index++)
+        {
+            if (_paths[call.pathOffset + index].strokeCount > 0)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /// <summary>True when the box gradient's inner and outer colours match, so it is that colour everywhere.</summary>
@@ -2367,7 +2401,7 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         SetCullMode(MTLCullMode.None);
 
         SetFragmentUniformOffset(buffers.uniformBuffer, (nuint)((call.uniformOffset + 1) * MNVG_UNIFORM_ALIGN));
-        ApplyPaintPipeline(ref buffers, call.uniformOffset + 1, call.blendFunc);
+        ApplyPaintPipeline(ref buffers, call.uniformOffset + 1, call.blendFunc, DrawsFullCoverage(in call));
 
         var fillStart = -1;
         var fillCount = 0;
