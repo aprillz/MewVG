@@ -1021,13 +1021,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             if (fillPathCount == 1 && fillPathIndex >= 0 && paths[fillPathIndex].Convex)
                 isConvexFill = true;
         }
-        // Coverage AA triggers when the fill path was flagged non-convex by the core
-        // tessellator - this happens for transparent paints (to avoid double-blending
-        // in the fringe overlay) AND for self-intersecting sources like a pentagram.
-        // The coverage buffer's Max-blended accumulation collapses overlapping fringe
-        // strips to a clean boundary, where the direct fill + fringe-overlay path
-        // would leave visible seams cutting across the fill interior.
-        call.UsesCoverageAA = !isConvexFill && paint.Image == 0;
+        // A transparent non-convex fill goes through the coverage buffer, whose Max blending counts overlapping fringe
+        // strips once. An opaque one is drawn directly: its fringe over its own body blends a colour over itself.
+        call.UsesCoverageAA = !isConvexFill && paint.Image == 0 && PaintHasTransparency(paint);
 
         if (call.UsesCoverageAA)
         {
