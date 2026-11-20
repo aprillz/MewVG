@@ -806,7 +806,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 BlendFuncSeparate(call.BlendFunc);
                 if (call.InstanceCount > 1)
                 {
-                    FillInstances(call);
+                    DrawInstances(call);
                 }
                 else
                 {
@@ -816,7 +816,15 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 break;
             case GLNVGCallType.Stroke:
                 BlendFuncSeparate(call.BlendFunc);
-                Stroke(call);
+                if (call.InstanceCount > 1)
+                {
+                    DrawInstances(call);
+                }
+                else
+                {
+                    Stroke(call);
+                }
+
                 break;
             case GLNVGCallType.Triangles:
                 BlendFuncSeparate(call.BlendFunc);
@@ -1218,8 +1226,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Lays out a fill's stored, unmoved geometry once as one triangle list, every body before every fringe as the fill
-    /// draws them, so one instanced draw draws each instance whole before the next.
+    /// Lays out a fill's or stroke's stored, unmoved geometry once as one triangle list, every body before every fringe
+    /// strip as the call draws them, so one instanced draw draws each instance whole before the next.
     /// </summary>
     private void AppendInstanceGeometry(ref GLNVGCall call, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts)
     {
@@ -1283,8 +1291,14 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset)
+        Vector2 offset,
+        NVGGeometrySource source = default)
     {
+        if (source.Owner != null && TryAddStrokeInstance(ref paint, compositeOperation, ref scissor, fringe, strokeWidth, paths, verts, offset, source))
+        {
+            return;
+        }
+
         ref var call = ref AllocCall();
         call.Type = GLNVGCallType.Stroke;
         call.PathOffset = AllocPaths(paths.Length);
@@ -1392,7 +1406,94 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             {
                 return;
             }
+
+            call.Source = source.Owner;
+            call.SourceVersion = source.Version;
+            call.SourceOffset = offset;
         }
+    }
+
+    /// <summary>
+    /// Draws a stroke of the same stored geometry as the stroke just recorded as another instance of that one, as
+    /// <see cref="TryAddFillInstance"/> does for fills.
+    /// </summary>
+    private bool TryAddStrokeInstance(ref MewVGPaint paint, NVGcompositeOperationState compositeOperation, ref NVGscissorState scissor,
+        float fringe, float strokeWidth, ReadOnlySpan<NVGpathData> paths, ReadOnlySpan<NVGvertex> verts, Vector2 offset,
+        NVGGeometrySource source)
+    {
+        if (_batchingOff || !GL.SupportsInstancing || _callCount == 0)
+        {
+            return false;
+        }
+
+        ref var previous = ref _calls[_callCount - 1];
+        var blend = BlendCompositeOperation(compositeOperation);
+        if (previous.Type != GLNVGCallType.Stroke || previous.UsesCoverageAA || !ReferenceEquals(previous.Source, source.Owner) ||
+            previous.SourceVersion != source.Version || previous.Image != paint.Image ||
+            previous.BlendFunc.SrcRGB != blend.SrcRGB || previous.BlendFunc.DstRGB != blend.DstRGB ||
+            previous.BlendFunc.SrcAlpha != blend.SrcAlpha || previous.BlendFunc.DstAlpha != blend.DstAlpha)
+        {
+            return false;
+        }
+
+        // The same geometry with a transparent paint would go through the coverage buffer.
+        var isConvexStroke = paths.Length == 1 && paths[0].Convex;
+        if (!isConvexStroke && paint.Image == 0 && PaintHasTransparency(paint))
+        {
+            return false;
+        }
+
+        // The box RenderStroke works out from the same vertices, for the same scissor test.
+        float minX = float.PositiveInfinity, minY = float.PositiveInfinity;
+        float maxX = float.NegativeInfinity, maxY = float.NegativeInfinity;
+        foreach (ref readonly var path in paths)
+        {
+            if (path.NStroke <= 0)
+            {
+                continue;
+            }
+
+            foreach (ref readonly var vertex in verts.Slice(path.StrokeOffset, path.NStroke))
+            {
+                if (vertex.X < minX) minX = vertex.X;
+                if (vertex.Y < minY) minY = vertex.Y;
+                if (vertex.X > maxX) maxX = vertex.X;
+                if (vertex.Y > maxY) maxY = vertex.Y;
+            }
+        }
+
+        if (float.IsPositiveInfinity(minX))
+        {
+            return false;
+        }
+
+        minX += offset.X;
+        minY += offset.Y;
+        maxX += offset.X;
+        maxY += offset.Y;
+        var scissorCuts = ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe);
+        if (!ConvertPaint(_instanceUniforms, ref paint, ref scissor, strokeWidth, fringe, -1.0f, scissorCuts) ||
+            !UniformsMatch(_uniforms[previous.UniformOffset].Data, _instanceUniforms, out var tinted))
+        {
+            return false;
+        }
+
+        if (previous.InstanceCount == 0)
+        {
+            AppendInstanceGeometry(ref previous, paths, verts);
+            previous.InstanceOffset = _instanceCount;
+            previous.InstanceCount = 1;
+            AddInstance(previous.SourceOffset, _uniforms[previous.UniformOffset].Data);
+        }
+
+        AddInstance(offset, _instanceUniforms);
+        previous.InstanceCount++;
+        previous.InstanceTinted |= tinted;
+        previous.MinX = MathF.Min(previous.MinX, minX);
+        previous.MinY = MathF.Min(previous.MinY, minY);
+        previous.MaxX = MathF.Max(previous.MaxX, maxX);
+        previous.MaxY = MathF.Max(previous.MaxY, maxY);
+        return true;
     }
 
     /// <summary>
@@ -1956,7 +2057,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
     }
 
-    /// <summary>Gives each tinted instanced fill a copy of its uniforms with white colours, which the instance tints multiply.</summary>
+    /// <summary>Gives each tinted instanced call a copy of its uniforms with white colours, which the instance tints multiply.</summary>
     private void PrepareInstancedFills()
     {
         for (var callIndex = 0; callIndex < _callCount; callIndex++)
@@ -1973,10 +2074,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         }
     }
 
-    /// <summary>Draws a fill once per instance, each moved by its offset and, when tinted, coloured by its tint.</summary>
-    private void FillInstances(in GLNVGCall call)
+    /// <summary>Draws a fill or stroke once per instance, each moved by its offset and, when tinted, coloured by its tint.</summary>
+    private void DrawInstances(in GLNVGCall call)
     {
-        SetUniforms(call.UniformOffset, call.Image, fullCoverage: call.MergedFringeCount == 0, tint: call.InstanceTinted);
+        SetUniforms(call.UniformOffset, call.Image, fullCoverage: DrawsFullCoverage(in call), tint: call.InstanceTinted);
         var stride = Unsafe.SizeOf<GLNVGInstance>();
         var at = _instanceBase + call.InstanceOffset * stride;
         GL.VertexAttribPointer(INSTANCE_OFFSET_ATTRIBUTE, 2, VertexAttribPointerType.Float, false, stride, at);

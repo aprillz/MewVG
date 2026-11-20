@@ -74,7 +74,8 @@ internal sealed class FakeRenderer : INVGRenderer
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset)
+        Vector2 offset,
+        NVGGeometrySource source)
     {
         StrokeCalls.Add(new StrokeCallData(paths.ToArray(), Moved(verts, offset), fringe, strokeWidth));
     }
