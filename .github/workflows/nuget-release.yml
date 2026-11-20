@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  # NuGet trusted publishing exchanges the workflow's OIDC token for a short-lived push key.
+  id-token: write
 
 jobs:
   pack-and-publish:
@@ -30,6 +32,13 @@ jobs:
           dotnet pack src/MewVG.GL/MewVG.GL.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:Version=$VERSION
           dotnet pack src/MewVG.Metal/MewVG.Metal.csproj -c Release -o artifacts -p:ContinuousIntegrationBuild=true -p:Version=$VERSION
 
+      # The key lasts an hour, so it is requested after packing, right before the push.
+      - name: NuGet login (trusted publishing)
+        id: nuget-login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
       - name: Publish NuGet
         run: |
           dotnet nuget push "artifacts/*.nupkg" --api-key "${NUGET_API_KEY}" --source https://api.nuget.org/v3/index.json --skip-duplicate
@@ -39,7 +48,7 @@ jobs:
             echo "No .snupkg files found; skipping symbol package push."
           fi
         env:
-          NUGET_API_KEY: ${{ secrets.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
 
       - name: GitHub Release
         uses: softprops/action-gh-release@v2
