@@ -34,12 +34,14 @@ internal enum TextureTarget : int
 
 internal enum BufferTarget : int
 {
-    ArrayBuffer = 0x8892
+    ArrayBuffer = 0x8892,
+    ElementArrayBuffer = 0x8893,
 }
 
 internal enum BufferUsageHint : int
 {
-    StreamDraw = 0x88E0
+    StreamDraw = 0x88E0,
+    StaticDraw = 0x88E4,
 }
 
 internal enum VertexAttribPointerType : int
@@ -250,6 +252,7 @@ internal static unsafe class GL
     private static delegate* unmanaged<uint, void> _glGenerateMipmap;
     private static delegate* unmanaged<uint, int, int, void> _glDrawArrays;
     private static delegate* unmanaged<uint, int, int, int, void> _glDrawArraysInstanced;
+    private static delegate* unmanaged<uint, int, uint, void*, int, void> _glDrawElementsInstanced;
     private static delegate* unmanaged<uint, uint, void> _glVertexAttribDivisor;
     private static delegate* unmanaged<uint, uint, uint, uint, void> _glBlendFuncSeparate;
     private static delegate* unmanaged<uint, uint> _glCreateShader;
@@ -356,6 +359,7 @@ internal static unsafe class GL
         _glDrawArrays = (delegate* unmanaged<uint, int, int, void>)LoadProc("glDrawArrays");
         // Instanced arrays are core from GL 3.3 and GLES 3.0; a GL 3.1 or 3.2 context may lack the divisor.
         _glDrawArraysInstanced = (delegate* unmanaged<uint, int, int, int, void>)_getProcAddress!("glDrawArraysInstanced");
+        _glDrawElementsInstanced = (delegate* unmanaged<uint, int, uint, void*, int, void>)_getProcAddress!("glDrawElementsInstanced");
         _glVertexAttribDivisor = (delegate* unmanaged<uint, uint, void>)_getProcAddress!("glVertexAttribDivisor");
         _glBlendFuncSeparate = (delegate* unmanaged<uint, uint, uint, uint, void>)LoadProc("glBlendFuncSeparate");
         _glCreateShader = (delegate* unmanaged<uint, uint>)LoadProc("glCreateShader");
@@ -513,6 +517,22 @@ internal static unsafe class GL
 
     /// <summary>True when the context draws instances with per-instance attributes.</summary>
     public static bool SupportsInstancing => _glDrawArraysInstanced != null && _glVertexAttribDivisor != null;
+
+    /// <summary>True when the context also draws indexed instances.</summary>
+    public static bool SupportsIndexedInstancing => SupportsInstancing && _glDrawElementsInstanced != null;
+
+    /// <summary>Draws instances of the triangles the bound element buffer lists as 16-bit indices from a byte offset.</summary>
+    public static void DrawElementsInstanced(PrimitiveType mode, int count, int offset, int instances)
+        => _glDrawElementsInstanced((uint)mode, count, 0x1403, (void*)(nint)offset, instances);
+
+    public static void BufferData<T>(BufferTarget target, ReadOnlySpan<T> data, BufferUsageHint usage)
+        where T : unmanaged
+    {
+        fixed (T* ptr = data)
+        {
+            _glBufferData((uint)target, data.Length * sizeof(T), ptr, (uint)usage);
+        }
+    }
 
     public static void DrawArraysInstanced(PrimitiveType mode, int first, int count, int instances)
         => _glDrawArraysInstanced((uint)mode, first, count, instances);

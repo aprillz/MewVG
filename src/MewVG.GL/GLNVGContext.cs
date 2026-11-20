@@ -61,6 +61,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         Stroke,
         Triangles,
         MaskFill,
+        // Rounded rectangles drawn as instances of the shared mesh (see TryRenderRoundedRect).
+        RoundedRects,
     }
 
     private struct GLNVGCall
@@ -109,6 +111,18 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     {
         public Vector2 Offset;
         public Vector4 Tint;
+    }
+
+    // One rounded rectangle drawn from the shared mesh: its centre and half extent, its corner radii (top-left, top-right,
+    // bottom-right, bottom-left), its outline half width (negative for a fill) and antialiasing width, and its
+    // premultiplied colour.
+    [StructLayout(LayoutKind.Sequential)]
+    private struct GLNVGRoundedRect
+    {
+        public Vector4 Box;
+        public Vector4 Radii;
+        public Vector2 Edge;
+        public Vector4 Color;
     }
 
     /// <summary>Calls the flush draws as one: the first call's state, every member's geometry in member order.</summary>
@@ -160,6 +174,15 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
 
     private const int TINT_ATTRIBUTE = 2;
     private const int INSTANCE_OFFSET_ATTRIBUTE = 3;
+    private const int ROUNDED_BOX_ATTRIBUTE = 4;
+    private const int ROUNDED_RADII_ATTRIBUTE = 5;
+    private const int ROUNDED_EDGE_ATTRIBUTE = 6;
+    // The two meshes rounded rectangles are drawn from (see CreateRoundedRectMesh): the patch mesh's sixteen lattice
+    // vertices and four for its middle patch, then the quarter mesh's four corners in each quarter.
+    private const int ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX = 20;
+    // The patch mesh's indices, four corner patches, four edge patches and the middle one, then the quarter mesh's four boxes.
+    private const int ROUNDED_RECT_PATCH_INDICES = 9 * 6;
+    private const int ROUNDED_RECT_QUARTER_INDICES = 4 * 6;
     // Flushes in a row under a quarter of the vertex buffer capacity before it shrinks.
     private const int VBO_SHRINK_FLUSHES = 120;
     // MEWVG_GL_BATCH=0 draws every call on its own (A/B comparison).
@@ -198,9 +221,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private const int VARIANT_PAINT_IMAGE_TRIANGLES_UNPREMULTIPLIED = 13;
     private const int VARIANT_PAINT_IMAGE_TRIANGLES_ALPHA = 14;
     private const int VARIANT_PAINT_ROUNDED_RECT = 15;
-    private const int VARIANT_PAINT_COUNT = 16;
-    // The inner half extent of a filled rounded rectangle: every point lies far outside a box this inside out.
-    private const float EMPTY_INNER_HALF_EXTENT = -1.0e4f;
+    private const int VARIANT_PAINT_ROUNDED_RECT_QUARTERS = 16;
+    private const int VARIANT_PAINT_COUNT = 17;
     private const int UBER_SHADER = VARIANT_PAINT_COUNT * VARIANT_FLAG_COUNT;
     // MEWVG_GL_UBERSHADER=1 draws everything with the uber shader (A/B comparison, driver workaround).
     private static readonly bool _uberShaderOnly = Environment.GetEnvironmentVariable("MEWVG_GL_UBERSHADER") == "1";
@@ -211,6 +233,13 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     private int _flushNumber;
     private GLNVGBatch[] _batches = new GLNVGBatch[128];
     private GLNVGInstance[] _instances = new GLNVGInstance[64];
+    private GLNVGRoundedRect[] _roundedRects = new GLNVGRoundedRect[64];
+    private int _roundedRectCount;
+    // Where this flush's rounded rectangles start in the vertex buffer.
+    private int _roundedRectBase;
+    // The static buffers holding the meshes rounded rectangles are drawn from and their indices (see CreateRoundedRectMesh).
+    private int _roundedRectMesh;
+    private int _roundedRectIndices;
     private int _instanceCount;
     // Uniforms of a fill that may become an instance, worked out before it is recorded.
     private readonly float[] _instanceUniforms = new float[UniformFloatCount];
@@ -363,6 +392,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     public void Cancel()
     {
         _instanceCount = 0;
+        _roundedRectCount = 0;
         _callCount = 0;
         _pathCount = 0;
         _vertCount = 0;
@@ -414,7 +444,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         // of vertex v at its own index.
         int tintBytes = tintStart < tintEnd ? (tintEnd - tintStart) * tintSize : 0;
         _instanceBase = vertexBytes + tintBytes;
-        int uploadBytes = _instanceBase + _instanceCount * Unsafe.SizeOf<GLNVGInstance>();
+        _roundedRectBase = _instanceBase + _instanceCount * Unsafe.SizeOf<GLNVGInstance>();
+        int uploadBytes = _roundedRectBase + _roundedRectCount * Unsafe.SizeOf<GLNVGRoundedRect>();
         GL.BindVertexArray(_vao);
         GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
         if (uploadBytes > _vboCapacity)
@@ -451,6 +482,12 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         {
             GL.BufferSubData(BufferTarget.ArrayBuffer, _instanceBase, _instanceCount * Unsafe.SizeOf<GLNVGInstance>(),
                 _instances.AsSpan(0, _instanceCount));
+        }
+
+        if (_roundedRectCount > 0)
+        {
+            GL.BufferSubData(BufferTarget.ArrayBuffer, _roundedRectBase, _roundedRectCount * Unsafe.SizeOf<GLNVGRoundedRect>(),
+                _roundedRects.AsSpan(0, _roundedRectCount));
         }
 
         // Every draw that is not instanced reads no offset.
@@ -510,6 +547,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _uniformCount = 0;
         _batchCount = 0;
         _instanceCount = 0;
+        _roundedRectCount = 0;
 
         CheckError("flush");
     }
@@ -829,6 +867,10 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             case GLNVGCallType.Triangles:
                 BlendFuncSeparate(call.BlendFunc);
                 Triangles(call);
+                break;
+            case GLNVGCallType.RoundedRects:
+                BlendFuncSeparate(call.BlendFunc);
+                DrawRoundedRects(call);
                 break;
             case GLNVGCallType.MaskFill:
                 BlendFuncSeparate(call.BlendFunc);
@@ -1497,8 +1539,8 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
     }
 
     /// <summary>
-    /// Draws a solid rounded rectangle, or its outline, as geometry around it whose fragments work out their coverage
-    /// from signed distances to rounded rectangles; the texcoord carries each vertex's position relative to the centre.
+    /// Draws a solid rounded rectangle, or its outline, as an instance of the shared mesh whose fragments near the edges
+    /// work out their coverage from the distance to the corner circles; a run of them with the same state is one draw.
     /// </summary>
     public bool TryRenderRoundedRect(
         ref MewVGPaint paint,
@@ -1507,134 +1549,182 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         float fringe,
         in NVGRoundedRect shape)
     {
-        var outline = shape.StrokeHalfWidth >= 0.0f;
-        var strokeHalfWidth = Math.Max(shape.StrokeHalfWidth, 0.0f);
+        if (!GL.SupportsIndexedInstancing)
+        {
+            return false;
+        }
+
+        // The mesh reaches past the outer edge by a pixel of antialiasing.
         var antialias = Math.Max(fringe, 1.0f / _devicePixelRatio);
+        var reach = Math.Max(shape.StrokeHalfWidth, 0.0f) + antialias;
+        var minX = shape.CenterX - shape.HalfWidth - reach;
+        var minY = shape.CenterY - shape.HalfHeight - reach;
+        var maxX = shape.CenterX + shape.HalfWidth + reach;
+        var maxY = shape.CenterY + shape.HalfHeight + reach;
 
-        // The geometry reaches past the outer edge by a pixel of antialiasing.
-        var outerHalfWidth = shape.HalfWidth + strokeHalfWidth;
-        var outerHalfHeight = shape.HalfHeight + strokeHalfWidth;
-        var coverHalfWidth = outerHalfWidth + antialias;
-        var coverHalfHeight = outerHalfHeight + antialias;
-
-        // Inside an outline lies a box that the inner edge leaves uncovered by at least a pixel; the outline is
-        // drawn as the ring around it, so the fragments in the middle are never run.
-        var innerHalfWidth = shape.HalfWidth - strokeHalfWidth;
-        var innerHalfHeight = shape.HalfHeight - strokeHalfWidth;
-        var innerTopLeft = Math.Max(shape.TopLeft - strokeHalfWidth, 0.0f);
-        var innerTopRight = Math.Max(shape.TopRight - strokeHalfWidth, 0.0f);
-        var innerBottomRight = Math.Max(shape.BottomRight - strokeHalfWidth, 0.0f);
-        var innerBottomLeft = Math.Max(shape.BottomLeft - strokeHalfWidth, 0.0f);
-        var innerRadius = Math.Max(Math.Max(innerTopLeft, innerTopRight), Math.Max(innerBottomRight, innerBottomLeft));
-        var holeHalfWidth = innerHalfWidth - innerRadius - antialias;
-        var holeHalfHeight = innerHalfHeight - innerRadius - antialias;
-        var hollow = outline && holeHalfWidth > 0.0f && holeHalfHeight > 0.0f;
-
-        ref var call = ref AllocCall();
-        call.Type = GLNVGCallType.Triangles;
-        call.Image = 0;
-        call.BlendFunc = BlendCompositeOperation(compositeOperation);
-        call.TriangleCount = hollow ? 24 : 6;
-        call.TriangleOffset = AllocVerts(call.TriangleCount);
-        var geometry = _verts.AsSpan(call.TriangleOffset, call.TriangleCount);
-        if (hollow)
+        var uniformOffset = AllocUniforms(1);
+        var frag = _uniforms[uniformOffset].Data;
+        if (!ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f, ScissorCuts(ref scissor, minX, minY, maxX, maxY, fringe)))
         {
-            WriteRing(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight, holeHalfWidth, holeHalfHeight);
-        }
-        else
-        {
-            WriteQuad(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight);
-        }
-
-        call.MinX = shape.CenterX - coverHalfWidth;
-        call.MinY = shape.CenterY - coverHalfHeight;
-        call.MaxX = shape.CenterX + coverHalfWidth;
-        call.MaxY = shape.CenterY + coverHalfHeight;
-
-        call.UniformOffset = AllocUniforms(1);
-        var frag = _uniforms[call.UniformOffset].Data;
-        var scissorCuts = ScissorCuts(ref scissor, shape.CenterX - coverHalfWidth, shape.CenterY - coverHalfHeight,
-            shape.CenterX + coverHalfWidth, shape.CenterY + coverHalfHeight, fringe);
-        if (!ConvertPaint(frag, ref paint, ref scissor, fringe, fringe, -1.0f, scissorCuts))
-        {
-            call.Type = GLNVGCallType.None;
+            _uniformCount--;
             return true;
         }
+
+        var color = new Vector4(frag[INNER_COLOR_INDEX], frag[INNER_COLOR_INDEX + 1], frag[INNER_COLOR_INDEX + 2], frag[INNER_COLOR_INDEX + 3]);
+
+        // The shape and colour go per instance and the paint matrix and gradient are not read, so rounded rectangles
+        // that differ in nothing else have the same uniforms and go out as one draw.
+        frag.AsSpan(3 * 4, 3 * 4).Clear();
+        frag.AsSpan(9 * 4, 3 * 4).Clear();
+        frag.AsSpan(INNER_COLOR_INDEX, 8).Fill(1.0f);
 
         // A hard edge is a ramp too steep to leave any pixel partly covered.
         var coverageScale = fringe > 0.0f ? 1.0f / fringe : 1.0e6f;
         SetUniformValue(frag, 9, 0, coverageScale);
-
-        // Fills and outlines share one program, so a run of them never switches programs: a fill is an outline
-        // whose inner rectangle lies so far inside out that it covers nothing.
-        if (outline)
-        {
-            // Round corners grow and shrink with the outline; square ones stay square.
-            SetUniformVec4(frag, 3, outerHalfWidth, outerHalfHeight, innerHalfWidth, innerHalfHeight);
-            SetUniformVec4(frag, 4, GrowCorner(shape.TopLeft, strokeHalfWidth), GrowCorner(shape.TopRight, strokeHalfWidth),
-                GrowCorner(shape.BottomRight, strokeHalfWidth), GrowCorner(shape.BottomLeft, strokeHalfWidth));
-            SetUniformVec4(frag, 5, innerTopLeft, innerTopRight, innerBottomRight, innerBottomLeft);
-        }
-        else
-        {
-            SetUniformVec4(frag, 3, shape.HalfWidth, shape.HalfHeight, EMPTY_INNER_HALF_EXTENT, EMPTY_INNER_HALF_EXTENT);
-            SetUniformVec4(frag, 4, shape.TopLeft, shape.TopRight, shape.BottomRight, shape.BottomLeft);
-            SetUniformVec4(frag, 5, 0.0f, 0.0f, 0.0f, 0.0f);
-        }
-
         SetUniformValue(frag, 12, 3, (float)GLNVGShaderType.RoundedRect);
+        SetUniformValue(frag, 12, 2, UsesPatchMesh(in shape, 0.5f / coverageScale) ? 0.0f : 1.0f);
+
+        var blend = BlendCompositeOperation(compositeOperation);
+        if (_callCount > 0)
+        {
+            ref var previous = ref _calls[_callCount - 1];
+            if (previous.Type == GLNVGCallType.RoundedRects &&
+                previous.BlendFunc.SrcRGB == blend.SrcRGB && previous.BlendFunc.DstRGB == blend.DstRGB &&
+                previous.BlendFunc.SrcAlpha == blend.SrcAlpha && previous.BlendFunc.DstAlpha == blend.DstAlpha &&
+                MemoryMarshal.AsBytes(frag.AsSpan()).SequenceEqual(MemoryMarshal.AsBytes(_uniforms[previous.UniformOffset].Data.AsSpan())))
+            {
+                _uniformCount--;
+                AddRoundedRect(in shape, antialias, color);
+                previous.InstanceCount++;
+                previous.MinX = MathF.Min(previous.MinX, minX);
+                previous.MinY = MathF.Min(previous.MinY, minY);
+                previous.MaxX = MathF.Max(previous.MaxX, maxX);
+                previous.MaxY = MathF.Max(previous.MaxY, maxY);
+                return true;
+            }
+        }
+
+        ref var call = ref AllocCall();
+        call.Type = GLNVGCallType.RoundedRects;
+        call.BlendFunc = blend;
+        call.UniformOffset = uniformOffset;
+        call.InstanceOffset = _roundedRectCount;
+        call.InstanceCount = 1;
+        call.MinX = minX;
+        call.MinY = minY;
+        call.MaxX = maxX;
+        call.MaxY = maxY;
+        AddRoundedRect(in shape, antialias, color);
         return true;
     }
 
-    private static float GrowCorner(float radius, float amount) => radius > 0.0f ? radius + amount : 0.0f;
-
-    /// <summary>Writes two triangles covering a box around a centre, with texcoords relative to the centre.</summary>
-    private static void WriteQuad(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight)
+    private void AddRoundedRect(in NVGRoundedRect shape, float antialias, Vector4 color)
     {
-        var topLeft = Relative(centerX, centerY, -halfWidth, -halfHeight);
-        var topRight = Relative(centerX, centerY, halfWidth, -halfHeight);
-        var bottomRight = Relative(centerX, centerY, halfWidth, halfHeight);
-        var bottomLeft = Relative(centerX, centerY, -halfWidth, halfHeight);
-        output[0] = topLeft;
-        output[1] = topRight;
-        output[2] = bottomRight;
-        output[3] = topLeft;
-        output[4] = bottomRight;
-        output[5] = bottomLeft;
-    }
-
-    /// <summary>Writes eight triangles covering a box around a centre less a smaller box, with texcoords relative to the centre.</summary>
-    private static void WriteRing(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight, float holeHalfWidth, float holeHalfHeight)
-    {
-        Span<NVGvertex> outer =
-        [
-            Relative(centerX, centerY, -halfWidth, -halfHeight),
-            Relative(centerX, centerY, halfWidth, -halfHeight),
-            Relative(centerX, centerY, halfWidth, halfHeight),
-            Relative(centerX, centerY, -halfWidth, halfHeight),
-        ];
-        Span<NVGvertex> hole =
-        [
-            Relative(centerX, centerY, -holeHalfWidth, -holeHalfHeight),
-            Relative(centerX, centerY, holeHalfWidth, -holeHalfHeight),
-            Relative(centerX, centerY, holeHalfWidth, holeHalfHeight),
-            Relative(centerX, centerY, -holeHalfWidth, holeHalfHeight),
-        ];
-        var written = 0;
-        for (var side = 0; side < 4; side++)
+        if (_roundedRectCount == _roundedRects.Length)
         {
-            var next = (side + 1) % 4;
-            output[written++] = outer[side];
-            output[written++] = outer[next];
-            output[written++] = hole[next];
-            output[written++] = outer[side];
-            output[written++] = hole[next];
-            output[written++] = hole[side];
+            Array.Resize(ref _roundedRects, _roundedRects.Length * 2);
         }
+
+        _roundedRects[_roundedRectCount++] = new GLNVGRoundedRect
+        {
+            Box = new Vector4(shape.CenterX, shape.CenterY, shape.HalfWidth, shape.HalfHeight),
+            Radii = new Vector4(shape.TopLeft, shape.TopRight, shape.BottomRight, shape.BottomLeft),
+            Edge = new Vector2(shape.StrokeHalfWidth, antialias),
+            Color = color,
+        };
     }
 
-    private static NVGvertex Relative(float centerX, float centerY, float offsetX, float offsetY)
-        => new(centerX + offsetX, centerY + offsetY, offsetX, offsetY);
+    /// <summary>
+    /// True when the rounded rectangle can be drawn from the patch mesh: every corner circle is wide enough that the
+    /// middle patch is covered whole (a fill) or not at all (an outline, whose inner corner circles share the outer
+    /// ones' centres), so the distance to a corner circle is all a fragment works out.
+    /// </summary>
+    private static bool UsesPatchMesh(in NVGRoundedRect shape, float halfRamp)
+    {
+        var smallest = Math.Min(Math.Min(shape.TopLeft, shape.TopRight), Math.Min(shape.BottomRight, shape.BottomLeft));
+        return smallest - Math.Max(shape.StrokeHalfWidth, 0.0f) >= halfRamp;
+    }
+
+    /// <summary>
+    /// The meshes rounded rectangles are drawn from, and their indices. The patch mesh is a lattice of four vertices in
+    /// each quarter, on its corner circle's centre lines and past the outer edge, cut into nine patches as a stroked or
+    /// filled rounded rectangle is drawn elsewhere: in a corner patch the position against the circle's centre is the
+    /// texcoord, along an edge patch one of its components is zero, so its length is the distance to that edge, and in
+    /// the middle patch both are. The middle patch has four vertices of its own, which an outline collapses to a point.
+    /// The quarter mesh is one box from the centre to past the outer edge in each quarter, for corners too small for
+    /// the patch mesh. Each vertex holds its quarter's direction from the centre and, along each axis, 0 on the circle's
+    /// centre line (the centre for the quarter mesh), 1 past the outer edge and 2 for the middle patch's own vertices
+    /// (see GLNVGShaderSource).
+    /// </summary>
+    private static NVGvertex[] CreateRoundedRectMesh(out ushort[] indices)
+    {
+        var mesh = new NVGvertex[ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + 4 * 4];
+        for (var quarter = 0; quarter < 4; quarter++)
+        {
+            var directionX = (quarter & 1) == 0 ? -1.0f : 1.0f;
+            var directionY = (quarter & 2) == 0 ? -1.0f : 1.0f;
+            for (var corner = 0; corner < 4; corner++)
+            {
+                var vertex = new NVGvertex(directionX, directionY, corner & 1, corner >> 1);
+                mesh[quarter * 4 + corner] = vertex;
+                mesh[ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + quarter * 4 + corner] = vertex;
+            }
+
+            mesh[16 + quarter] = new NVGvertex(directionX, directionY, 2.0f, 2.0f);
+        }
+
+        // Quarters: top-left, top-right, bottom-left, bottom-right. In each, its vertex on both centre lines, then
+        // past the outer edge across, down, and both.
+        const int TOP_LEFT = 0;
+        const int TOP_RIGHT = 4;
+        const int BOTTOM_LEFT = 8;
+        const int BOTTOM_RIGHT = 12;
+        const int INNER = 0;
+        const int ACROSS = 1;
+        const int DOWN = 2;
+        const int OUTER = 3;
+        ReadOnlySpan<int> quads =
+        [
+            // Corner patches.
+            TOP_LEFT + INNER, TOP_LEFT + ACROSS, TOP_LEFT + OUTER, TOP_LEFT + DOWN,
+            TOP_RIGHT + INNER, TOP_RIGHT + ACROSS, TOP_RIGHT + OUTER, TOP_RIGHT + DOWN,
+            BOTTOM_LEFT + INNER, BOTTOM_LEFT + ACROSS, BOTTOM_LEFT + OUTER, BOTTOM_LEFT + DOWN,
+            BOTTOM_RIGHT + INNER, BOTTOM_RIGHT + ACROSS, BOTTOM_RIGHT + OUTER, BOTTOM_RIGHT + DOWN,
+
+            // Edge patches: top, bottom, left, right.
+            TOP_LEFT + INNER, TOP_RIGHT + INNER, TOP_RIGHT + DOWN, TOP_LEFT + DOWN,
+            BOTTOM_LEFT + INNER, BOTTOM_RIGHT + INNER, BOTTOM_RIGHT + DOWN, BOTTOM_LEFT + DOWN,
+            TOP_LEFT + INNER, BOTTOM_LEFT + INNER, BOTTOM_LEFT + ACROSS, TOP_LEFT + ACROSS,
+            TOP_RIGHT + INNER, BOTTOM_RIGHT + INNER, BOTTOM_RIGHT + ACROSS, TOP_RIGHT + ACROSS,
+
+            // The middle patch, from its own vertices.
+            16, 17, 19, 18,
+
+            // The quarter mesh's boxes.
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_LEFT + INNER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_LEFT + ACROSS,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_LEFT + OUTER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_LEFT + DOWN,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_RIGHT + INNER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_RIGHT + ACROSS,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_RIGHT + OUTER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + TOP_RIGHT + DOWN,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_LEFT + INNER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_LEFT + ACROSS,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_LEFT + OUTER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_LEFT + DOWN,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_RIGHT + INNER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_RIGHT + ACROSS,
+            ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_RIGHT + OUTER, ROUNDED_RECT_QUARTER_MESH_FIRST_VERTEX + BOTTOM_RIGHT + DOWN,
+        ];
+        indices = new ushort[quads.Length / 4 * 6];
+        var written = 0;
+        for (var quad = 0; quad < quads.Length; quad += 4)
+        {
+            indices[written++] = (ushort)quads[quad];
+            indices[written++] = (ushort)quads[quad + 1];
+            indices[written++] = (ushort)quads[quad + 2];
+            indices[written++] = (ushort)quads[quad];
+            indices[written++] = (ushort)quads[quad + 2];
+            indices[written++] = (ushort)quads[quad + 3];
+        }
+
+        System.Diagnostics.Debug.Assert(indices.Length == ROUNDED_RECT_PATCH_INDICES + ROUNDED_RECT_QUARTER_INDICES, "The rounded rectangle index counts do not match the meshes.");
+        return mesh;
+    }
 
     public void RenderTriangles(
         ref MewVGPaint paint,
@@ -2072,6 +2162,61 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
                 white.AsSpan(INNER_COLOR_INDEX, 8).Fill(1.0f);
             }
         }
+    }
+
+    /// <summary>Draws a run of rounded rectangles as instances of the shared mesh, in the order they were recorded.</summary>
+    private void DrawRoundedRects(in GLNVGCall call)
+    {
+        SetUniforms(call.UniformOffset, 0, tint: true);
+        var quarterMesh = _uniforms[call.UniformOffset].Data[12 * 4 + 2] > 0.5f;
+        var vertexSize = Unsafe.SizeOf<NVGvertex>();
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _roundedRectMesh);
+        GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, vertexSize, 0);
+        GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, vertexSize, sizeof(float) * 2);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _vbo);
+
+        var stride = Unsafe.SizeOf<GLNVGRoundedRect>();
+        var at = _roundedRectBase + call.InstanceOffset * stride;
+        SetInstanceAttribute(ROUNDED_BOX_ATTRIBUTE, 4, stride, at);
+        SetInstanceAttribute(ROUNDED_RADII_ATTRIBUTE, 4, stride, at + sizeof(float) * 4);
+        SetInstanceAttribute(ROUNDED_EDGE_ATTRIBUTE, 2, stride, at + sizeof(float) * 8);
+        SetInstanceAttribute(TINT_ATTRIBUTE, 4, stride, at + sizeof(float) * 10);
+
+        if (quarterMesh)
+        {
+            GL.DrawElementsInstanced(PrimitiveType.Triangles, ROUNDED_RECT_QUARTER_INDICES, ROUNDED_RECT_PATCH_INDICES * sizeof(ushort),
+                call.InstanceCount);
+        }
+        else
+        {
+            GL.DrawElementsInstanced(PrimitiveType.Triangles, ROUNDED_RECT_PATCH_INDICES, 0, call.InstanceCount);
+        }
+
+        ResetInstanceAttribute(ROUNDED_BOX_ATTRIBUTE);
+        ResetInstanceAttribute(ROUNDED_RADII_ATTRIBUTE);
+        ResetInstanceAttribute(ROUNDED_EDGE_ATTRIBUTE);
+        ResetInstanceAttribute(TINT_ATTRIBUTE);
+        _tintArrayEnabled = false;
+        if (_tintPointer >= 0)
+        {
+            GL.VertexAttribPointer(TINT_ATTRIBUTE, 4, VertexAttribPointerType.Float, false, Unsafe.SizeOf<Vector4>(), _tintPointer);
+        }
+
+        GL.VertexAttribPointer(0, 2, VertexAttribPointerType.Float, false, vertexSize, 0);
+        GL.VertexAttribPointer(1, 2, VertexAttribPointerType.Float, false, vertexSize, sizeof(float) * 2);
+    }
+
+    private static void SetInstanceAttribute(int attribute, int size, int stride, int offset)
+    {
+        GL.VertexAttribPointer(attribute, size, VertexAttribPointerType.Float, false, stride, offset);
+        GL.VertexAttribDivisor(attribute, 1);
+        GL.EnableVertexAttribArray(attribute);
+    }
+
+    private static void ResetInstanceAttribute(int attribute)
+    {
+        GL.VertexAttribDivisor(attribute, 0);
+        GL.DisableVertexAttribArray(attribute);
     }
 
     /// <summary>Draws a fill or stroke once per instance, each moved by its offset and, when tinted, coloured by its tint.</summary>
@@ -3024,6 +3169,17 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         _vao = GL.GenVertexArray();
         _vbo = GL.GenBuffer();
 
+        var mesh = CreateRoundedRectMesh(out var indices);
+        _roundedRectMesh = GL.GenBuffer();
+        GL.BindBuffer(BufferTarget.ArrayBuffer, _roundedRectMesh);
+        GL.BufferData(BufferTarget.ArrayBuffer, mesh.Length * Unsafe.SizeOf<NVGvertex>(), mesh, BufferUsageHint.StaticDraw);
+        GL.BindBuffer(BufferTarget.ArrayBuffer, 0);
+        _roundedRectIndices = GL.GenBuffer();
+        GL.BindVertexArray(_vao);
+        GL.BindBuffer(BufferTarget.ElementArrayBuffer, _roundedRectIndices);
+        GL.BufferData<ushort>(BufferTarget.ElementArrayBuffer, indices, BufferUsageHint.StaticDraw);
+        GL.BindVertexArray(0);
+
         _dummyTex = CreateTexture(NVGtextureType.Alpha, 1, 1, 0, ReadOnlySpan<byte>.Empty);
         _dummyTexName = TryFindTexture(_dummyTex, out var dummyIndex) ? _textures[dummyIndex].Tex : 0;
 
@@ -3063,6 +3219,9 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         GL.BindAttribLocation(program, 1, "tcoord");
         GL.BindAttribLocation(program, TINT_ATTRIBUTE, "tint");
         GL.BindAttribLocation(program, INSTANCE_OFFSET_ATTRIBUTE, "instanceOffset");
+        GL.BindAttribLocation(program, ROUNDED_BOX_ATTRIBUTE, "roundedBox");
+        GL.BindAttribLocation(program, ROUNDED_RADII_ATTRIBUTE, "roundedRadii");
+        GL.BindAttribLocation(program, ROUNDED_EDGE_ATTRIBUTE, "roundedEdge");
 
         GL.LinkProgram(program);
         GL.GetProgram(program, GetProgramParameterName.LinkStatus, out var statusProg);
@@ -3107,7 +3266,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             GLNVGShaderType.Simple => VARIANT_PAINT_SIMPLE,
             GLNVGShaderType.CoverageOutput => VARIANT_PAINT_COVERAGE_OUTPUT,
             GLNVGShaderType.CoverageComposite => IsSolidPaint(frag) ? VARIANT_PAINT_COVERAGE_SOLID : VARIANT_PAINT_COVERAGE_COMPOSITE,
-            GLNVGShaderType.RoundedRect => VARIANT_PAINT_ROUNDED_RECT,
+            GLNVGShaderType.RoundedRect => frag[12 * 4 + 2] > 0.5f ? VARIANT_PAINT_ROUNDED_RECT_QUARTERS : VARIANT_PAINT_ROUNDED_RECT,
             _ => 0,
         };
         if (paint == 0)
@@ -3224,6 +3383,7 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
             VARIANT_PAINT_COVERAGE_OUTPUT => "#define PAINT_COVERAGE_OUTPUT\n",
             VARIANT_PAINT_COVERAGE_COMPOSITE => "#define PAINT_COVERAGE_COMPOSITE\n",
             VARIANT_PAINT_ROUNDED_RECT => "#define PAINT_ROUNDED_RECT\n",
+            VARIANT_PAINT_ROUNDED_RECT_QUARTERS => "#define PAINT_ROUNDED_RECT\n#define ROUNDED_RECT_QUARTERS\n",
             _ => "#define PAINT_COVERAGE_SOLID\n",
         };
         var flags = index % VARIANT_FLAG_COUNT;
@@ -3287,6 +3447,16 @@ internal sealed class GLNVGContext : IDisposable, INVGRenderer
         if (_vbo != 0)
         {
             GL.DeleteBuffer(_vbo);
+        }
+
+        if (_roundedRectMesh != 0)
+        {
+            GL.DeleteBuffer(_roundedRectMesh);
+        }
+
+        if (_roundedRectIndices != 0)
+        {
+            GL.DeleteBuffer(_roundedRectIndices);
         }
 
 
