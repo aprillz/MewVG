@@ -39,6 +39,43 @@ internal static class GLNVGShaderSource
             "#define TINTED(color) (color)\n" +
             "#endif\n";
 
+    // A rounded rectangle is an instance of one of two meshes (see GLNVGContext.CreateRoundedRectMesh), whose vertices
+    // name a quarter of the shape and, along each axis, where in it they sit. ftcoord carries the position against the
+    // quarter's outer corner circle's centre. The patch mesh passes the outer and inner radii (the inner one far inside
+    // out for a fill) in fradii, interpolated so that an edge patch between corners of different radii still measures
+    // the distance to its edge; the quarter mesh passes them in fshape, with how far the inner corner circle's centre
+    // lies from the outer one's along each axis.
+    private const string ROUNDED_RECT_VERTEX =
+            "#if !defined(VARIANT) || defined(PAINT_ROUNDED_RECT)\n" +
+            "\tin vec4 roundedBox;\n" +
+            "\tin vec4 roundedRadii;\n" +
+            "\tin vec2 roundedEdge;\n" +
+            "\tout vec2 fradii;\n" +
+            "\tflat out vec3 fshape;\n" +
+            "vec2 roundedRectVertex(bool quarters) {\n" +
+            "\tvec2 side = vertex.x > 0.0 ? roundedRadii.zy : roundedRadii.wx;\n" +
+            "\tfloat radius = vertex.y > 0.0 ? side.x : side.y;\n" +
+            "\tbool outline = roundedEdge.x >= 0.0;\n" +
+            "\tfloat strokeHalf = max(roundedEdge.x, 0.0);\n" +
+            "\tvec2 outerHalf = roundedBox.zw + strokeHalf;\n" +
+            "\tfloat outerRadius = radius > 0.0 ? radius + strokeHalf : 0.0;\n" +
+            "\tfloat innerRadius = max(radius - strokeHalf, 0.0);\n" +
+            "\tvec2 cover = outerHalf + roundedEdge.y;\n" +
+            "\tvec2 local;\n" +
+            "\tif (quarters) {\n" +
+            "\t\tlocal = tcoord * cover;\n" +
+            "\t} else {\n" +
+            "\t\tvec2 centre = max(outerHalf - outerRadius, 0.0);\n" +
+            "\t\tlocal = vec2(tcoord.x == 1.0 ? cover.x : centre.x, tcoord.y == 1.0 ? cover.y : centre.y);\n" +
+            "\t\tif (outline && tcoord.x == 2.0) local = vec2(0.0);\n" +
+            "\t}\n" +
+            "\tftcoord = local - outerHalf + outerRadius;\n" +
+            "\tfradii = vec2(outerRadius, outline ? innerRadius : -1.0e4);\n" +
+            "\tfshape = vec3(outerRadius, outline ? innerRadius : -1.0e4, outline ? 2.0 * strokeHalf - outerRadius + innerRadius : 0.0);\n" +
+            "\treturn roundedBox.xy + vertex * local;\n" +
+            "}\n" +
+            "#endif\n";
+
     internal const string FILL_VERT_SHADER =
             TINT_DEFINE +
             "\tuniform vec2 viewSize;\n" +
@@ -54,12 +91,13 @@ internal static class GLNVGShaderSource
             // What is affine in the vertex position (the scissor and paint coordinates, the position along a
             // linear gradient) a variant works out per vertex, which interpolation carries exactly; the fragment
             // shader is left only the part that is not affine.
-            "#if defined(SCISSOR) || defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_LINEAR_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
+            "#if !defined(VARIANT) || defined(SCISSOR) || defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_LINEAR_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
             "\tuniform vec4 frag[UNIFORMARRAY_SIZE];\n" +
             "#endif\n" +
             "#ifdef SCISSOR\n" +
             "\tout vec2 fscissor;\n" +
             "#endif\n" +
+            ROUNDED_RECT_VERTEX +
             "#if defined(PAINT_IMAGE) || defined(PAINT_BOX_GRADIENT) || defined(PAINT_RADIAL_GRADIENT) || defined(PAINT_COVERAGE_COMPOSITE)\n" +
             "\tout vec2 fpaint;\n" +
             "#endif\n" +
@@ -67,8 +105,24 @@ internal static class GLNVGShaderSource
             "\tout float fgradT;\n" +
             "#endif\n" +
             "void main(void) {\n" +
+            "#if defined(VARIANT) && defined(PAINT_ROUNDED_RECT) && defined(ROUNDED_RECT_QUARTERS)\n" +
+            "\tvec2 position = roundedRectVertex(true);\n" +
+            "#elif defined(VARIANT) && defined(PAINT_ROUNDED_RECT)\n" +
+            "\tvec2 position = roundedRectVertex(false);\n" +
+            "#elif defined(VARIANT)\n" +
             "\tvec2 position = vertex + instanceOffset;\n" +
             "\tftcoord = tcoord;\n" +
+            "#else\n" +
+            "\tvec2 position;\n" +
+            "\tif (int(frag[12].w) == 8) {\n" +
+            "\t\tposition = roundedRectVertex(frag[12].z > 0.5);\n" +
+            "\t} else {\n" +
+            "\t\tposition = vertex + instanceOffset;\n" +
+            "\t\tftcoord = tcoord;\n" +
+            "\t\tfradii = vec2(0.0);\n" +
+            "\t\tfshape = vec3(0.0);\n" +
+            "\t}\n" +
+            "#endif\n" +
             "\tfpos = position;\n" +
             "#ifdef TINT\n" +
             "\tftint = tint;\n" +
@@ -118,6 +172,10 @@ internal static class GLNVGShaderSource
             "#endif\n" +
             "#ifdef TINT\n" +
             "\tflat in vec4 ftint;\n" +
+            "#endif\n" +
+            "#if !defined(VARIANT) || defined(PAINT_ROUNDED_RECT)\n" +
+            "\tin vec2 fradii;\n" +
+            "\tflat in vec3 fshape;\n" +
             "#endif\n" +
             "\t#define scissorMat mat3(frag[0].xyz, frag[1].xyz, frag[2].xyz)\n" +
             "\t#define paintMat mat3(frag[3].xyz, frag[4].xyz, frag[5].xyz)\n" +
@@ -223,22 +281,32 @@ internal static class GLNVGShaderSource
             "\tfloat r = mod(max(t, 0.0), 2.0);\n" +
             "\treturn r <= 1.0 ? r : 2.0 - r;\n" +
             "}\n" +
-            // The signed distance to a rounded rectangle centred on the origin; radii are top-left, top-right,
-            // bottom-right and bottom-left.
-            "float sdRoundedBox(vec2 p, vec2 halfExtent, vec4 radii) {\n" +
-            "\tvec2 side = p.x > 0.0 ? radii.zy : radii.wx;\n" +
-            "\tfloat r = p.y > 0.0 ? side.x : side.y;\n" +
-            "\tvec2 q = abs(p) - halfExtent + vec2(r);\n" +
-            "\treturn min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - r;\n" +
+            // Given the position against a corner circle's centre, the distance that, less the circle's radius, is the
+            // signed distance to the rounded rectangle's edge.
+            "float cornerDistance(vec2 q) {\n" +
+            "\treturn min(max(q.x, q.y), 0.0) + length(max(q, 0.0));\n" +
             "}\n" +
-            "float roundedBoxCoverage(vec2 p, vec2 halfExtent, vec4 radii) {\n" +
-            "\treturn clamp(0.5 - sdRoundedBox(p, halfExtent, radii) * frag[9].x, 0.0, 1.0);\n" +
+            // A rounded rectangle covers what its outer edge covers and its inner edge does not; a fill's inner edge lies
+            // so far inside out that it covers nothing. In the patch mesh the distance to a corner circle is the length
+            // of the position against its centre; in the quarter mesh it is the corner distance, against the inner
+            // circle's own centre for the inner edge.
+            "#if !defined(VARIANT) || defined(PAINT_ROUNDED_RECT)\n" +
+            "float roundedRectCoverage(bool quarters) {\n" +
+            "\tfloat outerDistance;\n" +
+            "\tfloat innerDistance;\n" +
+            "\tif (quarters) {\n" +
+            "\t\touterDistance = cornerDistance(ftcoord) - fshape.x;\n" +
+            "\t\tinnerDistance = cornerDistance(ftcoord + fshape.z) - fshape.y;\n" +
+            "\t} else {\n" +
+            "\t\tfloat circleDistance = length(ftcoord);\n" +
+            "\t\touterDistance = circleDistance - fradii.x;\n" +
+            "\t\tinnerDistance = circleDistance - fradii.y;\n" +
+            "\t}\n" +
+            "\tfloat outer = clamp(0.5 - outerDistance * frag[9].x, 0.0, 1.0);\n" +
+            "\tfloat inner = clamp(0.5 - innerDistance * frag[9].x, 0.0, 1.0);\n" +
+            "\treturn max(outer - inner, 0.0);\n" +
             "}\n" +
-            // A rounded rectangle covers what its outer box covers and its inner one does not; a fill's inner box
-            // covers nothing.
-            "float roundedRectCoverage(vec2 p) {\n" +
-            "\treturn max(roundedBoxCoverage(p, frag[3].xy, frag[4]) - roundedBoxCoverage(p, frag[3].zw, frag[5]), 0.0);\n" +
-            "}\n" +
+            "#endif\n" +
             "float strokeMask() {\n" +
             "\tif (strokeMult < 0.0) {\n" +
             "\t\treturn clamp(ftcoord.x + 0.5, 0.0, 1.0) * min(1.0, ftcoord.y);\n" +
@@ -290,8 +358,10 @@ internal static class GLNVGShaderSource
             "\tcolor *= innerCol;\n" +
             "\tcolor *= strokeAlpha * scissor;\n" +
             "\tresult = color;\n" +
+            "#elif defined(PAINT_ROUNDED_RECT) && defined(ROUNDED_RECT_QUARTERS)\n" +
+            "\tresult = TINTED(innerCol) * (roundedRectCoverage(true) * scissor);\n" +
             "#elif defined(PAINT_ROUNDED_RECT)\n" +
-            "\tresult = TINTED(innerCol) * (roundedRectCoverage(ftcoord) * scissor);\n" +
+            "\tresult = TINTED(innerCol) * (roundedRectCoverage(false) * scissor);\n" +
             "#elif defined(PAINT_SIMPLE)\n" +
             "\tresult = vec4(1,1,1,1);\n" +
             "#elif defined(PAINT_COVERAGE_OUTPUT)\n" +
@@ -341,7 +411,7 @@ internal static class GLNVGShaderSource
             "\t\tcolor *= strokeAlpha * scissor;\n" +
             "\t\tresult = color;\n" +
             "\t} else if (type == 8) {\n" +
-            "\t\tresult = TINTED(innerCol) * (roundedRectCoverage(ftcoord) * scissor);\n" +
+            "\t\tresult = TINTED(innerCol) * (roundedRectCoverage(frag[12].z > 0.5) * scissor);\n" +
             "\t} else if (type == 2) {\n" +
             "\t\tresult = vec4(1,1,1,1);\n" +
             "\t} else if (type == 3) {\n" +
