@@ -2810,7 +2810,7 @@ internal sealed class NVGContext
         {
             var storedPaths = stored.Paths.AsSpan(0, stored.PathCount);
             _renderer.RenderStroke(ref strokePaint, state.CompositeOperation, ref state.Scissor, _fringeWidth, strokeWidth, storedPaths,
-                stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY));
+                stored.Verts.AsSpan(0, stored.VertCount), new Vector2(shiftX, shiftY), new NVGGeometrySource(stored, stored.Version));
             CountStroke(storedPaths);
             return;
         }

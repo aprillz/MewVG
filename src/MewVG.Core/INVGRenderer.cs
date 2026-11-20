@@ -27,7 +27,10 @@ internal interface INVGRenderer
         Vector2 offset,
         NVGGeometrySource source = default);
 
-    /// <summary>Draws a stroke whose vertices are moved by <paramref name="offset"/>.</summary>
+    /// <summary>
+    /// Draws a stroke whose vertices are moved by <paramref name="offset"/>; <paramref name="source"/> names the stored
+    /// geometry they come from, if any.
+    /// </summary>
     void RenderStroke(
         ref MewVGPaint paint,
         NVGcompositeOperationState compositeOperation,
@@ -36,7 +39,8 @@ internal interface INVGRenderer
         float strokeWidth,
         ReadOnlySpan<NVGpathData> paths,
         ReadOnlySpan<NVGvertex> verts,
-        Vector2 offset);
+        Vector2 offset,
+        NVGGeometrySource source = default);
 
     /// <summary>
     /// Draws a solid rounded rectangle, or its outline, by working out its coverage per pixel; false when the
