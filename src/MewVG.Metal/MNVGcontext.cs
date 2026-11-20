@@ -4496,8 +4496,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         var coverHalfWidth = outerHalfWidth + antialias;
         var coverHalfHeight = outerHalfHeight + antialias;
 
-        // Inside an outline lies a box that the inner edge leaves uncovered by at least a pixel; the outline is
-        // drawn as the ring around it, so the fragments in the middle are never run.
+        // Inside an outline lies a cross, a tall box and a wide one clear of the inner corners, that the inner edge
+        // leaves uncovered by at least a pixel; the outline is drawn around it, so the fragments there are never run.
         var innerHalfWidth = shape.HalfWidth - strokeHalfWidth;
         var innerHalfHeight = shape.HalfHeight - strokeHalfWidth;
         var innerTopLeft = Math.Max(shape.TopLeft - strokeHalfWidth, 0.0f);
@@ -4508,6 +4508,8 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         var holeHalfWidth = innerHalfWidth - innerRadius - antialias;
         var holeHalfHeight = innerHalfHeight - innerRadius - antialias;
         var hollow = outline && holeHalfWidth > 0.0f && holeHalfHeight > 0.0f;
+        var holeWideHalfWidth = innerHalfWidth - antialias;
+        var holeWideHalfHeight = innerHalfHeight - antialias;
 
         EnsureCalls(_callCount + 1);
         ref var call = ref _calls[_callCount++];
@@ -4515,12 +4517,13 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         call.type = MNVGcallType.MNVG_TRIANGLES;
         call.blendFunc = compositeOperation;
         call.triangleOffset = _vertCount;
-        call.triangleCount = hollow ? 24 : 6;
+        call.triangleCount = hollow ? 48 : 6;
         EnsureVerts(_vertCount + call.triangleCount);
         var geometry = _verts.AsSpan(_vertCount, call.triangleCount);
         if (hollow)
         {
-            WriteRing(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight, holeHalfWidth, holeHalfHeight);
+            WriteAroundCross(geometry, shape.CenterX, shape.CenterY, coverHalfWidth, coverHalfHeight, holeHalfWidth, holeWideHalfWidth,
+                holeHalfHeight, holeWideHalfHeight);
         }
         else
         {
@@ -4600,34 +4603,36 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         output[5] = bottomLeft;
     }
 
-    /// <summary>Writes eight triangles covering a box around a centre less a smaller box, with texcoords relative to the centre.</summary>
-    private static void WriteRing(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight, float holeHalfWidth, float holeHalfHeight)
+    /// <summary>
+    /// Writes a box around a centre less a cross of a narrow tall box and a wide short one, as four corner boxes and four
+    /// edge strips, with texcoords relative to the centre.
+    /// </summary>
+    private static void WriteAroundCross(Span<NVGvertex> output, float centerX, float centerY, float halfWidth, float halfHeight,
+        float narrowHalfWidth, float wideHalfWidth, float narrowHalfHeight, float wideHalfHeight)
     {
-        Span<NVGvertex> outer =
-        [
-            Relative(centerX, centerY, -halfWidth, -halfHeight),
-            Relative(centerX, centerY, halfWidth, -halfHeight),
-            Relative(centerX, centerY, halfWidth, halfHeight),
-            Relative(centerX, centerY, -halfWidth, halfHeight),
-        ];
-        Span<NVGvertex> hole =
-        [
-            Relative(centerX, centerY, -holeHalfWidth, -holeHalfHeight),
-            Relative(centerX, centerY, holeHalfWidth, -holeHalfHeight),
-            Relative(centerX, centerY, holeHalfWidth, holeHalfHeight),
-            Relative(centerX, centerY, -holeHalfWidth, holeHalfHeight),
-        ];
-        var written = 0;
-        for (var side = 0; side < 4; side++)
-        {
-            var next = (side + 1) % 4;
-            output[written++] = outer[side];
-            output[written++] = outer[next];
-            output[written++] = hole[next];
-            output[written++] = outer[side];
-            output[written++] = hole[next];
-            output[written++] = hole[side];
-        }
+        WriteBox(output, centerX, centerY, -halfWidth, -halfHeight, -narrowHalfWidth, -narrowHalfHeight);
+        WriteBox(output[6..], centerX, centerY, narrowHalfWidth, -halfHeight, halfWidth, -narrowHalfHeight);
+        WriteBox(output[12..], centerX, centerY, narrowHalfWidth, narrowHalfHeight, halfWidth, halfHeight);
+        WriteBox(output[18..], centerX, centerY, -halfWidth, narrowHalfHeight, -narrowHalfWidth, halfHeight);
+        WriteBox(output[24..], centerX, centerY, -narrowHalfWidth, -halfHeight, narrowHalfWidth, -wideHalfHeight);
+        WriteBox(output[30..], centerX, centerY, -narrowHalfWidth, wideHalfHeight, narrowHalfWidth, halfHeight);
+        WriteBox(output[36..], centerX, centerY, -halfWidth, -narrowHalfHeight, -wideHalfWidth, narrowHalfHeight);
+        WriteBox(output[42..], centerX, centerY, wideHalfWidth, -narrowHalfHeight, halfWidth, narrowHalfHeight);
+    }
+
+    /// <summary>Writes two triangles covering a box given by its sides relative to a centre, with texcoords relative to the centre.</summary>
+    private static void WriteBox(Span<NVGvertex> output, float centerX, float centerY, float left, float top, float right, float bottom)
+    {
+        var topLeft = Relative(centerX, centerY, left, top);
+        var topRight = Relative(centerX, centerY, right, top);
+        var bottomRight = Relative(centerX, centerY, right, bottom);
+        var bottomLeft = Relative(centerX, centerY, left, bottom);
+        output[0] = topLeft;
+        output[1] = topRight;
+        output[2] = bottomRight;
+        output[3] = topLeft;
+        output[4] = bottomRight;
+        output[5] = bottomLeft;
     }
 
     private static NVGvertex Relative(float centerX, float centerY, float offsetX, float offsetY)
