@@ -512,13 +512,19 @@ internal sealed class NVGContext
         {
             _clipStack.RemoveRange(desiredClipDepth, _clipStack.Count - desiredClipDepth);
             _renderer.ResetClip();
-            for (var i = 0; i < _clipStack.Count; i++)
-            {
-                var clip = _clipStack[i];
-                var scissor = clip.Scissor;
-                _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds,
-                    clip.Paths.AsSpan(0, clip.PathCount), clip.Verts.AsSpan(0, clip.VertCount));
-            }
+            RenderClipStack();
+        }
+    }
+
+    /// <summary>Sends every clip in effect to the renderer again, outermost first.</summary>
+    private void RenderClipStack()
+    {
+        for (var i = 0; i < _clipStack.Count; i++)
+        {
+            var clip = _clipStack[i];
+            var scissor = clip.Scissor;
+            _renderer.RenderClip(ref scissor, clip.Fringe, clip.Bounds,
+                clip.Paths.AsSpan(0, clip.PathCount), clip.Verts.AsSpan(0, clip.VertCount));
         }
     }
 
@@ -1022,6 +1028,13 @@ internal sealed class NVGContext
     public void CancelFrame() => _renderer.Cancel();
 
     public void EndFrame() => _renderer.Flush();
+
+    public void Flush()
+    {
+        _renderer.Flush();
+        // A renderer starts what it queues after a flush with no clip.
+        RenderClipStack();
+    }
 
     #endregion
 
