@@ -50,7 +50,14 @@ internal sealed class FakeRenderer : INVGRenderer
 
     public void Cancel() => CancelCount++;
 
-    public void Flush() => FlushCount++;
+    /// <summary>How many RenderClip calls had come in when each Flush did, in flush order.</summary>
+    public List<int> ClipCallCountsAtFlush { get; } = new();
+
+    public void Flush()
+    {
+        FlushCount++;
+        ClipCallCountsAtFlush.Add(ClipCalls.Count);
+    }
 
     public void RenderFill(
         ref MewVGPaint paint,

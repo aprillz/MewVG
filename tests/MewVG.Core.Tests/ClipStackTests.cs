@@ -42,6 +42,46 @@ public class ClipStackTests
     }
 
     [Fact]
+    public void Flush_SendsTheClipsInEffectAgainAfterTheFlush()
+    {
+        var renderer = new FakeRenderer();
+        var context = NewContext(renderer);
+
+        context.Save();
+        ClipRect(context, 10, 10, 20, 20); // rectA
+        context.Save();
+        ClipRect(context, 100, 100, 30, 30); // rectB
+
+        context.Flush();
+
+        // The renderer drops its clip at the flush, so both clips follow it, outermost first, with no reset.
+        Assert.Equal(1, renderer.FlushCount);
+        Assert.Equal([2], renderer.ClipCallCountsAtFlush);
+        Assert.Equal(4, renderer.ClipCalls.Count);
+        Assert.Equal(0, renderer.ResetClipCount);
+        AssertBounds(renderer.ClipCalls[2].Bounds, 10, 10, 20, 20);
+        AssertBounds(renderer.ClipCalls[3].Bounds, 100, 100, 30, 30);
+
+        // The stack is unchanged by the flush, so a restore still goes back to rectA alone.
+        context.Restore();
+        Assert.Equal(1, renderer.ResetClipCount);
+        AssertBounds(renderer.ClipCalls[^1].Bounds, 10, 10, 20, 20);
+    }
+
+    [Fact]
+    public void Flush_WithNoClip_SendsNoClip()
+    {
+        var renderer = new FakeRenderer();
+        var context = NewContext(renderer);
+
+        context.Flush();
+
+        Assert.Equal(1, renderer.FlushCount);
+        Assert.Empty(renderer.ClipCalls);
+        Assert.Equal(0, renderer.ResetClipCount);
+    }
+
+    [Fact]
     public void Restore_RetransmitsExactlySurvivingPrefix()
     {
         var renderer = new FakeRenderer();

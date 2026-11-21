@@ -20,6 +20,12 @@ public abstract class MewVGContext : IDisposable
 
     public void EndFrame() => _nvg.EndFrame();
 
+    /// <summary>
+    /// Renders what was drawn so far in this frame and keeps the clips in effect, so drawing goes on with
+    /// them after the host reads the target or, on Metal, after it sets a new render encoder.
+    /// </summary>
+    public void Flush() => _nvg.Flush();
+
     public void CancelFrame() => _nvg.CancelFrame();
 
     #endregion
