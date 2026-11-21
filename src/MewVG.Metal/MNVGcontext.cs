@@ -1656,6 +1656,12 @@ internal unsafe class MNVGcontext : IDisposable, INVGRenderer
         // Render
         Render(ref buffers);
 
+        // What was queued is encoded now; a flush later in the same frame starts from nothing.
+        _callCount = 0;
+        _pathCount = 0;
+        _vertCount = 0;
+        _uniformCount = 0;
+
         // Advance to next buffer
         _currentBuffer = (_currentBuffer + 1) % _bufferCount;
     }
